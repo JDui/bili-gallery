@@ -1,0 +1,431 @@
+from __future__ import annotations
+
+import base64
+import io
+import random
+import re
+import time
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+import qrcode
+import requests
+
+from app.db import Database
+from app.services.legacy_bridge import API_DETAIL, build_headers, detail_params
+from app.services.utils import dumps_json, loads_json, now_iso
+
+API_QR_GENERATE = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
+API_QR_POLL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
+API_NAV = "https://api.bilibili.com/x/web-interface/nav"
+API_SPACE_INFO = "https://api.bilibili.com/x/space/acc/info"
+SPACE_HOME = "https://space.bilibili.com/{uid}"
+USER_AGENTS = [
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/136.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/135.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/134.0.0.0 Safari/537.36"
+    ),
+]
+ACCEPT_LANGUAGES = [
+    "zh-CN,zh;q=0.9,en;q=0.8",
+    "zh-CN,zh;q=0.95,en;q=0.75",
+    "zh-CN,zh;q=0.9,ja;q=0.7,en;q=0.6",
+]
+
+
+@dataclass
+class CookieState:
+    cookie: str | None
+    cookie_json: dict[str, str]
+    user: dict[str, Any]
+
+
+class BilibiliAuthService:
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def start_qr_login(self) -> dict[str, Any]:
+        session = self._qr_session()
+        try:
+            response = session.get(API_QR_GENERATE, timeout=20)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"二维码生成失败: {exc}") from exc
+        payload = response.json()
+        if payload.get("code") != 0:
+            raise RuntimeError(payload.get("message") or "二维码生成失败")
+        data = payload["data"]
+        qr_url = data["url"]
+        qr_key = data["qrcode_key"]
+        self.db.update_auth_state(
+            qr_key=qr_key,
+            qr_url=qr_url,
+            qr_status="pending",
+            qr_created_at=now_iso(),
+        )
+        return {
+            "qr_key": qr_key,
+            "qr_url": qr_url,
+            "image_data_url": self._render_qr_data_url(qr_url),
+            "status": "pending",
+        }
+
+    def poll_qr_login(self) -> dict[str, Any]:
+        auth_state = self.db.get_auth_state()
+        qr_key = auth_state.get("qr_key")
+        if not qr_key:
+            return {"status": "idle", "message": "暂无二维码会话"}
+
+        session = self._qr_session()
+        try:
+            response = session.get(API_QR_POLL, params={"qrcode_key": qr_key}, timeout=20)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"二维码轮询失败: {exc}") from exc
+        payload = response.json()
+        if payload.get("code") != 0:
+            raise RuntimeError(payload.get("message") or "二维码轮询失败")
+
+        data = payload.get("data", {})
+        code = int(data.get("code", 0))
+        message = data.get("message") or payload.get("message") or ""
+
+        if code == 0:
+            login_url = data.get("url", "")
+            cookies = self._collect_login_cookies(response, login_url)
+            self._save_cookie_state(cookies)
+            self.db.update_auth_state(qr_status="done", qr_key=None, qr_url=None)
+            return {"status": "done", "message": "登录成功", "user": self.check_cookie()}
+        if code == 86038:
+            self.db.update_auth_state(qr_status="expired")
+            return {"status": "expired", "message": message or "二维码已过期"}
+        if code == 86090:
+            self.db.update_auth_state(qr_status="scanned")
+            return {"status": "scanned", "message": message or "已扫码，等待确认"}
+        if code == 86101:
+            self.db.update_auth_state(qr_status="pending")
+            return {"status": "pending", "message": message or "等待扫码"}
+
+        return {"status": "pending", "message": message or "等待扫码"}
+
+    def check_cookie(self) -> dict[str, Any]:
+        cookie_state = self.get_cookie_state()
+        if not cookie_state.cookie:
+            return {"ok": False, "message": "未登录"}
+        headers = self._headers(cookie_state.cookie)
+        self._sleep_jitter(0.06, 0.12)
+        try:
+            response = requests.get(API_NAV, headers=headers, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+        except requests.RequestException as exc:
+            return {"ok": False, "message": f"Cookie 检查失败: {exc}"}
+        if payload.get("code") != 0:
+            return {"ok": False, "message": payload.get("message") or "Cookie 无效"}
+        user_data = payload.get("data") or {}
+        self.db.update_auth_state(user_json=dumps_json(user_data))
+        return {
+            "ok": True,
+            "message": "Cookie 有效",
+            "uid": str(user_data.get("mid") or ""),
+            "uname": user_data.get("uname") or "",
+            "user": {
+                "uname": user_data.get("uname"),
+                "mid": user_data.get("mid"),
+                "face": user_data.get("face"),
+                "level": user_data.get("level_info", {}).get("current_level"),
+            },
+        }
+
+    def logout(self) -> None:
+        self.db.update_auth_state(
+            cookie=None,
+            cookie_json=None,
+            user_json=None,
+            qr_key=None,
+            qr_url=None,
+            qr_status="idle",
+            qr_created_at=None,
+        )
+
+    def get_cookie_state(self) -> CookieState:
+        auth_state = self.db.get_auth_state()
+        return CookieState(
+            cookie=auth_state.get("cookie"),
+            cookie_json=loads_json(auth_state.get("cookie_json"), {}),
+            user=loads_json(auth_state.get("user_json"), {}),
+        )
+
+    def fetch_dynamic_detail(self, dynamic_id: str, host_mid: int, cookie: str) -> dict:
+        last_error: Exception | None = None
+        session = requests.Session()
+        session.headers.update(self._headers(cookie, host_mid))
+        session.cookies.update(self._parse_cookie_header(cookie))
+        try:
+            for attempt in range(6):
+                if attempt:
+                    self._refresh_web_session(session, host_mid, cookie)
+                try:
+                    self._sleep_jitter(0.08 + attempt * 0.05, 0.18 + attempt * 0.08)
+                    response = session.get(API_DETAIL, headers=session.headers, params=detail_params(dynamic_id), timeout=30)
+                    response.raise_for_status()
+                    payload = response.json()
+                    if int(payload.get("code", 0)) == -352 and attempt < 5:
+                        last_error = RuntimeError("动态详情请求被风控拦截")
+                        self._refresh_web_session(session, host_mid, cookie)
+                        continue
+                    if payload.get("code") != 0:
+                        raise RuntimeError(payload.get("message") or "动态详情获取失败")
+                    self._maybe_refresh_cookie_state(cookie, session.cookies)
+                    data = payload.get("data") or {}
+                    return data.get("item") or {}
+                except requests.HTTPError as exc:
+                    last_error = exc
+                    status_code = exc.response.status_code if exc.response is not None else None
+                    if status_code == 412 and attempt < 5:
+                        self._refresh_web_session(session, host_mid, cookie)
+                        continue
+                    break
+                except requests.RequestException as exc:
+                    last_error = exc
+                    if attempt < 5:
+                        self._refresh_web_session(session, host_mid, cookie)
+                        continue
+                    break
+        finally:
+            session.close()
+        raise RuntimeError(f"动态详情请求失败: {last_error}")
+
+    def fetch_up_profile(self, uid: str, cookie: str | None = None) -> dict[str, Any]:
+        host_mid = int(uid)
+        cookie_value = cookie or ""
+        session = requests.Session()
+        session.headers.update(self._headers(cookie_value, host_mid=host_mid))
+        if cookie_value:
+            session.cookies.update(self._parse_cookie_header(cookie_value))
+        else:
+            session.headers.pop("Cookie", None)
+        last_error: Exception | None = None
+        try:
+            self._prime_profile_session(session, uid)
+            for attempt in range(4):
+                try:
+                    if attempt:
+                        self._refresh_profile_session(session, uid, cookie_value)
+                    self._sleep_jitter(0.06 + attempt * 0.04, 0.14 + attempt * 0.05)
+                    response = session.get(API_SPACE_INFO, params={"mid": str(uid)}, timeout=20)
+                    response.raise_for_status()
+                    payload = response.json()
+                    code = int(payload.get("code", 0))
+                    if code == 0:
+                        data = payload.get("data") or {}
+                        self._maybe_refresh_cookie_state(cookie_value, session.cookies)
+                        return {
+                            "uid": str(uid),
+                            "uname": data.get("name") or f"UID {uid}",
+                            "face": data.get("face"),
+                        }
+                    last_error = RuntimeError(payload.get("message") or "UP 主信息获取失败")
+                    if code in (-352, -401) and attempt < 3:
+                        continue
+                    break
+                except requests.HTTPError as exc:
+                    last_error = exc
+                    status_code = exc.response.status_code if exc.response is not None else None
+                    if status_code == 412 and attempt < 3:
+                        continue
+                    break
+                except requests.RequestException as exc:
+                    last_error = exc
+                    if attempt < 3:
+                        continue
+                    break
+
+            fallback = self._fetch_up_profile_from_space_page(uid, session)
+            if fallback:
+                return fallback
+        finally:
+            session.close()
+        raise RuntimeError(f"UP 主信息获取失败: {last_error or '空间页解析失败'}")
+
+    def _exchange_login(self, login_url: str) -> dict[str, str]:
+        session = self._qr_session()
+        session.get(login_url, allow_redirects=True, timeout=20)
+        return self._extract_cookie_values(session.cookies)
+
+    def _collect_login_cookies(self, response: requests.Response, login_url: str) -> dict[str, str]:
+        cookies = self._extract_cookie_values(response.cookies)
+        if login_url:
+            cookies.update(self._extract_cookie_values_from_url(login_url))
+        if not cookies.get("SESSDATA") and login_url:
+            cookies.update(self._exchange_login(login_url))
+        if not cookies.get("SESSDATA"):
+            raise RuntimeError("扫码完成，但未拿到登录 Cookie")
+        return cookies
+
+    def _save_cookie_state(self, cookies: dict[str, str]) -> None:
+        cookie = "; ".join(f"{name}={value}" for name, value in cookies.items())
+        self.db.update_auth_state(cookie=cookie, cookie_json=dumps_json(cookies))
+        self.check_cookie()
+
+    def _headers(self, cookie: str, host_mid: int = 31968078) -> dict[str, str]:
+        headers = dict(build_headers(host_mid=host_mid, cookie=cookie))
+        headers["User-Agent"] = random.choice(USER_AGENTS)
+        headers["Accept-Language"] = random.choice(ACCEPT_LANGUAGES)
+        headers["Cache-Control"] = "no-cache"
+        headers["Pragma"] = "no-cache"
+        headers["DNT"] = "1"
+        headers["Priority"] = random.choice(["u=1, i", "u=2, i", "u=3"])
+        headers["Sec-CH-UA"] = '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="24"'
+        headers["Sec-CH-UA-Mobile"] = "?0"
+        headers["Sec-CH-UA-Platform"] = random.choice(['"Windows"', '"macOS"', '"Linux"'])
+        return headers
+
+    def _qr_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/136.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://passport.bilibili.com/login",
+                "Origin": "https://passport.bilibili.com",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            }
+        )
+        return session
+
+    def _render_qr_data_url(self, qr_url: str) -> str:
+        image = qrcode.make(qr_url)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
+    def _extract_cookie_values(self, cookie_source: Any) -> dict[str, str]:
+        if hasattr(cookie_source, "items"):
+            return {str(name): str(value) for name, value in cookie_source.items() if value}
+        return {}
+
+    def _extract_cookie_values_from_url(self, login_url: str) -> dict[str, str]:
+        query = parse_qs(urlparse(login_url).query)
+        cookie_names = ["SESSDATA", "bili_jct", "DedeUserID"]
+        return {
+            name: values[0]
+            for name in cookie_names
+            if (values := query.get(name))
+        }
+
+    def _parse_cookie_header(self, cookie: str) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for chunk in cookie.split(";"):
+            if "=" not in chunk:
+                continue
+            name, value = chunk.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if name and value:
+                result[name] = value
+        return result
+
+    def _prime_profile_session(self, session: requests.Session, uid: str) -> None:
+        urls = [
+            "https://www.bilibili.com/",
+            SPACE_HOME.format(uid=uid),
+            f"{SPACE_HOME.format(uid=uid)}/dynamic",
+        ]
+        for url in urls:
+            try:
+                session.get(url, timeout=15)
+                self._sleep_jitter(0.05, 0.1)
+            except requests.RequestException:
+                continue
+
+    def _refresh_profile_session(self, session: requests.Session, uid: str, cookie: str) -> None:
+        session.cookies.clear()
+        if cookie:
+            session.cookies.update(self._parse_cookie_header(cookie))
+        session.headers.clear()
+        session.headers.update(self._headers(cookie, host_mid=int(uid)))
+        if not cookie:
+            session.headers.pop("Cookie", None)
+        self._prime_profile_session(session, uid)
+
+    def _fetch_up_profile_from_space_page(
+        self,
+        uid: str,
+        session: requests.Session,
+    ) -> dict[str, Any] | None:
+        try:
+            self._sleep_jitter(0.08, 0.18)
+            response = session.get(SPACE_HOME.format(uid=uid), timeout=20)
+            response.raise_for_status()
+        except requests.RequestException:
+            return None
+        title_match = re.search(r"<title>(.*?)</title>", response.text, re.S | re.I)
+        if not title_match:
+            return None
+        raw_title = re.sub(r"\s+", " ", title_match.group(1)).strip()
+        if not raw_title:
+            return None
+        uname = raw_title
+        if "的个人空间" in uname:
+            uname = uname.split("的个人空间", 1)[0].strip()
+        else:
+            uname = re.split(r"\s*[-_]\s*", uname, maxsplit=1)[0].strip()
+        for marker in ("个人主页", "哔哩哔哩视频", "_哔哩哔哩"):
+            uname = uname.replace(marker, "")
+        uname = re.sub(r"\s+", " ", uname).strip()
+        if not uname:
+            return None
+        return {
+            "uid": str(uid),
+            "uname": uname,
+            "face": None,
+        }
+
+    def _prime_web_session(self, session: requests.Session, host_mid: int) -> None:
+        urls = [
+            "https://www.bilibili.com/",
+            f"https://space.bilibili.com/{host_mid}",
+            f"https://space.bilibili.com/{host_mid}/dynamic",
+            API_NAV,
+        ]
+        for url in urls:
+            try:
+                session.get(url, timeout=15)
+                self._sleep_jitter(0.05, 0.1)
+            except requests.RequestException:
+                continue
+
+    def _refresh_web_session(self, session: requests.Session, host_mid: int, cookie: str) -> None:
+        session.cookies.clear()
+        session.cookies.update(self._parse_cookie_header(cookie))
+        session.headers.clear()
+        session.headers.update(self._headers(cookie, host_mid))
+        self._prime_web_session(session, host_mid)
+
+    def _maybe_refresh_cookie_state(self, cookie: str, cookie_source: Any) -> None:
+        current = self._parse_cookie_header(cookie)
+        merged = {**current, **self._extract_cookie_values(cookie_source)}
+        if merged and merged != current:
+            cookie_value = "; ".join(f"{name}={value}" for name, value in merged.items())
+            self.db.update_auth_state(cookie=cookie_value, cookie_json=dumps_json(merged))
+
+    def _sleep_jitter(self, base: float, spread: float) -> None:
+        time.sleep(random.uniform(max(0.04, base * 0.7), base + spread))

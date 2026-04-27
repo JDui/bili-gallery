@@ -1,0 +1,13 @@
+services:
+  bili-gallery:
+    build:
+      context: ..
+      dockerfile: docker_app/Dockerfile
+    ports:
+      - "7860:7860"
+    environment:
+      APP_REPO_ROOT: /workspace
+      APP_STORAGE_ROOT: /workspace/storage
+    volumes:
+      - ..:/workspace
+    restart: unless-stopped

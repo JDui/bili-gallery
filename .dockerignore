@@ -1,0 +1,16 @@
+.git
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+docker_app/.venv/
+docker_app/.pytest_cache/
+docker_app/**/__pycache__/
+docker_app/dist/
+docker_app/review/
+downloaded/
+LivePhoto/downloaded/
+storage/
+bili_9pics_run.log
+bili_9pics_run_latest.log
+bili_9pics_run_latest_refresh.log

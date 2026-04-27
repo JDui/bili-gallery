@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  bili-gallery:
+    image: zzs-bili-gallery:3.8-amd64
+    container_name: bili-gallery
+    restart: unless-stopped
+    user: "0:0"
+
+    ports:
+      - "7860:7860"
+
+    environment:
+      - APP_REPO_ROOT=/workspace
+      - APP_STORAGE_ROOT=/storage
+      - TZ=Asia/Shanghai
+
+    volumes:
+      - /tmp/zfsv3/nvme12/15824368694/data/Docker/bili-gallery/config:/storage/config
+      - /tmp/zfsv3/nvme12/15824368694/data/Docker/bili-gallery/data:/storage/data

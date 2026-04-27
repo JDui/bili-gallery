@@ -1,0 +1,25 @@
+.DS_Store
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Sync/versioning artifacts
+.stfolder
+.stignore
+.stversions/
+
+# Runtime logs
+*.log
+
+# Local downloaded/runtime data
+downloaded/
+LivePhoto/downloaded/
+storage/
+
+# Build/review artifacts
+docker_app/dist/
+docker_app/review/
+
+# Local databases
+*.db
