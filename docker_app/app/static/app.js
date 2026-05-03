@@ -58,13 +58,39 @@ function galleryApp() {
     taskRuns: [],
     queuedTasks: [],
     trashItems: [],
+    siteStats: {},
+    siteStatus: {},
+    siteSources: [],
+    siteLogs: [],
+    siteRules: {},
+    siteRuleText: {
+      title_allow: "",
+      title_block: "",
+      tag_allow: "",
+      tag_block: "",
+    },
+    sitePreviewItems: [],
+    siteTestLoading: false,
+    siteSourceForm: {},
+    newSiteSourceExpanded: false,
+    siteSourceExpanded: {},
+    siteSourceDrafts: {},
+    sitePreviewItemsById: {},
+    siteTestLoadingById: {},
+    siteSourceSaving: false,
+    siteSourceSavingById: {},
+    siteRulesExpanded: false,
+    siteLogsExpanded: false,
+    siteLogsClearConfirm: false,
+    siteClearDeleteConfirmId: null,
+    siteClearDeleteConfirmStep: 0,
     settings: {},
     galleryIndexStatus: {},
     newSubscriptionUid: "",
     keywordText: "",
     pullStatus: {},
     qr: {},
-    detail: { open: false, pairs: [], folder: null },
+    detail: { open: false, pairs: [], folder: null, videos: [] },
     viewer: { open: false, pair: null, folder: null, showVideo: false },
     viewerSource: "detail",
     viewerSequence: [],
@@ -132,12 +158,15 @@ function galleryApp() {
     lastRunning: false,
     viewerSyntheticTapUntil: 0,
     bodyLockTop: null,
+    bodyLockPaddingRight: "",
 
     async init() {
       this.updateViewportMode();
       await Promise.all([
         this.refreshMeta(),
         this.loadSubscriptions(),
+        this.resetSiteSourceForm(),
+        this.refreshSites(),
         this.refreshGallery(true),
         this.loadSettings(),
         this.refreshReview(),
@@ -229,6 +258,14 @@ function galleryApp() {
       };
     },
 
+    setImmediateSiteTaskFeedback(message, extras = {}) {
+      this.siteStatus = {
+        ...this.siteStatus,
+        ...extras,
+        message,
+      };
+    },
+
     notify(tone, title, message) {
       if (this.toastTimer) {
         window.clearTimeout(this.toastTimer);
@@ -289,6 +326,7 @@ function galleryApp() {
       if (this.currentView === "trash") return "Trash";
       if (this.currentView === "settings") return "Settings";
       if (this.currentView === "subscriptions") return "Subscriptions";
+      if (this.currentView === "sites") return "Site Subscriptions";
       return "Library";
     },
 
@@ -299,6 +337,7 @@ function galleryApp() {
       if (this.currentView === "trash") return "内容垃圾桶";
       if (this.currentView === "settings") return "拉取与设置";
       if (this.currentView === "subscriptions") return "订阅管理";
+      if (this.currentView === "sites") return "站点订阅";
       return this.activeCategory().label;
     },
 
@@ -307,6 +346,7 @@ function galleryApp() {
       if (this.currentView === "logs") return "知道每一条动态为什么被筛出去";
       if (this.currentView === "settings") return "同步、账号权限与过滤策略";
       if (this.currentView === "subscriptions") return "统一管理多个 UP 主订阅与内容策略";
+      if (this.currentView === "sites") return "管理 RSS、Sitemap 和 HTML 来源";
       return `${this.activeCategory().label}，按更像系统相册的方式浏览`;
     },
 
@@ -429,6 +469,7 @@ function galleryApp() {
       const previousExpanded = { ...(this.subscriptionExpanded || {}) };
       this.subscriptions = (payload.items || []).map((item) => ({
         ...item,
+        is_site: !!item.is_site || String(item.uid || "").startsWith("site:"),
         pull_images: !!item.pull_images,
         pull_livephoto: !!item.pull_livephoto,
         include_forwarded: !!item.include_forwarded,
@@ -463,6 +504,9 @@ function galleryApp() {
     },
 
     subscriptionBadgeText(item) {
+      if (String(item?.uid || "").startsWith("site:")) {
+        return "站";
+      }
       const source = String(item?.uname || item?.uid || "").trim();
       const chinese = source.match(/[\u4e00-\u9fff]/g);
       if (chinese && chinese.length) {
@@ -570,6 +614,13 @@ function galleryApp() {
       this.closeSidebarDrawer();
       this.scrollViewTop();
       this.loadSubscriptions();
+    },
+
+    openSites() {
+      this.currentView = "sites";
+      this.closeSidebarDrawer();
+      this.scrollViewTop();
+      this.refreshSites();
     },
 
     openSettings() {
@@ -717,6 +768,8 @@ function galleryApp() {
         window.clearTimeout(this.detailCloseTimer);
         this.detailCloseTimer = null;
       }
+      this.cancelDeleteViewerPair();
+      this.pauseCurrentViewerMedia(true);
       this.detailClosing = false;
       this.detailRequestId += 1;
       const requestId = this.detailRequestId;
@@ -734,7 +787,7 @@ function galleryApp() {
           return;
         }
         this.detailLoading = false;
-        this.detail = { open: true, pairs: payload.pairs, folder: payload.folder };
+        this.detail = { open: true, pairs: payload.pairs, folder: payload.folder, videos: payload.videos || [] };
         this.syncBodyLock();
       } catch (error) {
         if (requestId !== this.detailRequestId) {
@@ -756,6 +809,9 @@ function galleryApp() {
     },
 
     openViewerEntry(entry, preservePlayback = false, startImmediately = true, switchDirection = "") {
+      if (!entry?.pair) {
+        return;
+      }
       if (this.viewerCloseTimer) {
         window.clearTimeout(this.viewerCloseTimer);
         this.viewerCloseTimer = null;
@@ -963,27 +1019,39 @@ function galleryApp() {
       const html = document.documentElement;
       const body = document.body;
       if (locked) {
+        if (this.bodyLockTop !== null) {
+          return;
+        }
+        const scrollTop = window.scrollY || window.pageYOffset || 0;
+        const scrollbarWidth = Math.max(window.innerWidth - html.clientWidth, 0);
+        this.bodyLockTop = scrollTop;
+        this.bodyLockPaddingRight = body.style.paddingRight || "";
         html.style.overflow = "hidden";
         body.style.overflow = "hidden";
-        html.style.touchAction = "none";
-        body.style.touchAction = "none";
-        body.style.position = "";
-        body.style.top = "";
+        body.style.position = "fixed";
+        body.style.top = `-${scrollTop}px`;
         body.style.left = "";
         body.style.right = "";
-        body.style.width = "";
+        body.style.width = "100%";
+        if (scrollbarWidth) {
+          body.style.paddingRight = `${scrollbarWidth}px`;
+        }
         return;
       }
+      const scrollTop = this.bodyLockTop;
       html.style.overflow = "";
       body.style.overflow = "";
-      html.style.touchAction = "";
-      body.style.touchAction = "";
       body.style.position = "";
       body.style.top = "";
       body.style.left = "";
       body.style.right = "";
       body.style.width = "";
+      body.style.paddingRight = this.bodyLockPaddingRight || "";
       this.bodyLockTop = null;
+      this.bodyLockPaddingRight = "";
+      if (scrollTop !== null) {
+        window.scrollTo({ top: scrollTop, behavior: "auto" });
+      }
     },
 
     hoverPreview(video, shouldPlay) {
@@ -2711,10 +2779,18 @@ function galleryApp() {
     async refreshStatus() {
       const previousRunning = this.lastRunning;
       const previousTaskId = this.lastTaskId;
-      this.pullStatus = await this.api("/api/pull/status");
+      const previousSiteRunning = this.lastSiteRunning;
+      const previousSiteTaskId = this.lastSiteTaskId;
+      const [pullStatus, health] = await Promise.all([this.api("/api/pull/status"), this.api("/api/health")]);
+      this.pullStatus = pullStatus;
+      this.siteStatus = health.site_status || {};
+      this.siteStats = health.site_stats || {};
       const currentTaskId = this.pullStatus.last_run?.id || null;
+      const currentSiteTaskId = this.siteStatus.last_run?.id || null;
       this.lastRunning = !!this.pullStatus.running;
       this.lastTaskId = currentTaskId;
+      this.lastSiteRunning = !!this.siteStatus.running;
+      this.lastSiteTaskId = currentSiteTaskId;
       if (currentTaskId && currentTaskId !== previousTaskId && !this.pullStatus.running) {
         await Promise.all([
           this.refreshMeta(),
@@ -2723,6 +2799,7 @@ function galleryApp() {
           this.refreshLogs(),
           this.refreshTasks(),
           this.refreshTrash(),
+          this.refreshSites(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
           this.currentView === "settings" ? this.loadSettings() : Promise.resolve(),
         ]);
@@ -2731,8 +2808,18 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.refreshTasks(),
+          this.refreshSites(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
           this.currentView === "settings" ? this.loadSettings() : Promise.resolve(),
+        ]);
+      }
+      if ((currentSiteTaskId && currentSiteTaskId !== previousSiteTaskId && !this.siteStatus.running) || (previousSiteRunning && !this.siteStatus.running)) {
+        await Promise.all([
+          this.refreshMeta(),
+          this.loadSubscriptions(),
+          this.refreshTasks(),
+          this.refreshSites(),
+          this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
         ]);
       }
     },
@@ -2889,6 +2976,314 @@ function galleryApp() {
       this.qr = {};
       await this.loadSettings();
       this.notify("success", "已退出登录", "本地保存的 Cookie 已清除。");
+    },
+
+    async refreshSites() {
+      await Promise.all([
+        this.loadSiteSources(),
+        this.loadSiteRules(),
+        this.loadSiteLogs(),
+      ]);
+    },
+
+    async loadSiteSources() {
+      const payload = await this.api("/api/site-sources");
+      this.siteSources = payload.items || [];
+      const previousDrafts = { ...(this.siteSourceDrafts || {}) };
+      const previousExpanded = { ...(this.siteSourceExpanded || {}) };
+      this.siteSourceDrafts = Object.fromEntries(
+        this.siteSources.map((source) => [
+          String(source.id),
+          previousDrafts[String(source.id)] || this.siteSourceDraftFromSource(source),
+        ]),
+      );
+      this.siteSourceExpanded = Object.fromEntries(
+        this.siteSources.map((source) => [String(source.id), !!previousExpanded[String(source.id)]]),
+      );
+    },
+
+    async loadSiteRules() {
+      this.siteRules = await this.api("/api/site-rules");
+      this.siteRuleText.title_allow = this.joinLines(this.siteRules.title_allow);
+      this.siteRuleText.title_block = this.joinLines(this.siteRules.title_block);
+      this.siteRuleText.tag_allow = this.joinLines(this.siteRules.tag_allow);
+      this.siteRuleText.tag_block = this.joinLines(this.siteRules.tag_block);
+    },
+
+    async loadSiteLogs() {
+      const payload = await this.api("/api/site-filter/logs");
+      this.siteLogs = payload.items || [];
+    },
+
+    resetSiteSourceForm() {
+      this.siteSourceForm = {
+        name: "",
+        slug: "",
+        source_type: "html",
+        entry_url: "",
+        page_url_template: "",
+        max_pages: 1,
+        list_item_selector: "",
+        detail_link_selector: "a",
+        title_selector: "h1",
+        date_selector: "time",
+        tag_selector: ".tag",
+        body_selector: "article, .content, .post-content",
+        media_selector: "article img, article video, article source, .content img, .content video, .content source",
+        skip_head_images: 0,
+        skip_tail_images: 0,
+        enabled: true,
+        start_date: "",
+      };
+      this.sitePreviewItems = [];
+    },
+
+    siteSourceDraftFromSource(source) {
+      return {
+        id: source.id,
+        name: source.name || "",
+        slug: source.slug || "",
+        source_type: source.source_type || "html",
+        entry_url: source.entry_url || "",
+        page_url_template: source.page_url_template || "",
+        max_pages: Number(source.max_pages || 1),
+        list_item_selector: source.list_item_selector || "",
+        detail_link_selector: source.detail_link_selector || "a",
+        title_selector: source.title_selector || "h1",
+        date_selector: source.date_selector || "time",
+        tag_selector: source.tag_selector || ".tag",
+        body_selector: source.body_selector || "article, .content, .post-content",
+        media_selector: source.media_selector || "article img, article video, article source, .content img, .content video, .content source",
+        skip_head_images: Number(source.skip_head_images || 0),
+        skip_tail_images: Number(source.skip_tail_images || 0),
+        enabled: Boolean(source.enabled),
+        start_date: source.start_date || "",
+      };
+    },
+
+    isSiteSourceExpanded(sourceId) {
+      return !!this.siteSourceExpanded[String(sourceId)];
+    },
+
+    toggleSiteSourceExpanded(sourceId) {
+      const key = String(sourceId);
+      this.siteSourceExpanded = {
+        ...this.siteSourceExpanded,
+        [key]: !this.siteSourceExpanded[key],
+      };
+    },
+
+    resetSiteSourceDraft(source) {
+      this.siteSourceDrafts = {
+        ...this.siteSourceDrafts,
+        [String(source.id)]: this.siteSourceDraftFromSource(source),
+      };
+      this.sitePreviewItemsById = {
+        ...this.sitePreviewItemsById,
+        [String(source.id)]: [],
+      };
+    },
+
+    siteSourceStatusText(source) {
+      return source.enabled ? "启用" : "停用";
+    },
+
+    siteSourceCountText(source) {
+      return `贴文 ${source.post_count || 0} · 媒体 ${source.asset_count || 0}`;
+    },
+
+    async saveSiteSource(sourceId = null) {
+      const key = sourceId == null ? null : String(sourceId);
+      if (key && this.siteSourceSavingById[key]) return;
+      if (!key && this.siteSourceSaving) return;
+      const draft = key ? this.siteSourceDrafts[key] : this.siteSourceForm;
+      const body = JSON.stringify(draft);
+      const url = draft.id
+        ? `/api/site-sources/${encodeURIComponent(draft.id)}`
+        : "/api/site-sources";
+      const method = draft.id ? "PUT" : "POST";
+      if (key) {
+        this.siteSourceSavingById = { ...this.siteSourceSavingById, [key]: true };
+      } else {
+        this.siteSourceSaving = true;
+      }
+      this.notify("info", "正在保存站点设置", draft.name || "新站点来源");
+      try {
+        const result = await this.api(url, { method, body });
+        this.notify("success", "站点来源已保存", result.message || "来源配置已更新。");
+        if (!key) {
+          this.resetSiteSourceForm();
+          this.newSiteSourceExpanded = false;
+        }
+        await Promise.all([this.loadSiteSources(), this.refreshStatus()]);
+      } finally {
+        if (key) {
+          this.siteSourceSavingById = { ...this.siteSourceSavingById, [key]: false };
+        } else {
+          this.siteSourceSaving = false;
+        }
+      }
+    },
+
+    async deleteSiteSource(source) {
+      const confirmed = window.confirm(`删除站点来源：${source.name}`);
+      if (!confirmed) return;
+      const result = await this.api(`/api/site-sources/${encodeURIComponent(source.id)}`, { method: "DELETE" });
+      this.notify("success", "站点来源已删除", result.message || "来源已删除。");
+      await Promise.all([this.loadSiteSources(), this.refreshStatus()]);
+    },
+
+    askSiteClearDelete(sourceId) {
+      const normalized = Number(sourceId);
+      if (this.siteClearDeleteConfirmId !== normalized) {
+        this.siteClearDeleteConfirmId = normalized;
+        this.siteClearDeleteConfirmStep = 1;
+        return;
+      }
+      this.siteClearDeleteConfirmStep = Math.min(this.siteClearDeleteConfirmStep + 1, 3);
+    },
+
+    cancelSiteClearDelete() {
+      this.siteClearDeleteConfirmId = null;
+      this.siteClearDeleteConfirmStep = 0;
+    },
+
+    siteClearDeleteLabel(sourceId) {
+      if (this.siteClearDeleteConfirmId !== Number(sourceId)) {
+        return "清空并删除";
+      }
+      if (this.siteClearDeleteConfirmStep === 1) {
+        return "再次确认";
+      }
+      return "最后确认";
+    },
+
+    async confirmSiteClearDelete(sourceId) {
+      if (this.siteClearDeleteConfirmId !== Number(sourceId) || this.siteClearDeleteConfirmStep < 3) {
+        return;
+      }
+      this.cancelSiteClearDelete();
+      const result = await this.api(`/api/site-sources/${encodeURIComponent(sourceId)}/clear-delete`, { method: "POST" });
+      this.notify("success", "站点已清空并删除", result.message || "站点内容已移除。");
+      await Promise.all([
+        this.refreshSites(),
+        this.refreshMeta(),
+        this.loadSubscriptions(),
+        this.refreshGallery(true),
+        this.refreshStatus(),
+      ]);
+    },
+
+    async testSiteSource(sourceId = null) {
+      const key = sourceId == null ? null : String(sourceId);
+      if (key && this.siteTestLoadingById[key]) return;
+      if (!key && this.siteTestLoading) return;
+      const draft = key ? this.siteSourceDrafts[key] : this.siteSourceForm;
+      if (key) {
+        this.siteTestLoadingById = { ...this.siteTestLoadingById, [key]: true };
+        this.sitePreviewItemsById = { ...this.sitePreviewItemsById, [key]: [] };
+      } else {
+        this.siteTestLoading = true;
+        this.sitePreviewItems = [];
+      }
+      try {
+        const payload = await this.api("/api/site-sources/test", {
+          method: "POST",
+          body: JSON.stringify(draft),
+        });
+        if (key) {
+          this.sitePreviewItemsById = { ...this.sitePreviewItemsById, [key]: payload.items || [] };
+        } else {
+          this.sitePreviewItems = payload.items || [];
+        }
+        this.notify("success", "解析完成", `解析到 ${(payload.items || []).length} 条预览。`);
+      } finally {
+        if (key) {
+          this.siteTestLoadingById = { ...this.siteTestLoadingById, [key]: false };
+        } else {
+          this.siteTestLoading = false;
+        }
+      }
+    },
+
+    async syncSiteSource(source) {
+      this.setImmediateSiteTaskFeedback(`正在提交 ${source.name || "站点"} 同步任务...`, { running: true });
+      const result = await this.api(`/api/site-sources/${encodeURIComponent(source.id)}/sync`, { method: "POST" });
+      this.notify("info", "站点同步已提交", result.message || "已开始同步。");
+      await Promise.all([this.refreshStatus(), this.refreshTasks()]);
+    },
+
+    async syncAllSites() {
+      this.setImmediateSiteTaskFeedback("正在提交全部站点同步任务...", { running: true });
+      const result = await this.api("/api/site-sync", { method: "POST" });
+      this.notify("info", "站点同步已提交", result.message || "已开始同步。");
+      await Promise.all([this.refreshStatus(), this.refreshTasks()]);
+    },
+
+    async exportSiteSources() {
+      const payload = await this.api("/api/site-sources/export");
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "site-sources.json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      this.notify("success", "来源配置已导出", "站点来源 JSON 已生成。");
+    },
+
+    async importSiteSources(event) {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+      const payload = JSON.parse(await file.text());
+      const result = await this.api("/api/site-sources/import", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      await Promise.all([this.loadSiteSources(), this.refreshStatus()]);
+      this.notify("success", "导入完成", `新增 ${result.created || 0}，更新 ${result.updated || 0}。`);
+    },
+
+    async saveSiteRules() {
+      const payload = {
+        title_allow: this.splitLines(this.siteRuleText.title_allow),
+        title_block: this.splitLines(this.siteRuleText.title_block),
+        tag_allow: this.splitLines(this.siteRuleText.tag_allow),
+        tag_block: this.splitLines(this.siteRuleText.tag_block),
+        use_regex: Boolean(this.siteRules.use_regex),
+      };
+      this.siteRules = await this.api("/api/site-rules", { method: "PUT", body: JSON.stringify(payload) });
+      this.notify("success", "站点规则已保存", "后续同步会使用新的过滤规则。");
+    },
+
+    async clearSiteLogs() {
+      if (!this.siteLogsClearConfirm) {
+        this.siteLogsClearConfirm = true;
+        return;
+      }
+      this.siteLogsClearConfirm = false;
+      const result = await this.api("/api/site-filter/logs/clear", { method: "POST" });
+      this.siteLogs = [];
+      await this.refreshStatus();
+      this.notify("success", "站点过滤日志已清空", result.message || "历史记录已清理。");
+    },
+
+    cancelClearSiteLogs() {
+      this.siteLogsClearConfirm = false;
+    },
+
+    joinLines(items) {
+      return (items || []).join("\n");
+    },
+
+    splitLines(text) {
+      return String(text || "")
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean);
     },
   };
 }

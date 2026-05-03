@@ -8,8 +8,8 @@
     <script defer src="/static/app.js?v={{ app_version }}"></script>
     <script defer src="/static/vendor/alpinejs.min.js?v={{ app_version }}"></script>
 </head>
-<body>
-    <div class="shell" x-data="galleryApp()" x-init="init()" :class="{ 'sidebar-collapsed': sidebarCollapsed && !compactViewport, 'compact-layout': compactViewport, 'sidebar-drawer-open': sidebarDrawerOpen }" @keydown.escape.window="handleEscape()">
+<body x-data="galleryApp()" x-init="init()">
+    <div class="shell" :class="{ 'sidebar-collapsed': sidebarCollapsed && !compactViewport, 'compact-layout': compactViewport, 'sidebar-drawer-open': sidebarDrawerOpen }">
         <div class="sidebar-backdrop" x-show="compactViewport && sidebarDrawerOpen" x-transition.opacity @click="closeSidebarDrawer()" x-cloak></div>
         <aside class="sidebar" :class="{ collapsed: sidebarCollapsed && !compactViewport, open: sidebarDrawerOpen, compact: compactViewport }">
             <div class="sidebar-head">
@@ -86,6 +86,11 @@
                     <span class="link-badge">订</span>
                     <span class="link-text" x-show="!sidebarCollapsed">订阅管理</span>
                     <span class="link-count" x-show="!sidebarCollapsed" x-text="subscriptions.length"></span>
+                </button>
+                <button class="sidebar-link" data-testid="nav-sites" :class="{ active: currentView === 'sites' }" title="站点订阅" @click="openSites()">
+                    <span class="link-badge">站</span>
+                    <span class="link-text" x-show="!sidebarCollapsed">站点订阅</span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="siteStats.source_count || siteSources.length || 0"></span>
                 </button>
             </section>
 
@@ -307,7 +312,6 @@
                             </div>
                         </div>
                     </div>
-                </div>
             </section>
 
             <section class="panel-view" data-testid="section-review" x-show="currentView === 'review'" x-transition.opacity.duration.180ms x-cloak>
@@ -618,19 +622,20 @@
                             <div class="panel-card-main subscription-card-main">
                                 <div class="subscription-card-title">
                                     <h4 x-text="item.uname || item.uid"></h4>
-                                    <p x-text="`UID ${item.uid}`"></p>
+                                    <p x-text="item.is_site ? '站点标签' : `UID ${item.uid}`"></p>
                                 </div>
                                 <div class="inline-tags subscription-summary-tags">
-                                    <span class="inline-tag" x-text="item.status === 'paused' ? '已暂停' : '订阅中'"></span>
+                                    <span class="inline-tag" x-text="item.is_site ? '站点' : (item.status === 'paused' ? '已暂停' : '订阅中')"></span>
                                     <span class="inline-tag" x-text="`动态 ${item.folder_count || 0}`"></span>
-                                    <span class="inline-tag" x-text="subscriptionThresholdSummary(item)"></span>
-                                    <span class="inline-tag" x-text="subscriptionLivePhotoSummary(item)"></span>
+                                    <span class="inline-tag" x-show="!item.is_site" x-text="subscriptionThresholdSummary(item)"></span>
+                                    <span class="inline-tag" x-show="!item.is_site" x-text="subscriptionLivePhotoSummary(item)"></span>
                                 </div>
                             </div>
                             <span class="subscription-expand-indicator" :class="{ open: isSubscriptionExpanded(item.uid) }">展开</span>
                         </button>
                         <div class="subscription-card-body" x-show="isSubscriptionExpanded(item.uid)" x-transition.opacity.duration.180ms x-cloak>
-                            <div class="subscription-policy-grid">
+                            <p class="field-copy" x-show="item.is_site">这是站点标签入口，站点配置与清空删除请到站点订阅页面管理。</p>
+                            <div class="subscription-policy-grid" x-show="!item.is_site">
                                 <label>
                                     <span>图片阈值</span>
                                     <input class="threshold-input" type="number" min="-1" max="12" :value="item.image_min_count ?? 6" @change="updateSubscriptionSetting(item, 'image_min_count', $event.target.value)">
@@ -644,7 +649,7 @@
                                     <span>包含转发动态</span>
                                 </label>
                             </div>
-                            <div class="panel-card-actions subscription-card-actions">
+                            <div class="panel-card-actions subscription-card-actions" x-show="!item.is_site">
                                 <button class="secondary-button" @click="refreshSubscriptionProfile(item.uid)">刷新昵称</button>
                                 <button class="secondary-button" @click="jumpToSubscriptionSpace(item.uid)">传送</button>
                                 <button class="secondary-button" @click="toggleSubscriptionStatus(item.uid)" x-text="item.status === 'paused' ? '继续订阅' : '暂停订阅'"></button>
@@ -676,6 +681,236 @@
                         </div>
                     </article>
                 </template>
+            </section>
+
+            <section class="panel-view site-pane" data-testid="section-sites" x-show="currentView === 'sites'" x-transition.opacity.duration.160ms x-cloak>
+                <div class="section-heading">
+                    <div>
+                        <p>站点订阅</p>
+                        <h3>来源与规则管理</h3>
+                    </div>
+                    <div class="button-row">
+                        <span class="status-pill" :class="{ running: siteStatus.running }" x-text="siteStatus.message || '空闲'"></span>
+                        <button class="secondary-button" @click="refreshSites()">刷新</button>
+                        <button class="primary-button" @click="syncAllSites()">同步站点</button>
+                    </div>
+                </div>
+
+                <div class="site-stats-row">
+                    <span class="inline-tag" x-text="`来源 ${siteStats.source_count || siteSources.length || 0}`"></span>
+                    <span class="inline-tag" x-text="`贴文 ${siteStats.post_count || 0}`"></span>
+                    <span class="inline-tag" x-text="`媒体 ${siteStats.asset_count || 0}`"></span>
+                    <span class="inline-tag" x-text="`收藏 ${siteStats.favorite_count || 0}`"></span>
+                    <span class="inline-tag" x-text="`屏蔽 ${siteStats.blocked_count || 0}`"></span>
+                </div>
+
+                <div class="site-source-card-list">
+                    <article class="panel-card subscription-card" :class="{ expanded: newSiteSourceExpanded }">
+                        <button class="subscription-card-head" @click="newSiteSourceExpanded = !newSiteSourceExpanded" :aria-expanded="newSiteSourceExpanded">
+                            <div class="panel-card-main subscription-card-main">
+                                <div class="subscription-card-title">
+                                    <h4>新增站点</h4>
+                                    <p>RSS、Sitemap 或 HTML 列表页</p>
+                                </div>
+                                <div class="inline-tags subscription-summary-tags">
+                                    <span class="inline-tag">独立设置</span>
+                                    <span class="inline-tag">测试解析</span>
+                                </div>
+                            </div>
+                            <span class="subscription-expand-indicator" :class="{ open: newSiteSourceExpanded }">展开</span>
+                        </button>
+                        <div class="subscription-card-body" x-show="newSiteSourceExpanded" x-transition.opacity.duration.180ms x-cloak>
+                            <div class="subscription-policy-grid site-policy-grid">
+                                <label>名称<input x-model="siteSourceForm.name" required></label>
+                                <label>Slug<input x-model="siteSourceForm.slug" placeholder="自动生成"></label>
+                                <label>类型
+                                    <select x-model="siteSourceForm.source_type">
+                                        <option value="html">HTML 列表页</option>
+                                        <option value="rss">RSS</option>
+                                        <option value="sitemap">Sitemap</option>
+                                    </select>
+                                </label>
+                                <label>入口 URL<input x-model="siteSourceForm.entry_url" required placeholder="https://example.com/feed.xml"></label>
+                                <label>分页模板<input x-model="siteSourceForm.page_url_template" placeholder="https://example.com/page/{page}"></label>
+                                <label>最大页数<input type="number" min="1" x-model.number="siteSourceForm.max_pages"></label>
+                                <label>列表项选择器<input x-model="siteSourceForm.list_item_selector" placeholder=".post-card"></label>
+                                <label>详情链接选择器<input x-model="siteSourceForm.detail_link_selector" placeholder="a"></label>
+                                <label>标题选择器<input x-model="siteSourceForm.title_selector" placeholder="h1"></label>
+                                <label>日期选择器<input x-model="siteSourceForm.date_selector" placeholder="time"></label>
+                                <label>tag 选择器<input x-model="siteSourceForm.tag_selector" placeholder=".tag"></label>
+                                <label>正文选择器<input x-model="siteSourceForm.body_selector" placeholder="article, .content"></label>
+                                <label>媒体选择器<input x-model="siteSourceForm.media_selector" placeholder=".content img, video source"></label>
+                                <label>跳过头部图片数<input type="number" min="0" x-model.number="siteSourceForm.skip_head_images"></label>
+                                <label>跳过尾部图片数<input type="number" min="0" x-model.number="siteSourceForm.skip_tail_images"></label>
+                                <label>起始日期<input type="date" x-model="siteSourceForm.start_date"></label>
+                                <label class="toggle-row switch-row"><input type="checkbox" x-model="siteSourceForm.enabled"><span>启用来源</span></label>
+                            </div>
+                            <div class="panel-card-actions subscription-card-actions">
+                                <button class="primary-button" @click="saveSiteSource()" :disabled="siteSourceSaving" x-text="siteSourceSaving ? '保存中' : '保存来源'"></button>
+                                <button class="secondary-button" @click="testSiteSource()" :disabled="siteTestLoading" x-text="siteTestLoading ? '解析中' : '测试解析'"></button>
+                                <button class="secondary-button" @click="resetSiteSourceForm()">清空</button>
+                            </div>
+                            <div class="site-preview-list" x-show="sitePreviewItems.length" x-cloak>
+                                <h4>测试结果</h4>
+                                <template x-for="item in sitePreviewItems" :key="item.url">
+                                    <div class="site-preview-row">
+                                        <strong x-text="item.title"></strong>
+                                        <span x-text="item.pub_date || '无日期'"></span>
+                                        <small x-text="item.url"></small>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </article>
+
+                    <template x-for="source in siteSources" :key="source.id">
+                        <article class="panel-card subscription-card" :class="{ expanded: isSiteSourceExpanded(source.id) }">
+                            <button class="subscription-card-head" @click="toggleSiteSourceExpanded(source.id)" :aria-expanded="isSiteSourceExpanded(source.id)">
+                                <div class="panel-card-main subscription-card-main">
+                                    <div class="subscription-card-title">
+                                        <h4 x-text="source.name"></h4>
+                                        <p x-text="source.entry_url"></p>
+                                    </div>
+                                    <div class="inline-tags subscription-summary-tags">
+                                        <span class="inline-tag" x-text="source.source_type"></span>
+                                        <span class="inline-tag" x-text="siteSourceStatusText(source)"></span>
+                                        <span class="inline-tag" x-text="siteSourceCountText(source)"></span>
+                                        <span class="inline-tag" x-text="source.start_date || '默认起始日期'"></span>
+                                    </div>
+                                </div>
+                                <span class="subscription-expand-indicator" :class="{ open: isSiteSourceExpanded(source.id) }">展开</span>
+                            </button>
+                            <div class="subscription-card-body" x-show="isSiteSourceExpanded(source.id)" x-transition.opacity.duration.180ms x-cloak>
+                                <div class="subscription-policy-grid site-policy-grid">
+                                    <label>名称<input x-model="siteSourceDrafts[source.id].name" required></label>
+                                    <label>Slug<input x-model="siteSourceDrafts[source.id].slug" placeholder="自动生成"></label>
+                                    <label>类型
+                                        <select x-model="siteSourceDrafts[source.id].source_type">
+                                            <option value="html">HTML 列表页</option>
+                                            <option value="rss">RSS</option>
+                                            <option value="sitemap">Sitemap</option>
+                                        </select>
+                                    </label>
+                                    <label>入口 URL<input x-model="siteSourceDrafts[source.id].entry_url" required placeholder="https://example.com/feed.xml"></label>
+                                    <label>分页模板<input x-model="siteSourceDrafts[source.id].page_url_template" placeholder="https://example.com/page/{page}"></label>
+                                    <label>最大页数<input type="number" min="1" x-model.number="siteSourceDrafts[source.id].max_pages"></label>
+                                    <label>列表项选择器<input x-model="siteSourceDrafts[source.id].list_item_selector" placeholder=".post-card"></label>
+                                    <label>详情链接选择器<input x-model="siteSourceDrafts[source.id].detail_link_selector" placeholder="a"></label>
+                                    <label>标题选择器<input x-model="siteSourceDrafts[source.id].title_selector" placeholder="h1"></label>
+                                    <label>日期选择器<input x-model="siteSourceDrafts[source.id].date_selector" placeholder="time"></label>
+                                    <label>tag 选择器<input x-model="siteSourceDrafts[source.id].tag_selector" placeholder=".tag"></label>
+                                    <label>正文选择器<input x-model="siteSourceDrafts[source.id].body_selector" placeholder="article, .content"></label>
+                                    <label>媒体选择器<input x-model="siteSourceDrafts[source.id].media_selector" placeholder=".content img, video source"></label>
+                                    <label>跳过头部图片数<input type="number" min="0" x-model.number="siteSourceDrafts[source.id].skip_head_images"></label>
+                                    <label>跳过尾部图片数<input type="number" min="0" x-model.number="siteSourceDrafts[source.id].skip_tail_images"></label>
+                                    <label>起始日期<input type="date" x-model="siteSourceDrafts[source.id].start_date"></label>
+                                    <label class="toggle-row switch-row"><input type="checkbox" x-model="siteSourceDrafts[source.id].enabled"><span>启用来源</span></label>
+                                </div>
+                                <div class="panel-card-actions subscription-card-actions">
+                                    <button class="primary-button" @click="saveSiteSource(source.id)" :disabled="siteSourceSavingById[source.id]" x-text="siteSourceSavingById[source.id] ? '保存中' : '保存设置'"></button>
+                                    <button class="secondary-button" @click="testSiteSource(source.id)" :disabled="siteTestLoadingById[source.id]" x-text="siteTestLoadingById[source.id] ? '解析中' : '测试解析'"></button>
+                                    <button class="secondary-button" @click="syncSiteSource(source)">同步</button>
+                                    <button class="secondary-button" @click="resetSiteSourceDraft(source)">还原</button>
+                                    <button class="secondary-button danger-button" @click="deleteSiteSource(source)">删除</button>
+                                    <template x-if="siteClearDeleteConfirmId !== source.id || siteClearDeleteConfirmStep < 3">
+                                        <div class="button-row confirm-row">
+                                            <button class="secondary-button danger-button confirm-anchor" @click="askSiteClearDelete(source.id)" x-text="siteClearDeleteLabel(source.id)"></button>
+                                            <button class="secondary-button" x-show="siteClearDeleteConfirmId === source.id" @click="cancelSiteClearDelete()">取消</button>
+                                        </div>
+                                    </template>
+                                    <template x-if="siteClearDeleteConfirmId === source.id && siteClearDeleteConfirmStep >= 3">
+                                        <div class="button-row confirm-row">
+                                            <button class="primary-button danger-confirm confirm-anchor" @click="confirmSiteClearDelete(source.id)">确认清空并删除</button>
+                                            <button class="secondary-button" @click="cancelSiteClearDelete()">取消</button>
+                                        </div>
+                                    </template>
+                                </div>
+                                <div class="site-preview-list" x-show="sitePreviewItemsById[source.id]?.length" x-cloak>
+                                    <h4>测试结果</h4>
+                                    <template x-for="item in sitePreviewItemsById[source.id] || []" :key="item.url">
+                                        <div class="site-preview-row">
+                                            <strong x-text="item.title"></strong>
+                                            <span x-text="item.pub_date || '无日期'"></span>
+                                            <small x-text="item.url"></small>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                        </article>
+                    </template>
+                    <p class="empty-state" x-show="!siteSources.length">暂无站点来源</p>
+                </div>
+
+                <div class="site-main-column">
+
+                        <article class="panel-card subscription-card" :class="{ expanded: siteRulesExpanded }">
+                            <button class="subscription-card-head" @click="siteRulesExpanded = !siteRulesExpanded" :aria-expanded="siteRulesExpanded">
+                                <div class="panel-card-main subscription-card-main">
+                                    <div class="subscription-card-title">
+                                        <h4>站点过滤规则</h4>
+                                        <p>全局标题和 tag 白名单、黑名单</p>
+                                    </div>
+                                    <div class="inline-tags subscription-summary-tags">
+                                        <span class="inline-tag" x-text="siteRules.use_regex ? '正则匹配' : '文本匹配'"></span>
+                                        <span class="inline-tag" x-text="`标题白 ${splitLines(siteRuleText.title_allow).length}`"></span>
+                                        <span class="inline-tag" x-text="`标题黑 ${splitLines(siteRuleText.title_block).length}`"></span>
+                                        <span class="inline-tag" x-text="`tag 白 ${splitLines(siteRuleText.tag_allow).length}`"></span>
+                                        <span class="inline-tag" x-text="`tag 黑 ${splitLines(siteRuleText.tag_block).length}`"></span>
+                                    </div>
+                                </div>
+                                <span class="subscription-expand-indicator" :class="{ open: siteRulesExpanded }">展开</span>
+                            </button>
+                            <div class="subscription-card-body" x-show="siteRulesExpanded" x-transition.opacity.duration.180ms x-cloak>
+                                <div class="subscription-policy-grid site-policy-grid">
+                                    <label>标题白名单<textarea x-model="siteRuleText.title_allow"></textarea></label>
+                                    <label>标题黑名单<textarea x-model="siteRuleText.title_block"></textarea></label>
+                                    <label>tag 白名单<textarea x-model="siteRuleText.tag_allow"></textarea></label>
+                                    <label>tag 黑名单<textarea x-model="siteRuleText.tag_block"></textarea></label>
+                                    <label class="toggle-row"><input type="checkbox" x-model="siteRules.use_regex"><span>使用正则匹配</span></label>
+                                </div>
+                                <div class="panel-card-actions subscription-card-actions">
+                                    <button class="primary-button" @click="saveSiteRules()">保存规则</button>
+                                </div>
+                            </div>
+                        </article>
+
+                        <article class="panel-card subscription-card" :class="{ expanded: siteLogsExpanded }">
+                            <button class="subscription-card-head" @click="siteLogsExpanded = !siteLogsExpanded" :aria-expanded="siteLogsExpanded">
+                                <div class="panel-card-main subscription-card-main">
+                                    <div class="subscription-card-title">
+                                        <h4>站点过滤日志</h4>
+                                        <p>最近的站点解析过滤记录</p>
+                                    </div>
+                                    <div class="inline-tags subscription-summary-tags">
+                                        <span class="inline-tag" x-text="`记录 ${siteLogs.length || 0}`"></span>
+                                    </div>
+                                </div>
+                                <span class="subscription-expand-indicator" :class="{ open: siteLogsExpanded }">展开</span>
+                            </button>
+                            <div class="subscription-card-body" x-show="siteLogsExpanded" x-transition.opacity.duration.180ms x-cloak>
+                                <div class="panel-card-actions subscription-card-actions">
+                                    <template x-if="!siteLogsClearConfirm">
+                                        <button class="secondary-button danger-button" @click="clearSiteLogs()" :disabled="!siteLogs.length">清空历史</button>
+                                    </template>
+                                    <template x-if="siteLogsClearConfirm">
+                                        <div class="button-row confirm-row">
+                                            <button class="primary-button danger-confirm confirm-anchor" @click="clearSiteLogs()">确认清空历史</button>
+                                            <button class="secondary-button" @click="cancelClearSiteLogs()">取消</button>
+                                        </div>
+                                    </template>
+                                </div>
+                                <template x-for="log in siteLogs" :key="log.id">
+                                    <div class="site-log-row">
+                                        <strong x-text="log.decision"></strong>
+                                        <span x-text="log.title || log.post_url"></span>
+                                        <small x-text="log.reason"></small>
+                                    </div>
+                                </template>
+                                <p class="empty-state" x-show="!siteLogs.length">暂无站点过滤日志</p>
+                            </div>
+                        </article>
+                    </div>
+                </div>
             </section>
         </main>
 
@@ -758,6 +993,14 @@
                                 </div>
                             </div>
                         </button>
+                    </template>
+                </div>
+                <div class="site-asset-grid detail-video-grid" x-show="detail.videos?.length" x-cloak>
+                    <template x-for="video in detail.videos" :key="video.id">
+                        <article class="site-asset-card">
+                            <video :src="video.url" controls preload="metadata"></video>
+                            <small x-text="video.filename"></small>
+                        </article>
                     </template>
                 </div>
             </section>

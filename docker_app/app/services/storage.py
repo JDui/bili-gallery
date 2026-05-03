@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 from app.config import AppConfig
+from app.services.utils import date_key, safe_slug
 
 
 class StorageService:
@@ -20,6 +21,25 @@ class StorageService:
 
     def livephoto_folder(self, folder_name: str) -> Path:
         return self.config.livephoto_dir / folder_name
+
+    def site_post_folder(self, source_slug: str, pub_date: str | None, post_slug: str) -> Path:
+        folder = (
+            self.config.data_dir
+            / "sites"
+            / safe_slug(source_slug, "source")
+            / date_key(pub_date)
+            / safe_slug(post_slug, "post")
+        )
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def remove_site_source_assets(self, source_slug: str) -> int:
+        folder = self.config.data_dir / "sites" / safe_slug(source_slug, "source")
+        if not folder.exists():
+            return 0
+        removed = sum(1 for item in folder.rglob("*") if item.is_file())
+        shutil.rmtree(folder)
+        return removed
 
     def remove_folder_assets(self, folder_name: str) -> int:
         removed = 0

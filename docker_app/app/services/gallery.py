@@ -89,6 +89,7 @@ class GalleryService:
         assets = self.db.list_assets_for_folder(folder_name)
         images = [self._asset_json(asset) for asset in assets if asset["media_type"] == "image"]
         livephotos = [self._asset_json(asset) for asset in assets if asset["media_type"] == "livephoto"]
+        videos = [self._asset_json(asset) for asset in assets if asset["media_type"] == "video"]
         pair_map: dict[int, dict] = {}
         for image in images:
             pair_map.setdefault(image["pair_index"], {})["image"] = image
@@ -122,6 +123,7 @@ class GalleryService:
             "pairs": pairs,
             "images": images,
             "livephotos": livephotos,
+            "videos": videos,
         }
 
     def _folder_card_from_index(self, item: dict) -> dict:

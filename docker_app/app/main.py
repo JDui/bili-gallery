@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -17,6 +17,7 @@ from app.services.legacy_import import LegacyImporter
 from app.services.media_indexer import MediaIndexer
 from app.services.puller import PullManager
 from app.services.scheduler import SchedulerService
+from app.services.site_syncer import SiteSyncManager
 from app.services.storage import StorageService
 from app.services.thumbnailer import ThumbnailService
 from app.services.utils import loads_json
@@ -32,7 +33,10 @@ auth = BilibiliAuthService(db)
 gallery = GalleryService(db, storage)
 legacy_importer = LegacyImporter(db, storage, indexer, config.repo_root)
 pull_manager = PullManager(db, storage, indexer, cleanup, auth, legacy_importer)
-scheduler = SchedulerService(db, pull_manager)
+site_syncer = SiteSyncManager(db, storage, indexer)
+pull_manager.attach_site_syncer(site_syncer)
+site_syncer.bind_task_queue(pull_manager)
+scheduler = SchedulerService(db, pull_manager, site_syncer)
 templates = Jinja2Templates(directory=str(config.app_root / "templates"))
 
 
@@ -72,6 +76,8 @@ async def health() -> dict[str, Any]:
         "ok": True,
         "app": app.title,
         "status": pull_manager.status(),
+        "site_status": site_syncer.status(),
+        "site_stats": db.site_stats(),
         "gallery_index": db.gallery_index_status(),
     }
 
@@ -126,6 +132,171 @@ async def toggle_favorite(folder_name: str, payload: dict[str, Any] = Body(defau
     return {"ok": True, "favorite": favorite, "message": "已加入收藏" if favorite else "已取消收藏"}
 
 
+@app.get("/api/site-sources")
+async def list_site_sources() -> dict[str, Any]:
+    stats_by_source: dict[int, dict[str, int]] = {}
+    for post in db.list_site_posts(category="all"):
+        source_id = int(post.get("source_id") or 0)
+        stat = stats_by_source.setdefault(source_id, {"post_count": 0, "asset_count": 0})
+        stat["post_count"] += 1
+        stat["asset_count"] += int(post.get("asset_count") or 0)
+    for post in db.list_site_posts(category="blocked"):
+        source_id = int(post.get("source_id") or 0)
+        stat = stats_by_source.setdefault(source_id, {"post_count": 0, "asset_count": 0})
+        stat["post_count"] += 1
+        stat["asset_count"] += int(post.get("asset_count") or 0)
+    return {
+        "items": [
+            {
+                **source,
+                **stats_by_source.get(int(source["id"]), {"post_count": 0, "asset_count": 0}),
+            }
+            for source in db.list_site_sources()
+        ]
+    }
+
+
+@app.get("/api/site-sources/export")
+async def export_site_sources() -> JSONResponse:
+    return JSONResponse(
+        db.export_site_sources(),
+        headers={"Content-Disposition": 'attachment; filename="site-sources.json"'},
+    )
+
+
+@app.post("/api/site-sources/import")
+async def import_site_sources(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        result = db.import_site_sources(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **result}
+
+
+@app.post("/api/site-sources")
+async def create_site_source(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    if not payload.get("entry_url"):
+        raise HTTPException(status_code=400, detail="请输入入口 URL")
+    try:
+        return {"ok": True, "message": "站点来源已保存", "item": db.create_site_source(payload)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/site-sources/{source_id}")
+async def update_site_source(source_id: int, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        item = db.update_site_source(source_id, payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not item:
+        raise HTTPException(status_code=404, detail="站点来源不存在")
+    return {"ok": True, "message": "站点来源已更新", "item": item}
+
+
+@app.delete("/api/site-sources/{source_id}")
+async def delete_site_source(source_id: int) -> dict[str, Any]:
+    if not db.delete_site_source(source_id):
+        raise HTTPException(status_code=404, detail="站点来源不存在")
+    return {"ok": True, "message": "站点来源已删除"}
+
+
+@app.post("/api/site-sources/{source_id}/clear-delete")
+async def clear_delete_site_source(source_id: int) -> dict[str, Any]:
+    source = db.get_site_source(source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="站点来源不存在")
+    folders = db.list_site_gallery_folders(source_id)
+    result = db.clear_site_source_and_gallery(source_id)
+    removed_files = 0
+    for folder in folders:
+        removed_files += storage.remove_folder_assets(folder["folder_name"])
+    removed_files += storage.remove_site_source_assets(source.get("slug") or source.get("name") or str(source_id))
+    return {
+        "ok": True,
+        "message": f"已清空并删除站点，移除 {result['posts']} 条贴文和 {result['folders']} 个图库项目",
+        "removed_files": removed_files,
+        **result,
+    }
+
+
+@app.post("/api/site-sources/{source_id}/sync")
+async def sync_site_source(source_id: int) -> dict[str, Any]:
+    if not db.get_site_source(source_id):
+        raise HTTPException(status_code=404, detail="站点来源不存在")
+    return site_syncer.start_sync(source_id)
+
+
+@app.post("/api/site-sources/test")
+async def test_site_source(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        return {"ok": True, "items": site_syncer.test_source(payload)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/site-sync")
+async def sync_all_site_sources() -> dict[str, Any]:
+    return site_syncer.start_sync()
+
+
+@app.get("/api/site-posts")
+async def list_site_posts(category: str = "all", source_id: int | None = None, q: str = "") -> dict[str, Any]:
+    return {"items": db.list_site_posts(category=category, source_id=source_id, q=q)}
+
+
+@app.get("/api/site-posts/{post_id}")
+async def get_site_post(post_id: int) -> dict[str, Any]:
+    item = db.get_site_post(post_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="站点贴文不存在")
+    assets = db.list_site_assets(post_id)
+    for asset in assets:
+        asset["url_local"] = f"/storage/{asset['rel_path']}" if asset.get("rel_path") else None
+    return {"item": item, "assets": assets}
+
+
+@app.post("/api/site-posts/{post_id}/favorite")
+async def toggle_site_post_favorite(post_id: int, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    current = db.get_site_post(post_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="站点贴文不存在")
+    value = bool(payload.get("favorite", not current.get("is_favorite")))
+    return {"ok": True, "item": db.set_site_post_flag(post_id, "is_favorite", value)}
+
+
+@app.post("/api/site-posts/{post_id}/block")
+async def toggle_site_post_block(post_id: int, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    current = db.get_site_post(post_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="站点贴文不存在")
+    value = bool(payload.get("blocked", not current.get("is_blocked")))
+    db.set_site_post_flag(post_id, "is_blocked", value)
+    db.set_site_post_status(post_id, "blocked" if value else "ready", "手动屏蔽" if value else None)
+    return {"ok": True, "item": db.get_site_post(post_id)}
+
+
+@app.get("/api/site-rules")
+async def get_site_rules() -> dict[str, Any]:
+    return db.get_site_rules()
+
+
+@app.put("/api/site-rules")
+async def save_site_rules(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    return db.save_site_rules(payload)
+
+
+@app.get("/api/site-filter/logs")
+async def site_filter_logs(limit: int = 200) -> dict[str, Any]:
+    return {"items": db.list_site_filter_logs(limit=limit)}
+
+
+@app.post("/api/site-filter/logs/clear")
+async def clear_site_filter_logs() -> dict[str, Any]:
+    removed = db.clear_site_filter_logs()
+    return {"ok": True, "message": f"已清理 {removed} 条站点过滤日志", "removed": removed}
+
+
 def _subscription_stats() -> list[dict[str, Any]]:
     if db.gallery_index_ready():
         stats_by_uid = {
@@ -167,6 +338,25 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "folder_count": stat.get("folder_count", 0),
                 "image_count": stat.get("image_count", 0),
                 "livephoto_count": stat.get("livephoto_count", 0),
+            }
+        )
+    existing_uids = {str(item["uid"]) for item in output}
+    for uid, stat in sorted(stats_by_uid.items(), key=lambda item: str(item[1].get("uname") or item[0]).lower()):
+        if not uid.startswith("site:") or uid in existing_uids:
+            continue
+        output.append(
+            {
+                "uid": uid,
+                "uname": stat.get("uname") or stat.get("name") or uid,
+                "status": "active",
+                "pull_images": 1,
+                "image_min_count": 1,
+                "pull_livephoto": 0,
+                "include_forwarded": 0,
+                "folder_count": stat.get("folder_count", 0),
+                "image_count": stat.get("image_count", 0),
+                "livephoto_count": stat.get("livephoto_count", 0),
+                "is_site": True,
             }
         )
     return output

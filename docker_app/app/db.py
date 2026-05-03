@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.services.utils import dumps_json, loads_json, now_iso
+from app.services.utils import dumps_json, loads_json, now_iso, safe_slug
 
 
 DEFAULT_SETTINGS = {
@@ -38,8 +38,26 @@ DEFAULT_SETTINGS = {
     "gallery_index_rebuilt_at": None,
     "gallery_index_rebuilding": False,
     "auto_gallery_index_check": True,
+    "site_default_start_date": "2026-04-01",
+    "site_request_sleep": 0.4,
+    "site_request_timeout": 300,
+    "site_max_media_per_post": 100,
+    "site_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
 }
+LEGACY_SITE_USER_AGENTS = {
+    "PostArchiver/0.1 (+authorized personal archive)",
+    "PostArchiver/0.1",
+}
+LEGACY_SITE_REQUEST_TIMEOUTS = {20, 120}
 GALLERY_INDEX_VERSION = 1
+
+DEFAULT_SITE_RULES = {
+    "title_allow": [],
+    "title_block": [],
+    "tag_allow": [],
+    "tag_block": [],
+    "use_regex": False,
+}
 
 
 class Database:
@@ -200,6 +218,78 @@ class Database:
                     updated_at text not null
                 );
 
+                create table if not exists site_rules (
+                    key text primary key,
+                    value text not null
+                );
+
+                create table if not exists site_sources (
+                    id integer primary key autoincrement,
+                    name text not null,
+                    slug text not null unique,
+                    source_type text not null,
+                    entry_url text not null,
+                    page_url_template text,
+                    max_pages integer not null default 1,
+                    list_item_selector text,
+                    detail_link_selector text,
+                    title_selector text,
+                    date_selector text,
+                    tag_selector text,
+                    body_selector text,
+                    media_selector text,
+                    skip_head_images integer not null default 0,
+                    skip_tail_images integer not null default 0,
+                    enabled integer not null default 1,
+                    start_date text,
+                    created_at text not null,
+                    updated_at text not null
+                );
+
+                create table if not exists site_posts (
+                    id integer primary key autoincrement,
+                    source_id integer not null references site_sources(id) on delete cascade,
+                    url text not null,
+                    title text not null,
+                    slug text not null,
+                    pub_date text,
+                    tags_json text not null default '[]',
+                    excerpt text,
+                    status text not null default 'new',
+                    filter_reason text,
+                    is_favorite integer not null default 0,
+                    is_blocked integer not null default 0,
+                    asset_count integer not null default 0,
+                    downloaded_count integer not null default 0,
+                    created_at text not null,
+                    updated_at text not null,
+                    unique(source_id, url)
+                );
+
+                create table if not exists site_assets (
+                    id integer primary key autoincrement,
+                    post_id integer not null references site_posts(id) on delete cascade,
+                    url text not null,
+                    media_type text not null,
+                    filename text not null,
+                    rel_path text,
+                    status text not null default 'pending',
+                    error text,
+                    created_at text not null,
+                    updated_at text not null,
+                    unique(post_id, url)
+                );
+
+                create table if not exists site_filter_logs (
+                    id integer primary key autoincrement,
+                    source_id integer,
+                    post_url text not null,
+                    title text,
+                    decision text not null,
+                    reason text,
+                    created_at text not null
+                );
+
                 create table if not exists folder_index (
                     folder_name text primary key references folders(folder_name) on delete cascade,
                     title text,
@@ -258,6 +348,10 @@ class Database:
                 create index if not exists idx_deleted_pair_marks_dynamic on deleted_pair_marks(top_dynamic_id, source_dynamic_id, pair_index);
                 create index if not exists idx_trash_items_deleted on trash_items(deleted_at desc);
                 create index if not exists idx_subscriptions_status on subscriptions(status, updated_at desc);
+                create index if not exists idx_site_posts_source_date on site_posts(source_id, pub_date desc);
+                create index if not exists idx_site_posts_flags on site_posts(is_favorite, is_blocked, status);
+                create index if not exists idx_site_assets_post on site_assets(post_id, status);
+                create index if not exists idx_site_filter_logs_created on site_filter_logs(created_at desc);
                 create index if not exists idx_folder_index_pub_ts on folder_index(pub_ts desc, folder_name desc);
                 create index if not exists idx_folder_index_subscription_pub_ts on folder_index(subscription_uid, pub_ts desc, folder_name desc);
                 create index if not exists idx_folder_index_review_pub_ts on folder_index(review_status, pub_ts desc, folder_name desc);
@@ -277,7 +371,10 @@ class Database:
             self._ensure_column(conn, "subscriptions", "image_min_count", "integer not null default 1")
             self._ensure_column(conn, "subscriptions", "pull_livephoto", "integer not null default 1")
             self._ensure_column(conn, "subscriptions", "include_forwarded", "integer not null default 1")
+            self._ensure_column(conn, "site_sources", "skip_head_images", "integer not null default 0")
+            self._ensure_column(conn, "site_sources", "skip_tail_images", "integer not null default 0")
             self._ensure_default_settings(conn)
+            self._ensure_default_site_rules(conn)
             conn.execute("insert or ignore into auth_state(id, qr_status) values (1, 'idle')")
             self._ensure_default_subscription(conn)
             self._migrate_subscription_policies(conn)
@@ -288,6 +385,31 @@ class Database:
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute(
                 "insert or ignore into settings(key, value) values (?, ?)",
+                (key, dumps_json(value)),
+            )
+        row = conn.execute("select value from settings where key = 'site_user_agent'").fetchone()
+        current = loads_json(row["value"], "") if row else ""
+        if current in LEGACY_SITE_USER_AGENTS:
+            conn.execute(
+                "update settings set value = ? where key = 'site_user_agent'",
+                (dumps_json(DEFAULT_SETTINGS["site_user_agent"]),),
+            )
+        row = conn.execute("select value from settings where key = 'site_request_timeout'").fetchone()
+        current_timeout = loads_json(row["value"], 20) if row else 20
+        try:
+            normalized_timeout = int(current_timeout or 0)
+        except (TypeError, ValueError):
+            normalized_timeout = 0
+        if normalized_timeout in LEGACY_SITE_REQUEST_TIMEOUTS:
+            conn.execute(
+                "update settings set value = ? where key = 'site_request_timeout'",
+                (dumps_json(DEFAULT_SETTINGS["site_request_timeout"]),),
+            )
+
+    def _ensure_default_site_rules(self, conn: sqlite3.Connection) -> None:
+        for key, value in DEFAULT_SITE_RULES.items():
+            conn.execute(
+                "insert or ignore into site_rules(key, value) values (?, ?)",
                 (key, dumps_json(value)),
             )
 
@@ -455,6 +577,453 @@ class Database:
                 "gallery_index_rebuilding": False,
             }
         )
+
+    def get_site_rules(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            rows = conn.execute("select key, value from site_rules").fetchall()
+        output = dict(DEFAULT_SITE_RULES)
+        for row in rows:
+            output[row["key"]] = loads_json(row["value"], output.get(row["key"]))
+        return output
+
+    def save_site_rules(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.connect() as conn:
+            for key in DEFAULT_SITE_RULES:
+                if key not in payload:
+                    continue
+                value = payload[key]
+                if key != "use_regex":
+                    value = [str(item).strip() for item in (value or []) if str(item).strip()]
+                conn.execute(
+                    """
+                    insert into site_rules(key, value) values (?, ?)
+                    on conflict(key) do update set value = excluded.value
+                    """,
+                    (key, dumps_json(value)),
+                )
+        return self.get_site_rules()
+
+    def list_site_sources(self, include_disabled: bool = True) -> list[dict[str, Any]]:
+        sql = "select * from site_sources"
+        params: tuple[Any, ...] = ()
+        if not include_disabled:
+            sql += " where enabled = 1"
+        sql += " order by updated_at desc, id desc"
+        with self.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_site_source(self, source_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("select * from site_sources where id = ?", (int(source_id),)).fetchone()
+        return dict(row) if row else None
+
+    def create_site_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+        now = now_iso()
+        name = str(payload.get("name") or "未命名来源").strip()
+        slug = safe_slug(str(payload.get("slug") or name), "source")
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                insert into site_sources(
+                    name, slug, source_type, entry_url, page_url_template, max_pages,
+                    list_item_selector, detail_link_selector, title_selector, date_selector,
+                    tag_selector, body_selector, media_selector, skip_head_images, skip_tail_images,
+                    enabled, start_date, created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    slug,
+                    str(payload.get("source_type") or "html"),
+                    str(payload.get("entry_url") or "").strip(),
+                    payload.get("page_url_template") or None,
+                    max(int(payload.get("max_pages") or 1), 1),
+                    payload.get("list_item_selector") or None,
+                    payload.get("detail_link_selector") or None,
+                    payload.get("title_selector") or None,
+                    payload.get("date_selector") or None,
+                    payload.get("tag_selector") or None,
+                    payload.get("body_selector") or None,
+                    payload.get("media_selector") or None,
+                    max(int(payload.get("skip_head_images") or 0), 0),
+                    max(int(payload.get("skip_tail_images") or 0), 0),
+                    1 if payload.get("enabled", True) else 0,
+                    payload.get("start_date") or None,
+                    now,
+                    now,
+                ),
+            )
+            source_id = int(cur.lastrowid)
+        item = self.get_site_source(source_id)
+        if not item:
+            raise RuntimeError("站点来源创建失败")
+        return item
+
+    def update_site_source(self, source_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+        current = self.get_site_source(source_id)
+        if not current:
+            return None
+        merged = {**current, **payload}
+        merged["slug"] = safe_slug(str(merged.get("slug") or merged.get("name")), "source")
+        with self.connect() as conn:
+            conn.execute(
+                """
+                update site_sources set
+                    name = ?, slug = ?, source_type = ?, entry_url = ?, page_url_template = ?,
+                    max_pages = ?, list_item_selector = ?, detail_link_selector = ?,
+                    title_selector = ?, date_selector = ?, tag_selector = ?, body_selector = ?,
+                    media_selector = ?, skip_head_images = ?, skip_tail_images = ?,
+                    enabled = ?, start_date = ?, updated_at = ?
+                where id = ?
+                """,
+                (
+                    merged["name"],
+                    merged["slug"],
+                    merged["source_type"],
+                    merged["entry_url"],
+                    merged.get("page_url_template") or None,
+                    max(int(merged.get("max_pages") or 1), 1),
+                    merged.get("list_item_selector") or None,
+                    merged.get("detail_link_selector") or None,
+                    merged.get("title_selector") or None,
+                    merged.get("date_selector") or None,
+                    merged.get("tag_selector") or None,
+                    merged.get("body_selector") or None,
+                    merged.get("media_selector") or None,
+                    max(int(merged.get("skip_head_images") or 0), 0),
+                    max(int(merged.get("skip_tail_images") or 0), 0),
+                    1 if merged.get("enabled") else 0,
+                    merged.get("start_date") or None,
+                    now_iso(),
+                    int(source_id),
+                ),
+            )
+        return self.get_site_source(source_id)
+
+    def delete_site_source(self, source_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute("delete from site_sources where id = ?", (int(source_id),))
+            return cur.rowcount > 0
+
+    def site_subscription_uid(self, source_id: int | str) -> str:
+        return f"site:{source_id}"
+
+    def list_site_gallery_folders(self, source_id: int) -> list[dict[str, Any]]:
+        uid = self.site_subscription_uid(source_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "select * from folders where subscription_uid = ? order by folder_name asc",
+                (uid,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_site_source_and_gallery(self, source_id: int) -> dict[str, Any]:
+        uid = self.site_subscription_uid(source_id)
+        with self.connect() as conn:
+            folder_rows = conn.execute(
+                "select folder_name from folders where subscription_uid = ? order by folder_name asc",
+                (uid,),
+            ).fetchall()
+            folder_names = [str(row["folder_name"]) for row in folder_rows]
+            post_count = conn.execute(
+                "select count(*) from site_posts where source_id = ?",
+                (int(source_id),),
+            ).fetchone()[0]
+            asset_count = conn.execute(
+                """
+                select count(*)
+                from site_assets
+                join site_posts on site_posts.id = site_assets.post_id
+                where site_posts.source_id = ?
+                """,
+                (int(source_id),),
+            ).fetchone()[0]
+            for folder_name in folder_names:
+                conn.execute("delete from pair_index where folder_name = ?", (folder_name,))
+                conn.execute("delete from folder_index where folder_name = ?", (folder_name,))
+                conn.execute("delete from folders where folder_name = ?", (folder_name,))
+            conn.execute("delete from site_filter_logs where source_id = ?", (int(source_id),))
+            conn.execute("delete from site_sources where id = ?", (int(source_id),))
+        return {
+            "folder_names": folder_names,
+            "folders": len(folder_names),
+            "posts": int(post_count or 0),
+            "assets": int(asset_count or 0),
+        }
+
+    def export_site_sources(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "sources": [self._site_source_export_item(item) for item in self.list_site_sources()],
+        }
+
+    def import_site_sources(self, payload: dict[str, Any]) -> dict[str, Any]:
+        sources = payload.get("sources")
+        if not isinstance(sources, list):
+            raise ValueError("导入文件缺少 sources 数组")
+        created = 0
+        updated = 0
+        items = []
+        existing = {item["slug"]: item for item in self.list_site_sources()}
+        for raw in sources:
+            if not isinstance(raw, dict):
+                continue
+            item = self._clean_site_source_import(raw)
+            if not item.get("entry_url"):
+                continue
+            if item["slug"] in existing:
+                saved = self.update_site_source(int(existing[item["slug"]]["id"]), item)
+                updated += 1
+            else:
+                saved = self.create_site_source(item)
+                created += 1
+            if saved:
+                items.append(saved)
+        return {"created": created, "updated": updated, "items": items}
+
+    def _site_source_export_item(self, source: dict[str, Any]) -> dict[str, Any]:
+        keys = (
+            "name",
+            "slug",
+            "source_type",
+            "entry_url",
+            "page_url_template",
+            "max_pages",
+            "list_item_selector",
+            "detail_link_selector",
+            "title_selector",
+            "date_selector",
+            "tag_selector",
+            "body_selector",
+            "media_selector",
+            "skip_head_images",
+            "skip_tail_images",
+            "enabled",
+            "start_date",
+        )
+        item = {key: source.get(key) for key in keys}
+        item["enabled"] = bool(item.get("enabled"))
+        item["max_pages"] = max(int(item.get("max_pages") or 1), 1)
+        item["skip_head_images"] = max(int(item.get("skip_head_images") or 0), 0)
+        item["skip_tail_images"] = max(int(item.get("skip_tail_images") or 0), 0)
+        return item
+
+    def _clean_site_source_import(self, source: dict[str, Any]) -> dict[str, Any]:
+        name = str(source.get("name") or source.get("slug") or "未命名来源").strip()
+        slug = safe_slug(str(source.get("slug") or name), "source")
+        return {
+            "name": name,
+            "slug": slug,
+            "source_type": str(source.get("source_type") or "html"),
+            "entry_url": str(source.get("entry_url") or "").strip(),
+            "page_url_template": source.get("page_url_template") or None,
+            "max_pages": max(int(source.get("max_pages") or 1), 1),
+            "list_item_selector": source.get("list_item_selector") or None,
+            "detail_link_selector": source.get("detail_link_selector") or None,
+            "title_selector": source.get("title_selector") or None,
+            "date_selector": source.get("date_selector") or None,
+            "tag_selector": source.get("tag_selector") or None,
+            "body_selector": source.get("body_selector") or None,
+            "media_selector": source.get("media_selector") or None,
+            "skip_head_images": max(int(source.get("skip_head_images") or 0), 0),
+            "skip_tail_images": max(int(source.get("skip_tail_images") or 0), 0),
+            "enabled": bool(source.get("enabled", True)),
+            "start_date": source.get("start_date") or None,
+        }
+
+    def upsert_site_post(self, source_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        now = now_iso()
+        title = str(payload.get("title") or "未命名贴文").strip()
+        slug = safe_slug(payload.get("slug") or title or payload["url"], "post")
+        tags = payload.get("tags") or []
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into site_posts(
+                    source_id, url, title, slug, pub_date, tags_json, excerpt, status,
+                    filter_reason, created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(source_id, url) do update set
+                    title = excluded.title,
+                    slug = excluded.slug,
+                    pub_date = excluded.pub_date,
+                    tags_json = excluded.tags_json,
+                    excerpt = excluded.excerpt,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(source_id),
+                    payload["url"],
+                    title,
+                    slug,
+                    payload.get("pub_date"),
+                    dumps_json(tags),
+                    payload.get("excerpt") or "",
+                    payload.get("status") or "discovered",
+                    payload.get("filter_reason"),
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "select * from site_posts where source_id = ? and url = ?",
+                (int(source_id), payload["url"]),
+            ).fetchone()
+        return self._site_post_row(row)
+
+    def get_site_post(self, post_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select site_posts.*, site_sources.name as source_name, site_sources.slug as source_slug
+                from site_posts join site_sources on site_sources.id = site_posts.source_id
+                where site_posts.id = ?
+                """,
+                (int(post_id),),
+            ).fetchone()
+        return self._site_post_row(row) if row else None
+
+    def list_site_posts(self, category: str = "all", source_id: int | None = None, q: str = "") -> list[dict[str, Any]]:
+        where = []
+        params: list[Any] = []
+        if category == "favorites":
+            where.append("site_posts.is_favorite = 1")
+            where.append("site_posts.is_blocked = 0")
+        elif category == "blocked":
+            where.append("site_posts.is_blocked = 1")
+        else:
+            where.append("site_posts.is_blocked = 0")
+        if source_id:
+            where.append("site_posts.source_id = ?")
+            params.append(int(source_id))
+        if q:
+            where.append("(site_posts.title like ? or site_posts.tags_json like ?)")
+            params.extend([f"%{q}%", f"%{q}%"])
+        sql = """
+            select site_posts.*, site_sources.name as source_name, site_sources.slug as source_slug,
+                (
+                    select rel_path from site_assets
+                    where site_assets.post_id = site_posts.id and site_assets.status = 'ready'
+                    order by case media_type when 'image' then 0 else 1 end, id asc
+                    limit 1
+                ) as cover_rel_path
+            from site_posts join site_sources on site_sources.id = site_posts.source_id
+        """
+        if where:
+            sql += " where " + " and ".join(where)
+        sql += " order by coalesce(site_posts.pub_date, '') desc, site_posts.updated_at desc limit 500"
+        with self.connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._site_post_row(row) for row in rows]
+
+    def set_site_post_flag(self, post_id: int, key: str, value: bool) -> dict[str, Any] | None:
+        if key not in {"is_favorite", "is_blocked"}:
+            raise ValueError("不支持的标记")
+        with self.connect() as conn:
+            conn.execute(f"update site_posts set {key} = ?, updated_at = ? where id = ?", (1 if value else 0, now_iso(), int(post_id)))
+        return self.get_site_post(post_id)
+
+    def set_site_post_status(self, post_id: int, status: str, reason: str | None = None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "update site_posts set status = ?, filter_reason = ?, updated_at = ? where id = ?",
+                (status, reason, now_iso(), int(post_id)),
+            )
+
+    def upsert_site_asset(self, post_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        now = now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into site_assets(post_id, url, media_type, filename, status, created_at, updated_at)
+                values (?, ?, ?, ?, 'pending', ?, ?)
+                on conflict(post_id, url) do update set
+                    media_type = excluded.media_type,
+                    filename = excluded.filename,
+                    updated_at = excluded.updated_at
+                """,
+                (int(post_id), payload["url"], payload["media_type"], payload["filename"], now, now),
+            )
+            row = conn.execute("select * from site_assets where post_id = ? and url = ?", (int(post_id), payload["url"])).fetchone()
+        return dict(row)
+
+    def set_site_asset_result(self, asset_id: int, status: str, rel_path: str | None = None, error: str | None = None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "update site_assets set status = ?, rel_path = coalesce(?, rel_path), error = ?, updated_at = ? where id = ?",
+                (status, rel_path, error, now_iso(), int(asset_id)),
+            )
+
+    def list_site_assets(self, post_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("select * from site_assets where post_id = ? order by id asc", (int(post_id),)).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_site_post_counts(self, post_id: int) -> None:
+        with self.connect() as conn:
+            counts = conn.execute(
+                """
+                select count(*) as asset_count,
+                    sum(case when status = 'ready' then 1 else 0 end) as downloaded_count
+                from site_assets where post_id = ?
+                """,
+                (int(post_id),),
+            ).fetchone()
+            asset_count = int(counts["asset_count"] or 0)
+            downloaded_count = int(counts["downloaded_count"] or 0)
+            conn.execute(
+                """
+                update site_posts set asset_count = ?, downloaded_count = ?,
+                    status = case when ? > 0 and ? = ? then 'ready' else status end,
+                    updated_at = ?
+                where id = ?
+                """,
+                (asset_count, downloaded_count, asset_count, downloaded_count, asset_count, now_iso(), int(post_id)),
+            )
+
+    def add_site_filter_log(self, source_id: int | None, post_url: str, title: str, decision: str, reason: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "insert into site_filter_logs(source_id, post_url, title, decision, reason, created_at) values (?, ?, ?, ?, ?, ?)",
+                (source_id, post_url, title, decision, reason, now_iso()),
+            )
+
+    def list_site_filter_logs(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("select * from site_filter_logs order by id desc limit ?", (int(limit),)).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_site_filter_logs(self) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute("delete from site_filter_logs")
+            return int(cursor.rowcount or 0)
+
+    def site_stats(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            source_count = conn.execute("select count(*) from site_sources").fetchone()[0]
+            post_count = conn.execute("select count(*) from site_posts where is_blocked = 0").fetchone()[0]
+            favorite_count = conn.execute("select count(*) from site_posts where is_favorite = 1 and is_blocked = 0").fetchone()[0]
+            blocked_count = conn.execute("select count(*) from site_posts where is_blocked = 1").fetchone()[0]
+            asset_count = conn.execute("select count(*) from site_assets where status = 'ready'").fetchone()[0]
+        return {
+            "source_count": source_count,
+            "post_count": post_count,
+            "favorite_count": favorite_count,
+            "blocked_count": blocked_count,
+            "asset_count": asset_count,
+        }
+
+    def _site_post_row(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}
+        item = dict(row)
+        item["tags"] = loads_json(item.pop("tags_json", "[]"), [])
+        cover = item.get("cover_rel_path")
+        item["cover_url"] = f"/storage/{cover}" if cover else None
+        item["is_favorite"] = bool(item.get("is_favorite"))
+        item["is_blocked"] = bool(item.get("is_blocked"))
+        return item
 
     def get_auth_state(self) -> dict[str, Any]:
         with self.connect() as conn:
