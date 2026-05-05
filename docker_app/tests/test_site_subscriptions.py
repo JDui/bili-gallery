@@ -7,11 +7,13 @@ from app.config import AppConfig
 from app.db import Database
 from app.services.cleanup import CleanupService
 from app.services.gallery import GalleryService
+from app.services.media_indexer import MediaIndexer
 from app.services.puller import PullManager
 from app.services.site_downloader import MediaDownloader
 from app.services.site_parser import PageFetcher, SourceParser, site_request_timeout
 from app.services.site_syncer import SiteSyncManager
 from app.services.storage import StorageService
+from app.services.thumbnailer import ThumbnailService
 from app.services.utils import clean_filename, parse_date
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
@@ -144,6 +146,8 @@ def create_duplicate_source(db: Database, tmp_path: Path) -> dict:
 def test_site_requests_use_browser_like_headers() -> None:
     fetcher = PageFetcher(user_agent="Custom UA")
     downloader = MediaDownloader(user_agent="Custom UA")
+    proxied_fetcher = PageFetcher(user_agent="Custom UA", proxies={"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"})
+    proxied_downloader = MediaDownloader(user_agent="Custom UA", proxies={"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"})
     assert site_request_timeout(300) == (20.0, 300.0)
     assert PageFetcher(timeout=60).timeout == (10.0, 60.0)
     assert MediaDownloader(timeout=300).timeout == (20.0, 300.0)
@@ -152,6 +156,98 @@ def test_site_requests_use_browser_like_headers() -> None:
         assert session.headers["Accept"] == "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
         assert session.headers["Accept-Language"] == "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7,zh-CN;q=0.6"
         assert session.headers["Connection"] == "close"
+    assert proxied_fetcher.session.proxies["http"] == "http://127.0.0.1:7890"
+    assert proxied_downloader.session.proxies["https"] == "http://127.0.0.1:7890"
+
+
+def test_gallery_thumbnails_use_640_and_240_and_rebuild_cleans_old_derivatives(tmp_path: Path) -> None:
+    db, storage, _syncer = make_app(tmp_path)
+    image_folder = storage.image_folder("thumb-demo")
+    image_folder.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (1600, 1200), (180, 20, 20)).save(image_folder / "001__demo.jpg")
+    indexer = MediaIndexer(db, storage, ThumbnailService())
+    indexer.index_folder("thumb-demo", 1, "Thumb Demo", "", "top", "source")
+    old_marker = image_folder / ".thumbs" / "old-720.webp"
+    old_small_marker = image_folder / ".thumbs" / "small" / "old-360.webp"
+    old_marker.write_bytes(b"old")
+    old_small_marker.write_bytes(b"old")
+
+    indexer.rebuild_gallery_indexes()
+    asset = db.list_assets_for_folder("thumb-demo")[0]
+    thumb = storage.resolve_storage_path(asset["thumb_rel_path"])
+    small = storage.resolve_storage_path(asset["small_thumb_rel_path"])
+
+    assert not old_marker.exists()
+    assert not old_small_marker.exists()
+    with Image.open(thumb) as image:
+        assert max(image.size) == 640
+    with Image.open(small) as image:
+        assert max(image.size) == 240
+    detail = GalleryService(db, storage).get_folder_detail("thumb-demo")
+    assert "/.thumbs/small/" in detail["pairs"][0]["preview_url"]
+
+
+def test_site_sync_uses_configured_page_timeout(tmp_path: Path, monkeypatch) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    db.save_settings({"site_request_timeout": 480})
+    source = create_fixture_source(db)
+    captured: list[int] = []
+
+    class CaptureFetcher(PageFetcher):
+        def __init__(self, timeout: int = 300, user_agent: str = "", proxies=None) -> None:
+            captured.append(timeout)
+            super().__init__(timeout=timeout, user_agent=user_agent, proxies=proxies)
+
+    monkeypatch.setattr("app.services.site_syncer.PageFetcher", CaptureFetcher)
+
+    syncer.test_source(source)
+    syncer._sync_source(source)
+
+    assert captured == [480, 480]
+
+
+def test_site_sync_uses_configured_proxy_for_page_and_media(tmp_path: Path, monkeypatch) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    db.save_settings({"site_proxy_enabled": True, "site_proxy_host": "127.0.0.1", "site_proxy_port": 7890})
+    source = create_fixture_source(db)
+    captured_fetcher: list[dict[str, str]] = []
+    captured_downloader: list[dict[str, str]] = []
+
+    class CaptureFetcher(PageFetcher):
+        def __init__(self, timeout: int = 300, user_agent: str = "", proxies=None) -> None:
+            super().__init__(timeout=timeout, user_agent=user_agent, proxies=proxies)
+            captured_fetcher.append(dict(self.session.proxies))
+
+    class CaptureDownloader(MediaDownloader):
+        def __init__(self, timeout: int = 300, user_agent: str = "", proxies=None) -> None:
+            super().__init__(timeout=timeout, user_agent=user_agent, proxies=proxies)
+            captured_downloader.append(dict(self.session.proxies))
+
+    monkeypatch.setattr("app.services.site_syncer.PageFetcher", CaptureFetcher)
+    monkeypatch.setattr("app.services.site_syncer.MediaDownloader", CaptureDownloader)
+
+    syncer._sync_source(source)
+
+    assert captured_fetcher[0]["http"] == "http://127.0.0.1:7890"
+    assert captured_downloader[0]["https"] == "http://127.0.0.1:7890"
+
+
+def test_site_sync_records_source_errors_without_failing_entire_task(tmp_path: Path, monkeypatch) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    source = create_fixture_source(db)
+
+    def fail_source(_source, cooperate=None):
+        raise TimeoutError("读取超时")
+
+    monkeypatch.setattr(syncer, "_sync_source", fail_source)
+
+    result = syncer.execute_sync(source["id"])
+    logs = db.list_site_filter_logs()
+
+    assert result["sources"] == 1
+    assert result["errors"] == 1
+    assert logs[0]["decision"] == "error"
+    assert "读取超时" in logs[0]["reason"]
 
 
 def test_site_parser_extracts_html_rss_and_paged_preview() -> None:
@@ -222,6 +318,57 @@ def test_site_sync_dedupes_images_with_same_content(tmp_path: Path) -> None:
     assert assets[1]["error"] == "重复图片"
     assert detail["folder"]["original_url"] == assets[0]["url"].rsplit("/", 1)[0] + "/post.html"
     assert len(detail["images"]) == 2
+
+
+def test_site_full_validation_clears_and_resyncs_source(tmp_path: Path) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    source = create_duplicate_source(db, tmp_path)
+    syncer._sync_source(source)
+    post = db.list_site_posts()[0]
+    folder_name = GalleryService(db, storage).get_gallery_items(category="all", subscription_uids=[f"site:{source['id']}"])["items"][0]["folder_name"]
+    assert db.list_site_assets(post["id"])
+    assert storage.image_folder(folder_name).exists()
+
+    result = syncer.execute_full_validation(source["id"])
+    posts = db.list_site_posts()
+    detail = GalleryService(db, storage).get_gallery_items(category="all", subscription_uids=[f"site:{source['id']}"])
+
+    assert result["cleared_posts"] == 1
+    assert result["cleared_assets"] == 3
+    assert result["downloaded"] == 3
+    assert len(posts) == 1
+    assert posts[0]["downloaded_count"] == 2
+    assert detail["total"] == 1
+
+
+def test_site_full_validation_records_empty_result_details_and_logs(tmp_path: Path) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    site_dir = tmp_path / "empty-site"
+    site_dir.mkdir()
+    (site_dir / "index.html").write_text("<!doctype html><main>empty</main>", encoding="utf-8")
+    source = db.create_site_source(
+        {
+            "name": "Empty Fixture",
+            "slug": "empty-fixture",
+            "source_type": "html",
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "max_pages": 1,
+            "list_item_selector": ".post-card",
+            "detail_link_selector": ".detail-link",
+            "media_selector": ".content img",
+            "enabled": True,
+        }
+    )
+
+    result = syncer.execute_full_validation(source["id"])
+    logs = db.list_site_filter_logs()
+    decisions = {log["decision"] for log in logs}
+
+    assert result["discovered"] == 0
+    assert result["posts"] == 0
+    assert result["validation_mode"] is True
+    assert result["source"]["entry_url"] == source["entry_url"]
+    assert {"validation-start", "validation-cleared", "empty", "validation-empty", "validation-complete"}.issubset(decisions)
 
 
 def test_validation_dedupes_historical_site_posts_and_refreshes_gallery(tmp_path: Path) -> None:
@@ -361,6 +508,7 @@ def test_site_api_source_preview_sync_and_post_actions(tmp_path: Path, monkeypat
         return {"ok": True, "queued": False, "message": "已开始站点同步"}
 
     monkeypatch.setattr(syncer, "start_sync", sync_now)
+    monkeypatch.setattr(syncer, "start_full_validation", sync_now)
     monkeypatch.setattr(app_main, "db", db)
     monkeypatch.setattr(app_main, "storage", storage)
     monkeypatch.setattr(app_main, "site_syncer", syncer)
@@ -388,6 +536,7 @@ def test_site_api_source_preview_sync_and_post_actions(tmp_path: Path, monkeypat
 
     assert client.post(f"/api/site-sources/{created['id']}/sync").json()["ok"] is True
     assert client.post(f"/api/subscriptions/site:{created['id']}/pull").json()["ok"] is True
+    assert client.post(f"/api/site-sources/{created['id']}/validate").json()["ok"] is True
 
     posts = client.get("/api/site-posts").json()["items"]
     assert len(posts) == 1

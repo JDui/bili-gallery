@@ -49,6 +49,18 @@ class StorageService:
                 removed += 1
         return removed
 
+    def clear_folder_thumbnail_derivatives(self, folder_name: str) -> int:
+        removed = 0
+        for folder in (self.image_folder(folder_name), self.livephoto_folder(folder_name)):
+            thumbs = folder / ".thumbs"
+            if not thumbs.exists():
+                continue
+            for target in thumbs.rglob("*.webp"):
+                if target.is_file():
+                    target.unlink(missing_ok=True)
+                    removed += 1
+        return removed
+
     def resolve_storage_path(self, rel_path: str | None) -> Path | None:
         if not rel_path:
             return None
@@ -56,7 +68,7 @@ class StorageService:
 
     def remove_asset_files(self, asset: dict) -> int:
         removed = 0
-        for key in ("rel_path", "thumb_rel_path", "cover_rel_path", "reverse_rel_path"):
+        for key in ("rel_path", "thumb_rel_path", "small_thumb_rel_path", "cover_rel_path", "reverse_rel_path"):
             path = self.resolve_storage_path(asset.get(key))
             if path and path.exists():
                 path.unlink(missing_ok=True)

@@ -57,10 +57,17 @@ def site_request_timeout(read_timeout: int | float) -> tuple[float, float]:
 
 
 class PageFetcher:
-    def __init__(self, timeout: int = 300, user_agent: str = DEFAULT_SITE_USER_AGENT) -> None:
+    def __init__(
+        self,
+        timeout: int = 300,
+        user_agent: str = DEFAULT_SITE_USER_AGENT,
+        proxies: dict[str, str] | None = None,
+    ) -> None:
         self.timeout = site_request_timeout(timeout)
         self.session = requests.Session()
         self.session.headers.update(browser_like_site_headers(user_agent))
+        if proxies:
+            self.session.proxies.update(proxies)
 
     def get_text(self, url: str) -> str:
         if url.startswith("file://"):

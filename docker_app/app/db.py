@@ -43,13 +43,16 @@ DEFAULT_SETTINGS = {
     "site_request_timeout": 300,
     "site_max_media_per_post": 100,
     "site_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    "site_proxy_enabled": False,
+    "site_proxy_host": "127.0.0.1",
+    "site_proxy_port": 7890,
 }
 LEGACY_SITE_USER_AGENTS = {
     "PostArchiver/0.1 (+authorized personal archive)",
     "PostArchiver/0.1",
 }
 LEGACY_SITE_REQUEST_TIMEOUTS = {20, 120}
-GALLERY_INDEX_VERSION = 1
+GALLERY_INDEX_VERSION = 3
 
 DEFAULT_SITE_RULES = {
     "title_allow": [],
@@ -126,6 +129,7 @@ class Database:
                     filename text not null,
                     rel_path text not null,
                     thumb_rel_path text,
+                    small_thumb_rel_path text,
                     cover_rel_path text,
                     reverse_rel_path text,
                     width integer,
@@ -364,6 +368,7 @@ class Database:
             self._ensure_column(conn, "folders", "subscription_uid", "text")
             self._ensure_column(conn, "folders", "subscription_name", "text")
             self._ensure_column(conn, "folders", "is_favorite", "integer not null default 0")
+            self._ensure_column(conn, "assets", "small_thumb_rel_path", "text")
             conn.execute(
                 "create index if not exists idx_folders_subscription_pub_ts on folders(subscription_uid, pub_ts desc)"
             )
@@ -745,6 +750,40 @@ class Database:
                 conn.execute("delete from folders where folder_name = ?", (folder_name,))
             conn.execute("delete from site_filter_logs where source_id = ?", (int(source_id),))
             conn.execute("delete from site_sources where id = ?", (int(source_id),))
+        return {
+            "folder_names": folder_names,
+            "folders": len(folder_names),
+            "posts": int(post_count or 0),
+            "assets": int(asset_count or 0),
+        }
+
+    def clear_site_source_content(self, source_id: int) -> dict[str, Any]:
+        uid = self.site_subscription_uid(source_id)
+        with self.connect() as conn:
+            folder_rows = conn.execute(
+                "select folder_name from folders where subscription_uid = ? order by folder_name asc",
+                (uid,),
+            ).fetchall()
+            folder_names = [str(row["folder_name"]) for row in folder_rows]
+            post_count = conn.execute(
+                "select count(*) from site_posts where source_id = ?",
+                (int(source_id),),
+            ).fetchone()[0]
+            asset_count = conn.execute(
+                """
+                select count(*)
+                from site_assets
+                join site_posts on site_posts.id = site_assets.post_id
+                where site_posts.source_id = ?
+                """,
+                (int(source_id),),
+            ).fetchone()[0]
+            for folder_name in folder_names:
+                conn.execute("delete from pair_index where folder_name = ?", (folder_name,))
+                conn.execute("delete from folder_index where folder_name = ?", (folder_name,))
+                conn.execute("delete from folders where folder_name = ?", (folder_name,))
+            conn.execute("delete from site_filter_logs where source_id = ?", (int(source_id),))
+            conn.execute("delete from site_posts where source_id = ?", (int(source_id),))
         return {
             "folder_names": folder_names,
             "folders": len(folder_names),
@@ -1264,11 +1303,11 @@ class Database:
                 conn.execute(
                     """
                     insert into assets(
-                        folder_name, media_type, pair_index, filename, rel_path, thumb_rel_path,
+                        folder_name, media_type, pair_index, filename, rel_path, thumb_rel_path, small_thumb_rel_path,
                         cover_rel_path, reverse_rel_path, width, height, status, metadata_json,
                         created_at, updated_at
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         folder_name,
@@ -1277,6 +1316,7 @@ class Database:
                         asset["filename"],
                         asset["rel_path"],
                         asset.get("thumb_rel_path"),
+                        asset.get("small_thumb_rel_path"),
                         asset.get("cover_rel_path"),
                         asset.get("reverse_rel_path"),
                         asset.get("width"),
@@ -1338,6 +1378,20 @@ class Database:
     def delete_asset(self, asset_id: int) -> None:
         with self.connect() as conn:
             conn.execute("delete from assets where id = ?", (asset_id,))
+
+    def update_asset_small_thumbnail(self, asset_id: int, small_thumb_rel_path: str | None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "update assets set small_thumb_rel_path = ?, updated_at = ? where id = ?",
+                (small_thumb_rel_path, now_iso(), int(asset_id)),
+            )
+
+    def update_asset_thumbnails(self, asset_id: int, thumb_rel_path: str | None, small_thumb_rel_path: str | None) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "update assets set thumb_rel_path = ?, small_thumb_rel_path = ?, updated_at = ? where id = ?",
+                (thumb_rel_path, small_thumb_rel_path, now_iso(), int(asset_id)),
+            )
 
     def add_deleted_pair_mark(
         self,

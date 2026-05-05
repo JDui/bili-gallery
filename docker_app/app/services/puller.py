@@ -275,6 +275,16 @@ class PullManager:
         queued = self._queue_or_start("site-sync", label, self._run_site_sync, source_id)
         return {"ok": True, "message": "已加入任务队列" if queued else "已开始站点同步", "queued": queued}
 
+    def start_site_validation(self, source_id: int) -> dict[str, Any]:
+        if self.site_syncer is None:
+            raise RuntimeError("站点同步器未初始化")
+        source = self.db.get_site_source(source_id)
+        if not source:
+            raise RuntimeError("站点来源不存在")
+        label = f"全量校验站点 {source.get('name') or source_id}"
+        queued = self._queue_or_start("site-validate", label, self._run_site_validation, int(source_id))
+        return {"ok": True, "message": "已加入任务队列" if queued else "已开始站点全量校验", "queued": queued}
+
     def status(self) -> dict[str, Any]:
         latest = self._latest_task_run(["pull", "review", "validate", "startup", "index", "site-sync"])
         return {
@@ -349,6 +359,8 @@ class PullManager:
         if kind == "site-sync":
             source_id = retry_action.get("source_id")
             return self.start_site_sync(int(source_id) if source_id is not None else None)
+        if kind == "site-validate":
+            return self.start_site_validation(int(retry_action.get("source_id") or 0))
         raise RuntimeError("当前任务不支持重试")
 
     def move_to_trash(self, folder_name: str, reason: str = "不喜欢") -> dict[str, Any]:
@@ -625,6 +637,33 @@ class PullManager:
             self._status = {"running": False, "message": f"站点同步失败: {exc}", "mode": "idle"}
             if self.site_syncer is not None:
                 self.site_syncer._status = {"running": False, "message": f"站点同步失败: {exc}"}
+        finally:
+            self._release()
+            self._run_next_queued_task()
+
+    def _run_site_validation(self, source_id: int) -> None:
+        if self.site_syncer is None:
+            self._release()
+            self._run_next_queued_task()
+            return
+        retry_action = {"kind": "site-validate", "source_id": source_id}
+        task_id = self.db.create_task_run("site-sync", "running", "开始站点全量校验", {"retry_action": retry_action})
+        try:
+            stats = self.site_syncer.execute_full_validation(source_id, cooperate=self._cooperate)
+            stats["retry_action"] = retry_action
+            stats["events"] = self._runtime_events()
+            self.db.finish_task_run(task_id, "success", "站点全量校验完成", stats)
+            self._status = {"running": False, "message": "站点全量校验完成", "mode": "idle", "stats": stats}
+        except Exception as exc:
+            self.db.finish_task_run(
+                task_id,
+                "failed",
+                str(exc),
+                {"error": str(exc), "retry_action": retry_action, "events": self._runtime_events()},
+            )
+            self._status = {"running": False, "message": f"站点全量校验失败: {exc}", "mode": "idle"}
+            if self.site_syncer is not None:
+                self.site_syncer._status = {"running": False, "message": f"站点全量校验失败: {exc}"}
         finally:
             self._release()
             self._run_next_queued_task()
@@ -1875,6 +1914,9 @@ class PullManager:
                 raw_source_id = next_task.payload.get("args", [None])[0]
                 source_id = int(raw_source_id) if raw_source_id is not None else None
                 thread = threading.Thread(target=self._run_site_sync, args=(source_id,), daemon=True)
+            elif next_task.kind == "site-validate":
+                source_id = int(next_task.payload.get("args", [0])[0])
+                thread = threading.Thread(target=self._run_site_validation, args=(source_id,), daemon=True)
             else:
                 self._release()
                 return

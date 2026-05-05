@@ -9,10 +9,17 @@ from app.services.site_parser import DEFAULT_SITE_USER_AGENT, browser_like_site_
 
 
 class MediaDownloader:
-    def __init__(self, timeout: int = 300, user_agent: str = DEFAULT_SITE_USER_AGENT) -> None:
+    def __init__(
+        self,
+        timeout: int = 300,
+        user_agent: str = DEFAULT_SITE_USER_AGENT,
+        proxies: dict[str, str] | None = None,
+    ) -> None:
         self.timeout = site_request_timeout(timeout)
         self.session = requests.Session()
         self.session.headers.update(browser_like_site_headers(user_agent))
+        if proxies:
+            self.session.proxies.update(proxies)
 
     def download(self, url: str, target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)

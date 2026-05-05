@@ -227,6 +227,13 @@ async def sync_site_source(source_id: int) -> dict[str, Any]:
     return site_syncer.start_sync(source_id)
 
 
+@app.post("/api/site-sources/{source_id}/validate")
+async def validate_site_source(source_id: int) -> dict[str, Any]:
+    if not db.get_site_source(source_id):
+        raise HTTPException(status_code=404, detail="站点来源不存在")
+    return site_syncer.start_full_validation(source_id)
+
+
 @app.post("/api/site-sources/test")
 async def test_site_source(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     try:

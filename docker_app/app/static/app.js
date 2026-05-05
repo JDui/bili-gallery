@@ -91,6 +91,7 @@ function galleryApp() {
     pullStatus: {},
     qr: {},
     detail: { open: false, pairs: [], folder: null, videos: [] },
+    detailCache: {},
     viewer: { open: false, pair: null, folder: null, showVideo: false },
     viewerSource: "detail",
     viewerSequence: [],
@@ -774,11 +775,23 @@ function galleryApp() {
       this.detailRequestId += 1;
       const requestId = this.detailRequestId;
       const previewFolder = (this.gallery.items || []).find((item) => item.folder_name === folderName);
+      const cached = this.cachedDetail(folderName);
+      if (cached) {
+        this.detailLoading = false;
+        this.detail = {
+          ...cached,
+          open: true,
+          folder: previewFolder ? { ...cached.folder, ...previewFolder } : cached.folder,
+        };
+        this.syncBodyLock();
+        return;
+      }
       this.detailLoading = true;
       this.detail = {
         open: true,
         pairs: this.detail.folder?.folder_name === folderName ? this.detail.pairs : [],
         folder: previewFolder || this.detail.folder || { folder_name: folderName, title: folderName },
+        videos: this.detail.folder?.folder_name === folderName ? (this.detail.videos || []) : [],
       };
       this.syncBodyLock();
       try {
@@ -787,7 +800,8 @@ function galleryApp() {
           return;
         }
         this.detailLoading = false;
-        this.detail = { open: true, pairs: payload.pairs, folder: payload.folder, videos: payload.videos || [] };
+        this.detail = { open: true, pairs: payload.pairs || [], folder: payload.folder, videos: payload.videos || [] };
+        this.cacheDetailPayload(folderName, this.detail);
         this.syncBodyLock();
       } catch (error) {
         if (requestId !== this.detailRequestId) {
@@ -978,7 +992,6 @@ function galleryApp() {
       this.detail = { ...this.detail, open: false };
       this.syncBodyLock();
       this.detailCloseTimer = window.setTimeout(() => {
-        this.detail = { open: false, pairs: [], folder: null };
         this.detailClosing = false;
         this.detailCloseTimer = null;
         this.syncBodyLock();
@@ -1028,11 +1041,6 @@ function galleryApp() {
         this.bodyLockPaddingRight = body.style.paddingRight || "";
         html.style.overflow = "hidden";
         body.style.overflow = "hidden";
-        body.style.position = "fixed";
-        body.style.top = `-${scrollTop}px`;
-        body.style.left = "";
-        body.style.right = "";
-        body.style.width = "100%";
         if (scrollbarWidth) {
           body.style.paddingRight = `${scrollbarWidth}px`;
         }
@@ -1041,17 +1049,78 @@ function galleryApp() {
       const scrollTop = this.bodyLockTop;
       html.style.overflow = "";
       body.style.overflow = "";
-      body.style.position = "";
-      body.style.top = "";
-      body.style.left = "";
-      body.style.right = "";
-      body.style.width = "";
       body.style.paddingRight = this.bodyLockPaddingRight || "";
       this.bodyLockTop = null;
       this.bodyLockPaddingRight = "";
       if (scrollTop !== null) {
         window.scrollTo({ top: scrollTop, behavior: "auto" });
       }
+    },
+
+    cloneDetailPayload(payload) {
+      return {
+        open: false,
+        pairs: (payload?.pairs || []).map((pair) => ({ ...pair })),
+        folder: payload?.folder ? { ...payload.folder } : null,
+        videos: (payload?.videos || []).map((video) => ({ ...video })),
+      };
+    },
+
+    cachedDetail(folderName) {
+      const cached = this.detailCache[folderName];
+      return cached ? this.cloneDetailPayload(cached) : null;
+    },
+
+    cacheDetailPayload(folderName, payload) {
+      if (!folderName || !payload?.folder) {
+        return;
+      }
+      this.detailCache = {
+        ...this.detailCache,
+        [folderName]: this.cloneDetailPayload(payload),
+      };
+    },
+
+    invalidateDetailCache(folderName) {
+      if (!folderName || !this.detailCache[folderName]) {
+        return;
+      }
+      const nextCache = { ...this.detailCache };
+      delete nextCache[folderName];
+      this.detailCache = nextCache;
+    },
+
+    updateCachedDetailFavorite(folderName, favorite) {
+      const cached = this.detailCache[folderName];
+      if (!cached?.folder) {
+        return;
+      }
+      this.detailCache = {
+        ...this.detailCache,
+        [folderName]: {
+          ...cached,
+          folder: { ...cached.folder, is_favorite: favorite },
+        },
+      };
+    },
+
+    removeCachedDetailPair(folderName, pairIndex) {
+      const cached = this.detailCache[folderName];
+      if (!cached) {
+        return;
+      }
+      const pairs = (cached.pairs || []).filter((pair) => Number(pair.pair_index) !== Number(pairIndex));
+      const folder = cached.folder
+        ? {
+            ...cached.folder,
+            image_count: Math.max(0, (cached.folder.image_count || 0) - 1),
+            asset_count: Math.max(0, (cached.folder.asset_count || 0) - 1),
+          }
+        : cached.folder;
+      this.detailCache = {
+        ...this.detailCache,
+        [folderName]: { ...cached, pairs, folder },
+      };
     },
 
     hoverPreview(video, shouldPlay) {
@@ -2157,11 +2226,13 @@ function galleryApp() {
         open: this.detail.open,
         pairs: [...(this.detail.pairs || [])],
         folder: this.detail.folder ? { ...this.detail.folder } : null,
+        videos: [...(this.detail.videos || [])],
       };
       const previousGallery = {
         items: [...(this.gallery.items || [])],
         total: this.gallery.total || 0,
       };
+      const previousCache = this.detailCache[folderName] ? this.cloneDetailPayload(this.detailCache[folderName]) : null;
       const nextDetailPairs = (this.detail.pairs || []).filter((pair) => Number(pair.pair_index) !== Number(pairIndex));
       const nextSequence = (this.viewerSequence || []).filter(
         (entry) => !(entry.folder?.folder_name === folderName && Number(entry.pair?.pair_index) === Number(pairIndex)),
@@ -2178,7 +2249,9 @@ function galleryApp() {
                 asset_count: Math.max(0, (this.detail.folder.asset_count || 0) - 1),
               }
             : this.detail.folder,
+          videos: this.detail.videos || [],
         };
+        this.cacheDetailPayload(folderName, this.detail);
         if (!nextSequence.length) {
           this.closeViewer();
         } else {
@@ -2188,6 +2261,7 @@ function galleryApp() {
         }
       } else {
         this.removePairFromGallery(folderName, pairIndex);
+        this.removeCachedDetailPair(folderName, pairIndex);
         if (!nextSequence.length) {
           this.closeViewer();
         } else {
@@ -2205,6 +2279,11 @@ function galleryApp() {
         this.notify("success", "已删除", result.message);
       } catch (error) {
         this.detail = previousDetail;
+        if (previousCache) {
+          this.cacheDetailPayload(folderName, previousCache);
+        } else {
+          this.invalidateDetailCache(folderName);
+        }
         this.gallery = {
           ...this.gallery,
           items: previousGallery.items,
@@ -2445,6 +2524,7 @@ function galleryApp() {
       if (this.detail.folder?.folder_name === item.folder_name) {
         this.detail.folder.is_favorite = favorite;
       }
+      this.updateCachedDetailFavorite(item.folder_name, favorite);
       if (this.category === "favorites" && !favorite) {
         this.removeFolderFromGallery(item.folder_name);
       }
@@ -2458,6 +2538,7 @@ function galleryApp() {
         if (this.detail.folder?.folder_name === item.folder_name) {
           this.detail.folder.is_favorite = result.favorite;
         }
+        this.updateCachedDetailFavorite(item.folder_name, result.favorite);
         await this.refreshMeta();
         this.notify("success", result.favorite ? "已收藏" : "已取消收藏", result.message);
       } catch (error) {
@@ -2465,6 +2546,7 @@ function galleryApp() {
         if (this.detail.folder?.folder_name === item.folder_name) {
           this.detail.folder.is_favorite = previous;
         }
+        this.updateCachedDetailFavorite(item.folder_name, previous);
         await this.refreshGallery(true);
       }
     },
@@ -2607,6 +2689,12 @@ function galleryApp() {
       const { auth, ...settingsPayload } = this.settings || {};
       const payload = {
         ...settingsPayload,
+        site_request_timeout: Math.max(30, Math.min(900, Number(settingsPayload.site_request_timeout) || 300)),
+        site_request_sleep: Math.max(0, Number(settingsPayload.site_request_sleep) || 0),
+        site_max_media_per_post: Math.max(1, Math.min(500, Number(settingsPayload.site_max_media_per_post) || 100)),
+        site_proxy_enabled: Boolean(settingsPayload.site_proxy_enabled),
+        site_proxy_host: String(settingsPayload.site_proxy_host || "127.0.0.1").trim() || "127.0.0.1",
+        site_proxy_port: Math.max(1, Math.min(65535, Number(settingsPayload.site_proxy_port) || 7890)),
         ad_filter_keywords: this.keywordText
           .split("\n")
           .map((item) => item.trim())
@@ -2868,11 +2956,14 @@ function galleryApp() {
         open: this.detail.open,
         pairs: [...(this.detail.pairs || [])],
         folder: this.detail.folder ? { ...this.detail.folder } : null,
+        videos: [...(this.detail.videos || [])],
       };
+      const previousCache = this.detailCache[folderName] ? this.cloneDetailPayload(this.detailCache[folderName]) : null;
       this.pendingTrashFolder = null;
       this.closeViewer();
       this.closeDetail();
       this.removeFolderFromGallery(folderName);
+      this.invalidateDetailCache(folderName);
       this.notify("info", "正在移入垃圾桶", "页面已先更新，后台正在处理删除。");
       try {
         const result = await this.api(`/api/gallery/folders/${encodeURIComponent(folderName)}/trash`, {
@@ -2889,6 +2980,9 @@ function galleryApp() {
         };
         if (!this.viewer.open && !this.detail.open && previousDetail.folder?.folder_name === folderName) {
           this.detail = previousDetail;
+        }
+        if (previousCache) {
+          this.cacheDetailPayload(folderName, previousCache);
         }
         this.syncBodyLock();
         this.notify("error", "移入垃圾桶失败", error.message || "后端删除没有成功，内容已恢复。");
@@ -3281,6 +3375,13 @@ function galleryApp() {
       this.setImmediateSiteTaskFeedback(`正在提交 ${source.name || "站点"} 同步任务...`, { running: true });
       const result = await this.api(`/api/site-sources/${encodeURIComponent(source.id)}/sync`, { method: "POST" });
       this.notify("info", "站点同步已提交", result.message || "已开始同步。");
+      await Promise.all([this.refreshStatus(), this.refreshTasks()]);
+    },
+
+    async validateSiteSource(source) {
+      this.setImmediateSiteTaskFeedback(`正在提交 ${source.name || "站点"} 全量校验任务...`, { running: true });
+      const result = await this.api(`/api/site-sources/${encodeURIComponent(source.id)}/validate`, { method: "POST" });
+      this.notify("info", "站点全量校验已提交", result.message || "已开始全量校验。");
       await Promise.all([this.refreshStatus(), this.refreshTasks()]);
     },
 

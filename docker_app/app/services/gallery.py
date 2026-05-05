@@ -107,8 +107,10 @@ class GalleryService:
                     "image": image,
                     "livephoto": livephoto,
                     "preview_url": (
-                        (image or {}).get("thumb_url")
+                        (image or {}).get("small_thumb_url")
+                        or (image or {}).get("thumb_url")
                         or (image or {}).get("url")
+                        or (livephoto or {}).get("small_thumb_url")
                         or (livephoto or {}).get("thumb_url")
                         or (livephoto or {}).get("cover_url")
                         or (livephoto or {}).get("url")
@@ -206,9 +208,16 @@ class GalleryService:
             "preview_url": item.get("preview_url"),
             "preview_kind": item.get("preview_kind"),
             "thumb_url": item.get("thumb_url"),
+            "small_thumb_url": (
+                (image or {}).get("small_thumb_url")
+                or (livephoto or {}).get("small_thumb_url")
+                or item.get("thumb_url")
+            ),
             "image": image,
             "livephoto": livephoto,
             "display_ratio": item.get("display_ratio"),
+            "width": (image or livephoto or {}).get("width"),
+            "height": (image or livephoto or {}).get("height"),
         }
 
     def _asset_json(self, asset: dict | None) -> dict | None:
@@ -222,6 +231,7 @@ class GalleryService:
             "filename": asset["filename"],
             "url": self.storage.storage_url(asset["rel_path"]),
             "thumb_url": self.storage.storage_url(asset.get("thumb_rel_path")),
+            "small_thumb_url": self.storage.storage_url(asset.get("small_thumb_rel_path")),
             "cover_url": self.storage.storage_url(asset.get("cover_rel_path")),
             "reverse_url": self.storage.storage_url(asset.get("reverse_rel_path")),
             "width": asset.get("width"),
@@ -370,9 +380,12 @@ class GalleryService:
                         "preview_url": pair.get("preview_url"),
                         "preview_kind": pair.get("preview_kind"),
                         "thumb_url": preview.get("thumb_url") or preview.get("cover_url") or preview.get("url"),
+                        "small_thumb_url": preview.get("small_thumb_url") or preview.get("thumb_url") or preview.get("cover_url") or preview.get("url"),
                         "image": pair.get("image"),
                         "livephoto": pair.get("livephoto"),
                         "display_ratio": pair.get("display_ratio"),
+                        "width": preview.get("width"),
+                        "height": preview.get("height"),
                     }
                 )
         if sort_order == "random":

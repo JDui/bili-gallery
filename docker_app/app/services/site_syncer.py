@@ -18,7 +18,7 @@ from app.services.storage import StorageService
 from app.services.utils import TIMEZONE, clean_filename, parse_date, safe_slug
 
 
-SITE_PAGE_REQUEST_TIMEOUT = 60
+SITE_PAGE_REQUEST_TIMEOUT = 300
 SITE_MEDIA_DOWNLOAD_TIMEOUT = 300
 SITE_MEDIA_DOWNLOAD_CONCURRENCY = 3
 
@@ -50,9 +50,22 @@ class SiteSyncManager:
         thread.start()
         return {"ok": True, "queued": False, "message": "已开始站点同步"}
 
+    def start_full_validation(self, source_id: int) -> dict[str, Any]:
+        if self._task_queue is not None:
+            return self._task_queue.start_site_validation(source_id)
+        if not self._lock.acquire(blocking=False):
+            return {"ok": True, "queued": False, "message": "已有站点同步任务正在运行"}
+        thread = threading.Thread(target=self._run_full_validation_thread, args=(source_id,), daemon=True)
+        thread.start()
+        return {"ok": True, "queued": False, "message": "已开始站点全量校验"}
+
     def test_source(self, source: dict[str, Any]) -> list[dict[str, Any]]:
         settings = self.db.get_settings()
-        fetcher = PageFetcher(timeout=SITE_PAGE_REQUEST_TIMEOUT, user_agent=str(settings.get("site_user_agent")))
+        fetcher = PageFetcher(
+            timeout=self._page_request_timeout(settings),
+            user_agent=str(settings.get("site_user_agent")),
+            proxies=self._site_proxies(settings),
+        )
         parser = SourceParser(fetcher)
         return [self._preview_dict(post) for post in parser.preview(source, limit=3)]
 
@@ -70,8 +83,32 @@ class SiteSyncManager:
         finally:
             self._lock.release()
 
-    def execute_sync(self, source_id: int | None = None, cooperate=None) -> dict[str, int]:
-        details = {"sources": 0, "posts": 0, "downloaded": 0, "blocked": 0, "errors": 0}
+    def _run_full_validation_thread(self, source_id: int) -> None:
+        task_id = self.db.create_task_run("site-sync", "running", "站点全量校验")
+        try:
+            details = self.execute_full_validation(source_id)
+            self.db.finish_task_run(task_id, "success", "站点全量校验完成", details)
+            self._status = {"running": False, "message": "站点全量校验完成"}
+        except Exception as exc:
+            details = {"sources": 0, "posts": 0, "downloaded": 0, "blocked": 0, "errors": 1}
+            self.db.finish_task_run(task_id, "failed", str(exc), details)
+            self._status = {"running": False, "message": f"站点全量校验失败: {exc}"}
+        finally:
+            self._lock.release()
+
+    def execute_sync(self, source_id: int | None = None, cooperate=None) -> dict[str, Any]:
+        settings = self.db.get_settings()
+        details: dict[str, Any] = {
+            "sources": 0,
+            "discovered": 0,
+            "posts": 0,
+            "downloaded": 0,
+            "blocked": 0,
+            "skipped": 0,
+            "no_media": 0,
+            "errors": 0,
+            "proxy": self._site_proxy_summary(settings),
+        }
         self._status = {"running": True, "message": "正在同步站点来源"}
         sources = [self.db.get_site_source(source_id)] if source_id else self.db.list_site_sources(include_disabled=False)
         for source in [item for item in sources if item]:
@@ -79,27 +116,103 @@ class SiteSyncManager:
                 cooperate()
             details["sources"] += 1
             self._status = {"running": True, "message": f"正在同步站点：{source.get('name') or source.get('slug') or source['id']}"}
-            result = self._sync_source(source, cooperate=cooperate)
+            self._log_site_event(source, "sync-start", "开始同步站点来源")
+            try:
+                result = self._sync_source(source, cooperate=cooperate)
+            except Exception as exc:
+                details["errors"] += 1
+                self.db.add_site_filter_log(
+                    source.get("id"),
+                    str(source.get("entry_url") or ""),
+                    str(source.get("name") or source.get("slug") or source.get("id") or "站点来源"),
+                    "error",
+                    f"同步失败: {exc}",
+                )
+                continue
             for key, value in result.items():
                 details[key] = int(details.get(key, 0)) + int(value)
+            if not result.get("discovered"):
+                self._log_site_event(
+                    source,
+                    "empty",
+                    "未发现可同步内容",
+                    f"入口: {source.get('entry_url') or '-'}; 类型: {source.get('source_type') or '-'}; 起始日期: {source.get('start_date') or settings.get('site_default_start_date') or '-'}",
+                )
+            self._log_site_event(
+                source,
+                "sync-complete",
+                "站点同步完成",
+                f"发现 {result.get('discovered', 0)} 条，入库 {result.get('posts', 0)} 条，下载 {result.get('downloaded', 0)} 个，拦截 {result.get('blocked', 0)} 条，跳过 {result.get('skipped', 0)} 条，失败 {result.get('errors', 0)} 个",
+            )
         self._status = {"running": False, "message": "站点同步完成"}
         return details
 
+    def execute_full_validation(self, source_id: int, cooperate=None) -> dict[str, Any]:
+        source = self.db.get_site_source(source_id)
+        if not source:
+            raise RuntimeError("站点来源不存在")
+        self._status = {"running": True, "message": f"正在全量校验站点：{source.get('name') or source_id}"}
+        settings = self.db.get_settings()
+        cleared = self.db.clear_site_source_content(source_id)
+        removed_files = 0
+        for folder_name in cleared.get("folder_names", []):
+            removed_files += self.storage.remove_folder_assets(folder_name)
+        removed_files += self.storage.remove_site_source_assets(source.get("slug") or source.get("name") or str(source_id))
+        self._log_site_event(source, "validation-start", "开始站点全量校验")
+        self._log_site_event(
+            source,
+            "validation-cleared",
+            "已清理旧内容",
+            f"旧帖子 {int(cleared.get('posts') or 0)} 条，旧素材 {int(cleared.get('assets') or 0)} 个，图库动态 {int(cleared.get('folders') or 0)} 个，删除文件 {removed_files} 个",
+        )
+        result = self.execute_sync(source_id, cooperate=cooperate)
+        result["cleared_posts"] = int(cleared.get("posts") or 0)
+        result["cleared_assets"] = int(cleared.get("assets") or 0)
+        result["cleared_folders"] = int(cleared.get("folders") or 0)
+        result["removed_files"] = removed_files
+        result["validation_mode"] = True
+        result["source"] = {
+            "id": source.get("id"),
+            "name": source.get("name"),
+            "entry_url": source.get("entry_url"),
+            "source_type": source.get("source_type"),
+            "start_date": source.get("start_date") or settings.get("site_default_start_date"),
+        }
+        if not result.get("discovered"):
+            self._log_site_event(source, "validation-empty", "全量校验未发现可同步内容")
+        self._log_site_event(
+            source,
+            "validation-complete",
+            "站点全量校验完成",
+            f"发现 {result.get('discovered', 0)} 条，入库 {result.get('posts', 0)} 条，下载 {result.get('downloaded', 0)} 个，失败 {result.get('errors', 0)} 个",
+        )
+        self._status = {"running": False, "message": "站点全量校验完成"}
+        return result
+
     def _sync_source(self, source: dict[str, Any], cooperate=None) -> dict[str, int]:
         settings = self.db.get_settings()
-        fetcher = PageFetcher(timeout=SITE_PAGE_REQUEST_TIMEOUT, user_agent=str(settings.get("site_user_agent")))
+        fetcher = PageFetcher(
+            timeout=self._page_request_timeout(settings),
+            user_agent=str(settings.get("site_user_agent")),
+            proxies=self._site_proxies(settings),
+        )
         parser = SourceParser(fetcher)
         engine = RuleEngine(self.db.get_site_rules())
         start_date = parse_date(source.get("start_date") or settings.get("site_default_start_date")) or date(2026, 4, 1)
         request_sleep = max(float(settings.get("site_request_sleep") or 0), 0)
         max_media = max(int(settings.get("site_max_media_per_post") or 100), 1)
-        counters = {"posts": 0, "downloaded": 0, "blocked": 0, "errors": 0}
+        counters = {"discovered": 0, "posts": 0, "downloaded": 0, "blocked": 0, "skipped": 0, "no_media": 0, "errors": 0}
 
-        for parsed in parser.discover(source, parse_assets=True):
+        posts = parser.discover(source, parse_assets=True)
+        counters["discovered"] = len(posts)
+        if not posts:
+            return counters
+        for parsed in posts:
             if cooperate:
                 cooperate()
             pub_date = parse_date(parsed.pub_date)
             if pub_date and pub_date < start_date:
+                counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "早于起始日期")
                 continue
             counters["posts"] += 1
@@ -116,6 +229,9 @@ class SiteSyncManager:
 
             post_folder = self.storage.site_post_folder(source["slug"], parsed.pub_date, post["slug"])
             download_assets = self._apply_image_skip(parsed.assets, source)[:max_media]
+            if not download_assets:
+                counters["no_media"] += 1
+                self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "no-media", "未发现可下载媒体")
             download_jobs = []
             for index, asset in enumerate(download_assets, start=1):
                 if cooperate:
@@ -137,6 +253,7 @@ class SiteSyncManager:
                     counters["downloaded"] += 1
                 except Exception as exc:
                     self.db.set_site_asset_result(result["asset_id"], "failed", error=str(exc))
+                    self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "download-error", f"下载失败: {exc}")
                     counters["errors"] += 1
             self.dedupe_post_images(post["id"])
             self.db.update_site_post_counts(post["id"])
@@ -193,7 +310,45 @@ class SiteSyncManager:
             return {**job, "error": exc}
 
     def _new_media_downloader(self, settings: dict[str, Any]) -> MediaDownloader:
-        return MediaDownloader(timeout=SITE_MEDIA_DOWNLOAD_TIMEOUT, user_agent=str(settings.get("site_user_agent")))
+        return MediaDownloader(
+            timeout=SITE_MEDIA_DOWNLOAD_TIMEOUT,
+            user_agent=str(settings.get("site_user_agent")),
+            proxies=self._site_proxies(settings),
+        )
+
+    def _site_proxies(self, settings: dict[str, Any]) -> dict[str, str] | None:
+        if not settings.get("site_proxy_enabled"):
+            return None
+        host = str(settings.get("site_proxy_host") or "127.0.0.1").strip() or "127.0.0.1"
+        try:
+            port = int(settings.get("site_proxy_port") or 7890)
+        except (TypeError, ValueError):
+            port = 7890
+        port = max(1, min(port, 65535))
+        proxy = f"http://{host}:{port}"
+        return {"http": proxy, "https": proxy}
+
+    def _site_proxy_summary(self, settings: dict[str, Any]) -> dict[str, Any]:
+        proxies = self._site_proxies(settings)
+        if not proxies:
+            return {"enabled": False}
+        return {"enabled": True, "http": proxies["http"], "https": proxies["https"]}
+
+    def _log_site_event(self, source: dict[str, Any], decision: str, title: str, reason: str = "") -> None:
+        self.db.add_site_filter_log(
+            source.get("id"),
+            str(source.get("entry_url") or ""),
+            title,
+            decision,
+            reason or str(source.get("name") or source.get("slug") or source.get("id") or ""),
+        )
+
+    def _page_request_timeout(self, settings: dict[str, Any]) -> int:
+        try:
+            timeout = int(settings.get("site_request_timeout") or SITE_PAGE_REQUEST_TIMEOUT)
+        except (TypeError, ValueError):
+            timeout = SITE_PAGE_REQUEST_TIMEOUT
+        return max(30, min(timeout, 900))
 
     def _mirror_post_to_gallery(self, source: dict[str, Any], post: dict[str, Any], parsed: ParsedPost) -> None:
         ready_images = [

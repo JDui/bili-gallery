@@ -218,7 +218,7 @@
                                             <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
                                                 <template x-for="tile in item.preview_tiles" :key="tile.id">
                                                     <div class="photo-collage-tile">
-                                                        <img loading="lazy" :src="tile.thumb_url || tile.cover_url || tile.url" :alt="item.title">
+                                                        <img loading="lazy" decoding="async" :src="tile.small_thumb_url || tile.thumb_url || tile.cover_url || tile.url" :alt="item.title" :width="tile.width || null" :height="tile.height || null">
                                                     </div>
                                                 </template>
                                             </div>
@@ -260,14 +260,14 @@
                                         @touchcancel="item.has_livephoto ? cancelScheduledHoverPreview($event) : null"
                                     >
                                         <div class="photo-visual asset-visual" :style="assetVisualStyle(item)">
-                                            <img class="hover-preview-image" loading="lazy" :src="item.thumb_url || item.preview_url" :alt="item.title">
+                                            <img class="hover-preview-image" loading="lazy" decoding="async" :src="item.small_thumb_url || item.thumb_url || item.preview_url" :alt="item.title" :width="item.width || null" :height="item.height || null">
                                             <template x-if="item.has_livephoto">
                                                 <video
                                                     class="hover-preview-video hidden"
                                                     playsinline
                                                     muted
                                                     preload="none"
-                                                    :poster="item.thumb_url || item.preview_url"
+                                                    :poster="item.small_thumb_url || item.thumb_url || item.preview_url"
                                                     :data-src="item.livephoto?.url"
                                                 ></video>
                                             </template>
@@ -542,6 +542,18 @@
                         <p class="field-copy">每行一个关键词，命中后动态进入待审核列表。</p>
                     </article>
 
+                    <article class="settings-card">
+                        <h4>站点同步</h4>
+                        <label>页面请求超时(秒) <input type="number" min="30" max="900" step="10" x-model.number="settings.site_request_timeout"></label>
+                        <label>请求间隔(秒) <input type="number" min="0" step="0.1" x-model.number="settings.site_request_sleep"></label>
+                        <label>单贴文最大媒体数 <input type="number" min="1" max="500" x-model.number="settings.site_max_media_per_post"></label>
+                        <label>默认起始日期 <input type="date" x-model="settings.site_default_start_date"></label>
+                        <label class="toggle-row"><input type="checkbox" x-model="settings.site_proxy_enabled"> 启用 Clash 代理</label>
+                        <label>代理 IP <input type="text" x-model="settings.site_proxy_host" placeholder="127.0.0.1"></label>
+                        <label>代理端口 <input type="number" min="1" max="65535" step="1" x-model.number="settings.site_proxy_port"></label>
+                        <p class="field-copy">慢站点或海外站点可把页面请求超时调高；代理只影响站点解析和站点媒体下载，不影响哔哩哔哩登录与动态拉取。</p>
+                    </article>
+
                     <article class="settings-card auth-card">
                         <h4>哔哩哔哩权限</h4>
                         <p class="field-copy" x-text="settings.auth?.message || '未检查 Cookie'"></p>
@@ -814,6 +826,7 @@
                                     <button class="primary-button" @click="saveSiteSource(source.id)" x-text="siteSourceSavingLabel(source.id)"></button>
                                     <button class="secondary-button" @click="testSiteSource(source.id)" x-text="siteSourceTestingLabel(source.id)"></button>
                                     <button class="secondary-button" @click="syncSiteSource(source)">同步</button>
+                                    <button class="secondary-button" @click="validateSiteSource(source)">全量校验</button>
                                     <button class="secondary-button" @click="resetSiteSourceDraft(source)">还原</button>
                                     <button class="secondary-button danger-button" @click="deleteSiteSource(source)">删除</button>
                                     <template x-if="siteClearDeleteConfirmId !== source.id || siteClearDeleteConfirmStep < 3">
@@ -980,14 +993,14 @@
                             @touchcancel="pair.livephoto ? cancelScheduledHoverPreview($event) : null"
                         >
                             <div class="detail-thumb" :style="`aspect-ratio: ${pair.display_ratio || '1 / 1'}`">
-                                <img class="hover-preview-image detail-preview-image" :src="pair.preview_url" :alt="`第 ${pair.pair_index} 组`">
+                                <img class="hover-preview-image detail-preview-image" decoding="async" :src="pair.image?.small_thumb_url || pair.livephoto?.small_thumb_url || pair.preview_url" :alt="`第 ${pair.pair_index} 组`">
                                 <template x-if="pair.livephoto">
                                     <video
                                         class="hover-preview-video hidden"
                                         playsinline
                                         muted
                                         preload="none"
-                                        :poster="pair.preview_url"
+                                        :poster="pair.image?.small_thumb_url || pair.livephoto?.small_thumb_url || pair.preview_url"
                                         :data-src="pair.livephoto?.url"
                                     ></video>
                                 </template>
