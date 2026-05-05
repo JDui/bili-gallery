@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time as datetime_time
 from typing import Any
 
+from PIL import Image, ImageOps
+
 from app.db import Database
 from app.services.media_indexer import MediaIndexer
 from app.services.site_downloader import MediaDownloader
@@ -136,9 +138,35 @@ class SiteSyncManager:
                 except Exception as exc:
                     self.db.set_site_asset_result(result["asset_id"], "failed", error=str(exc))
                     counters["errors"] += 1
+            self.dedupe_post_images(post["id"])
             self.db.update_site_post_counts(post["id"])
             self._mirror_post_to_gallery(source, self.db.get_site_post(post["id"]) or post, parsed)
         return counters
+
+    def dedupe_post_images(self, post_id: int) -> int:
+        ready_images = [
+            asset
+            for asset in self.db.list_site_assets(int(post_id))
+            if asset.get("status") == "ready" and asset.get("rel_path") and asset.get("media_type") == "image"
+        ]
+        seen: list[tuple[int, int]] = []
+        removed = 0
+        for asset in ready_images:
+            source_path = self.storage.resolve_storage_path(asset.get("rel_path"))
+            if not source_path or not source_path.exists():
+                continue
+            image_hash = self._image_content_hash(source_path)
+            if image_hash is None:
+                continue
+            if any(self._hamming_distance(image_hash, existing_hash) <= 8 for existing_hash, _asset_id in seen):
+                source_path.unlink(missing_ok=True)
+                self.db.set_site_asset_result(int(asset["id"]), "duplicate", error="重复图片")
+                removed += 1
+                continue
+            seen.append((image_hash, int(asset["id"])))
+        if removed:
+            self.db.update_site_post_counts(int(post_id))
+        return removed
 
     def _download_assets(self, jobs: list[dict[str, Any]], settings: dict[str, Any], request_sleep: float) -> list[dict[str, Any]]:
         if not jobs:
@@ -184,6 +212,9 @@ class SiteSyncManager:
         folder_name = self._gallery_folder_name(source, post)
         image_folder = self.storage.image_folder(folder_name)
         image_folder.mkdir(parents=True, exist_ok=True)
+        for existing in image_folder.iterdir():
+            if existing.is_file() and not existing.name.startswith("."):
+                existing.unlink(missing_ok=True)
         for pair_index, asset in enumerate(ready_images, start=1):
             source_path = self.storage.resolve_storage_path(asset.get("rel_path"))
             if not source_path or not source_path.exists():
@@ -199,6 +230,11 @@ class SiteSyncManager:
         subscription_name = str(source.get("name") or post.get("source_name") or f"站点 {source['id']}")
         title = str(post.get("title") or parsed.title or folder_name)
         excerpt = str(post.get("excerpt") or parsed.excerpt or "")
+        metadata = {
+            "source": "site",
+            "site_post_id": int(post["id"]),
+            "site_post_url": str(post.get("url") or parsed.url or ""),
+        }
 
         if self.indexer:
             self.indexer.index_folder(
@@ -210,6 +246,7 @@ class SiteSyncManager:
                 source_dynamic_id=source_dynamic_id,
                 subscription_uid=subscription_uid,
                 subscription_name=subscription_name,
+                metadata=metadata,
             )
             self._replace_gallery_videos(folder_name, ready_videos)
             return
@@ -237,7 +274,7 @@ class SiteSyncManager:
                 "subscription_name": subscription_name,
                 "has_images": bool(image_assets),
                 "has_livephoto": False,
-                "metadata": {"source": "site"},
+                "metadata": metadata,
             }
         )
         self.db.replace_folder_assets(folder_name, "image", image_assets)
@@ -268,6 +305,40 @@ class SiteSyncManager:
         if not parsed:
             return 0
         return int(datetime.combine(parsed, datetime_time.min, tzinfo=TIMEZONE).timestamp())
+
+    def mirror_existing_site_post(self, post: dict[str, Any]) -> None:
+        source = {
+            "id": post["source_id"],
+            "slug": post.get("source_slug") or f"site-{post['source_id']}",
+            "name": post.get("source_name") or f"站点 {post['source_id']}",
+        }
+        parsed = ParsedPost(
+            url=str(post.get("url") or ""),
+            title=str(post.get("title") or ""),
+            pub_date=post.get("pub_date"),
+            tags=[],
+            excerpt=str(post.get("excerpt") or ""),
+            assets=[],
+        )
+        self._mirror_post_to_gallery(source, post, parsed)
+
+    @staticmethod
+    def _image_content_hash(path) -> int | None:
+        try:
+            with Image.open(path) as image:
+                normalized = ImageOps.exif_transpose(image).convert("L").resize((16, 16), Image.Resampling.LANCZOS)
+                pixels = list(normalized.getdata())
+        except Exception:
+            return None
+        average = sum(pixels) / len(pixels)
+        value = 0
+        for pixel in pixels:
+            value = (value << 1) | (1 if pixel >= average else 0)
+        return value
+
+    @staticmethod
+    def _hamming_distance(left: int, right: int) -> int:
+        return (left ^ right).bit_count()
 
     @staticmethod
     def site_subscription_uid(source_id: int | str) -> str:

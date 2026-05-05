@@ -31,7 +31,7 @@ from app.services.legacy_bridge import (
 )
 from app.services.media_indexer import MediaIndexer
 from app.services.storage import StorageService
-from app.services.utils import build_folder_name, compact_text, dumps_json, extract_chinese_prefix
+from app.services.utils import build_folder_name, compact_text, dumps_json, extract_chinese_prefix, loads_json
 from app.services.utils import now_iso
 
 API_NAV = "https://api.bilibili.com/x/web-interface/nav"
@@ -468,6 +468,7 @@ class PullManager:
                 subscription_name=target_folder.get("subscription_name"),
                 review_status=target_folder.get("review_status", "approved"),
                 review_reason=target_folder.get("review_reason"),
+                metadata=loads_json(target_folder.get("metadata_json"), {}),
                 generate_derivatives=False,
             )
             return
@@ -1285,6 +1286,7 @@ class PullManager:
             "deduped_files": 0,
             "repaired_folders": 0,
             "review_archived": 0,
+            "site_deduped_images": 0,
             "skipped": 0,
         }
         cookie_state = self.auth.get_cookie_state()
@@ -1358,8 +1360,23 @@ class PullManager:
                 stats["review_archived"] += 1
                 continue
             stats["repaired_folders"] += 1
+        stats["site_deduped_images"] += self._dedupe_synced_site_posts()
         self.cleanup.run()
         return stats
+
+    def _dedupe_synced_site_posts(self) -> int:
+        if self.site_syncer is None:
+            return 0
+        removed = 0
+        for post in self.db.list_synced_site_posts():
+            self._cooperate()
+            count = int(self.site_syncer.dedupe_post_images(int(post["id"])))
+            if not count:
+                continue
+            removed += count
+            self.db.update_site_post_counts(int(post["id"]))
+            self.site_syncer.mirror_existing_site_post(self.db.get_site_post(int(post["id"])) or post)
+        return removed
 
     def _execute_pull_for_subscription(
         self,
@@ -1988,6 +2005,7 @@ class PullManager:
             subscription_name=folder.get("subscription_name"),
             review_status=folder.get("review_status", "approved"),
             review_reason=folder.get("review_reason"),
+            metadata=loads_json(folder.get("metadata_json"), {}),
             generate_derivatives=False,
         )
 

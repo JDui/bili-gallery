@@ -449,8 +449,13 @@ async def reload_subscription(uid: str) -> dict[str, Any]:
 @app.post("/api/subscriptions/{uid}/pull")
 async def pull_subscription(uid: str) -> dict[str, Any]:
     try:
+        if uid.startswith("site:"):
+            source_id = int(uid.split(":", 1)[1])
+            if not db.get_site_source(source_id):
+                raise RuntimeError("站点来源不存在")
+            return site_syncer.start_sync(source_id)
         return pull_manager.start_subscription_pull(uid)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
@@ -613,6 +618,9 @@ async def trash_items() -> dict[str, Any]:
     items = []
     for item in db.list_trash_items():
         folder = loads_json(item["folder_json"], {})
+        if not folder.get("original_url"):
+            metadata = loads_json(folder.get("metadata_json"), {})
+            folder["original_url"] = metadata.get("site_post_url") or db.site_post_url_from_dynamic_id(folder.get("source_dynamic_id"))
         subscription_uid = str(folder.get("subscription_uid") or "")
         subscription_name = str(folder.get("subscription_name") or "").strip()
         if subscription_uid and not subscription_name:

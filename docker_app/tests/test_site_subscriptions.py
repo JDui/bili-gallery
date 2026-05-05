@@ -1,9 +1,11 @@
 import threading
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 from app.config import AppConfig
 from app.db import Database
+from app.services.cleanup import CleanupService
 from app.services.gallery import GalleryService
 from app.services.puller import PullManager
 from app.services.site_downloader import MediaDownloader
@@ -12,6 +14,7 @@ from app.services.site_syncer import SiteSyncManager
 from app.services.storage import StorageService
 from app.services.utils import clean_filename, parse_date
 from fastapi.testclient import TestClient
+from PIL import Image, ImageDraw
 
 
 def fixture_url(name: str) -> str:
@@ -85,6 +88,59 @@ def create_skip_source(db: Database, skip_head: int, skip_tail: int) -> dict:
     )
 
 
+def create_duplicate_source(db: Database, tmp_path: Path) -> dict:
+    site_dir = tmp_path / "fixture-site"
+    site_dir.mkdir()
+    same = Image.new("RGB", (32, 32), (220, 220, 220))
+    draw = ImageDraw.Draw(same)
+    draw.rectangle((4, 4, 18, 18), fill=(40, 40, 40))
+    draw.rectangle((20, 20, 28, 28), fill=(120, 120, 120))
+    same.save(site_dir / "same-a.jpg")
+    same.save(site_dir / "same-b.jpg")
+    unique = Image.new("RGB", (32, 32), (220, 220, 220))
+    draw = ImageDraw.Draw(unique)
+    draw.rectangle((14, 4, 28, 18), fill=(40, 40, 40))
+    draw.rectangle((4, 20, 12, 28), fill=(120, 120, 120))
+    unique.save(site_dir / "unique.jpg")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <article class="post-card"><a class="detail-link" href="post.html">Post</a></article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <article class="content">
+          <h1>Duplicate Images Post</h1>
+          <time datetime="2026-04-02">2026.04.02</time>
+          <p class="body">Duplicate image cleanup.</p>
+          <img src="same-a.jpg">
+          <img src="same-b.jpg">
+          <img src="unique.jpg">
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    return db.create_site_source(
+        {
+            "name": "Duplicate Fixture",
+            "slug": "duplicate-fixture",
+            "source_type": "html",
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "max_pages": 1,
+            "list_item_selector": ".post-card",
+            "detail_link_selector": ".detail-link",
+            "title_selector": "h1",
+            "date_selector": "time",
+            "body_selector": ".body",
+            "media_selector": ".content img",
+            "enabled": True,
+        }
+    )
+
+
 def test_site_requests_use_browser_like_headers() -> None:
     fetcher = PageFetcher(user_agent="Custom UA")
     downloader = MediaDownloader(user_agent="Custom UA")
@@ -143,8 +199,60 @@ def test_site_sync_downloads_allowed_posts_and_is_idempotent(tmp_path: Path) -> 
     assert gallery_items["total"] == 1
     assert gallery_items["items"][0]["subscription_uid"] == f"site:{source['id']}"
     assert gallery_items["items"][0]["subscription_name"] == "Fixture"
+    assert gallery_detail["folder"]["original_url"] == fixture_url("post1.html")
     assert gallery_detail and len(gallery_detail["videos"]) == 1
     assert any(log["reason"] == "早于起始日期" for log in logs)
+
+
+def test_site_sync_dedupes_images_with_same_content(tmp_path: Path) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    source = create_duplicate_source(db, tmp_path)
+
+    result = syncer._sync_source(source)
+    post = db.list_site_posts()[0]
+    assets = db.list_site_assets(post["id"])
+    gallery = GalleryService(db, storage)
+    gallery_items = gallery.get_gallery_items(category="all", subscription_uids=[f"site:{source['id']}"])
+    detail = gallery.get_folder_detail(gallery_items["items"][0]["folder_name"])
+
+    assert result["downloaded"] == 3
+    assert post["asset_count"] == 2
+    assert post["downloaded_count"] == 2
+    assert [asset["status"] for asset in assets] == ["ready", "duplicate", "ready"]
+    assert assets[1]["error"] == "重复图片"
+    assert detail["folder"]["original_url"] == assets[0]["url"].rsplit("/", 1)[0] + "/post.html"
+    assert len(detail["images"]) == 2
+
+
+def test_validation_dedupes_historical_site_posts_and_refreshes_gallery(tmp_path: Path) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    source = create_duplicate_source(db, tmp_path)
+    syncer._sync_source(source)
+    post = db.list_site_posts()[0]
+    assets = db.list_site_assets(post["id"])
+    duplicate = assets[1]
+    duplicate_path = storage.resolve_storage_path(duplicate["rel_path"])
+    kept_path = storage.resolve_storage_path(assets[0]["rel_path"])
+    duplicate_path.parent.mkdir(parents=True, exist_ok=True)
+    duplicate_path.write_bytes(kept_path.read_bytes())
+    db.set_site_asset_result(duplicate["id"], "ready", duplicate["rel_path"])
+    db.update_site_post_counts(post["id"])
+    syncer.mirror_existing_site_post(db.get_site_post(post["id"]))
+    folder_name = GalleryService(db, storage).get_gallery_items(category="all", subscription_uids=[f"site:{source['id']}"])["items"][0]["folder_name"]
+    assert len(GalleryService(db, storage).get_folder_detail(folder_name)["images"]) == 3
+
+    class FakeAuth:
+        def get_cookie_state(self):
+            return SimpleNamespace(cookie=None)
+
+    puller = PullManager(db, storage, None, CleanupService(db, storage), FakeAuth(), None)
+    puller.attach_site_syncer(syncer)
+
+    stats = puller._execute_validation()
+
+    assert stats["site_deduped_images"] == 1
+    assert db.get_site_post(post["id"])["downloaded_count"] == 2
+    assert len(GalleryService(db, storage).get_folder_detail(folder_name)["images"]) == 2
 
 
 def test_site_sync_uses_main_task_queue_when_busy(tmp_path: Path) -> None:
@@ -279,6 +387,7 @@ def test_site_api_source_preview_sync_and_post_actions(tmp_path: Path, monkeypat
     assert import_result["updated"] == 1
 
     assert client.post(f"/api/site-sources/{created['id']}/sync").json()["ok"] is True
+    assert client.post(f"/api/subscriptions/site:{created['id']}/pull").json()["ok"] is True
 
     posts = client.get("/api/site-posts").json()["items"]
     assert len(posts) == 1

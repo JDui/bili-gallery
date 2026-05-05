@@ -137,6 +137,7 @@ class GalleryService:
             "pub_ts": int(item.get("pub_ts") or 0),
             "top_dynamic_id": item.get("top_dynamic_id"),
             "source_dynamic_id": item.get("source_dynamic_id"),
+            "original_url": self._original_url(item),
             "subscription_uid": str(item.get("subscription_uid") or ""),
             "subscription_name": item.get("subscription_name") or "",
             "year_key": item.get("year_key") or "",
@@ -168,6 +169,7 @@ class GalleryService:
             "pub_ts": int(folder.get("pub_ts") or 0),
             "top_dynamic_id": folder.get("top_dynamic_id"),
             "source_dynamic_id": folder.get("source_dynamic_id"),
+            "original_url": self._original_url(folder),
             "subscription_uid": str(folder.get("subscription_uid") or ""),
             "subscription_name": folder.get("subscription_name") or "",
             "year_key": (folder.get("pub_time") or "")[:4],
@@ -195,6 +197,7 @@ class GalleryService:
             "pub_ts": int(item.get("pub_ts") or 0),
             "subscription_uid": str(item.get("subscription_uid") or ""),
             "subscription_name": item.get("subscription_name") or "",
+            "original_url": self._original_url(item),
             "is_favorite": bool(item.get("is_favorite")),
             "year_key": item.get("year_key") or "",
             "month_key": item.get("month_key") or "",
@@ -233,6 +236,13 @@ class GalleryService:
             return "1 / 1"
         ratio = max(1 / 3, min(3, width / height))
         return f"{ratio:.4f} / 1"
+
+    def _original_url(self, item: dict) -> str:
+        metadata = loads_json(item.get("metadata_json"), {})
+        url = str(metadata.get("site_post_url") or metadata.get("original_url") or "").strip()
+        if url:
+            return url
+        return self.db.site_post_url_from_dynamic_id(item.get("source_dynamic_id"))
 
     def _fallback_gallery_items(
         self,

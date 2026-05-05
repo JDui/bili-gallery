@@ -36,6 +36,7 @@ class MediaIndexer:
         review_status: str = "approved",
         review_reason: str | None = None,
         generate_derivatives: bool = True,
+        metadata: dict | None = None,
     ) -> None:
         image_folder = self.storage.image_folder(folder_name)
         livephoto_folder = self.storage.livephoto_folder(folder_name)
@@ -62,7 +63,7 @@ class MediaIndexer:
                 "has_livephoto": bool(livephoto_assets),
                 "review_status": review_status,
                 "review_reason": review_reason,
-                "metadata": {"indexed_at": now_iso()},
+                "metadata": {**(metadata or {}), "indexed_at": now_iso()},
             }
         )
         self.db.replace_folder_assets(folder_name, "image", image_assets)

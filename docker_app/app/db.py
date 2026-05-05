@@ -966,7 +966,7 @@ class Database:
                 """
                 select count(*) as asset_count,
                     sum(case when status = 'ready' then 1 else 0 end) as downloaded_count
-                from site_assets where post_id = ?
+                from site_assets where post_id = ? and status != 'duplicate'
                 """,
                 (int(post_id),),
             ).fetchone()
@@ -981,6 +981,39 @@ class Database:
                 """,
                 (asset_count, downloaded_count, asset_count, downloaded_count, asset_count, now_iso(), int(post_id)),
             )
+
+    def list_synced_site_posts(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select site_posts.*, site_sources.name as source_name, site_sources.slug as source_slug
+                from site_posts join site_sources on site_sources.id = site_posts.source_id
+                where exists (
+                    select 1 from site_assets
+                    where site_assets.post_id = site_posts.id
+                        and site_assets.status = 'ready'
+                        and site_assets.rel_path is not null
+                )
+                order by site_posts.updated_at desc
+                """
+            ).fetchall()
+        return [self._site_post_row(row) for row in rows]
+
+    def site_post_url_from_dynamic_id(self, source_dynamic_id: str | None) -> str:
+        parts = str(source_dynamic_id or "").split(":")
+        if len(parts) != 3 or parts[0] != "site":
+            return ""
+        try:
+            source_id = int(parts[1])
+            post_id = int(parts[2])
+        except ValueError:
+            return ""
+        with self.connect() as conn:
+            row = conn.execute(
+                "select url from site_posts where id = ? and source_id = ?",
+                (post_id, source_id),
+            ).fetchone()
+        return str(row["url"] or "") if row else ""
 
     def add_site_filter_log(self, source_id: int | None, post_url: str, title: str, decision: str, reason: str) -> None:
         with self.connect() as conn:

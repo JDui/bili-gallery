@@ -678,6 +678,10 @@
                                     </div>
                                 </template>
                             </div>
+                            <div class="panel-card-actions subscription-card-actions" x-show="item.is_site">
+                                <button class="primary-button" @click="pullSiteSubscription(item)">拉取当前订阅</button>
+                                <button class="secondary-button" @click="selectSubscription(item.uid)">查看内容</button>
+                            </div>
                         </div>
                     </article>
                 </template>
@@ -782,33 +786,33 @@
                             </button>
                             <div class="subscription-card-body" x-show="isSiteSourceExpanded(source.id)" x-transition.opacity.duration.180ms x-cloak>
                                 <div class="subscription-policy-grid site-policy-grid">
-                                    <label>名称<input x-model="siteSourceDrafts[source.id].name" required></label>
-                                    <label>Slug<input x-model="siteSourceDrafts[source.id].slug" placeholder="自动生成"></label>
+                                    <label>名称<input :value="siteSourceDraftValue(source.id, 'name')" @input="updateSiteSourceDraft(source.id, 'name', $event.target.value)" required></label>
+                                    <label>Slug<input :value="siteSourceDraftValue(source.id, 'slug')" @input="updateSiteSourceDraft(source.id, 'slug', $event.target.value)" placeholder="自动生成"></label>
                                     <label>类型
-                                        <select x-model="siteSourceDrafts[source.id].source_type">
+                                        <select :value="siteSourceDraftValue(source.id, 'source_type')" @change="updateSiteSourceDraft(source.id, 'source_type', $event.target.value)">
                                             <option value="html">HTML 列表页</option>
                                             <option value="rss">RSS</option>
                                             <option value="sitemap">Sitemap</option>
                                         </select>
                                     </label>
-                                    <label>入口 URL<input x-model="siteSourceDrafts[source.id].entry_url" required placeholder="https://example.com/feed.xml"></label>
-                                    <label>分页模板<input x-model="siteSourceDrafts[source.id].page_url_template" placeholder="https://example.com/page/{page}"></label>
-                                    <label>最大页数<input type="number" min="1" x-model.number="siteSourceDrafts[source.id].max_pages"></label>
-                                    <label>列表项选择器<input x-model="siteSourceDrafts[source.id].list_item_selector" placeholder=".post-card"></label>
-                                    <label>详情链接选择器<input x-model="siteSourceDrafts[source.id].detail_link_selector" placeholder="a"></label>
-                                    <label>标题选择器<input x-model="siteSourceDrafts[source.id].title_selector" placeholder="h1"></label>
-                                    <label>日期选择器<input x-model="siteSourceDrafts[source.id].date_selector" placeholder="time"></label>
-                                    <label>tag 选择器<input x-model="siteSourceDrafts[source.id].tag_selector" placeholder=".tag"></label>
-                                    <label>正文选择器<input x-model="siteSourceDrafts[source.id].body_selector" placeholder="article, .content"></label>
-                                    <label>媒体选择器<input x-model="siteSourceDrafts[source.id].media_selector" placeholder=".content img, video source"></label>
-                                    <label>跳过头部图片数<input type="number" min="0" x-model.number="siteSourceDrafts[source.id].skip_head_images"></label>
-                                    <label>跳过尾部图片数<input type="number" min="0" x-model.number="siteSourceDrafts[source.id].skip_tail_images"></label>
-                                    <label>起始日期<input type="date" x-model="siteSourceDrafts[source.id].start_date"></label>
-                                    <label class="toggle-row switch-row"><input type="checkbox" x-model="siteSourceDrafts[source.id].enabled"><span>启用来源</span></label>
+                                    <label>入口 URL<input :value="siteSourceDraftValue(source.id, 'entry_url')" @input="updateSiteSourceDraft(source.id, 'entry_url', $event.target.value)" required placeholder="https://example.com/feed.xml"></label>
+                                    <label>分页模板<input :value="siteSourceDraftValue(source.id, 'page_url_template')" @input="updateSiteSourceDraft(source.id, 'page_url_template', $event.target.value)" placeholder="https://example.com/page/{page}"></label>
+                                    <label>最大页数<input type="number" min="1" :value="siteSourceDraftValue(source.id, 'max_pages')" @input="updateSiteSourceDraft(source.id, 'max_pages', $event.target.value)"></label>
+                                    <label>列表项选择器<input :value="siteSourceDraftValue(source.id, 'list_item_selector')" @input="updateSiteSourceDraft(source.id, 'list_item_selector', $event.target.value)" placeholder=".post-card"></label>
+                                    <label>详情链接选择器<input :value="siteSourceDraftValue(source.id, 'detail_link_selector')" @input="updateSiteSourceDraft(source.id, 'detail_link_selector', $event.target.value)" placeholder="a"></label>
+                                    <label>标题选择器<input :value="siteSourceDraftValue(source.id, 'title_selector')" @input="updateSiteSourceDraft(source.id, 'title_selector', $event.target.value)" placeholder="h1"></label>
+                                    <label>日期选择器<input :value="siteSourceDraftValue(source.id, 'date_selector')" @input="updateSiteSourceDraft(source.id, 'date_selector', $event.target.value)" placeholder="time"></label>
+                                    <label>tag 选择器<input :value="siteSourceDraftValue(source.id, 'tag_selector')" @input="updateSiteSourceDraft(source.id, 'tag_selector', $event.target.value)" placeholder=".tag"></label>
+                                    <label>正文选择器<input :value="siteSourceDraftValue(source.id, 'body_selector')" @input="updateSiteSourceDraft(source.id, 'body_selector', $event.target.value)" placeholder="article, .content"></label>
+                                    <label>媒体选择器<input :value="siteSourceDraftValue(source.id, 'media_selector')" @input="updateSiteSourceDraft(source.id, 'media_selector', $event.target.value)" placeholder=".content img, video source"></label>
+                                    <label>跳过头部图片数<input type="number" min="0" :value="siteSourceDraftValue(source.id, 'skip_head_images')" @input="updateSiteSourceDraft(source.id, 'skip_head_images', $event.target.value)"></label>
+                                    <label>跳过尾部图片数<input type="number" min="0" :value="siteSourceDraftValue(source.id, 'skip_tail_images')" @input="updateSiteSourceDraft(source.id, 'skip_tail_images', $event.target.value)"></label>
+                                    <label>起始日期<input type="date" :value="siteSourceDraftValue(source.id, 'start_date')" @input="updateSiteSourceDraft(source.id, 'start_date', $event.target.value)"></label>
+                                    <label class="toggle-row switch-row"><input type="checkbox" :checked="!!siteSourceDraftValue(source.id, 'enabled')" @change="updateSiteSourceDraft(source.id, 'enabled', $event.target.checked)"><span>启用来源</span></label>
                                 </div>
                                 <div class="panel-card-actions subscription-card-actions">
-                                    <button class="primary-button" @click="saveSiteSource(source.id)" :disabled="siteSourceSavingById[source.id]" x-text="siteSourceSavingById[source.id] ? '保存中' : '保存设置'"></button>
-                                    <button class="secondary-button" @click="testSiteSource(source.id)" :disabled="siteTestLoadingById[source.id]" x-text="siteTestLoadingById[source.id] ? '解析中' : '测试解析'"></button>
+                                    <button class="primary-button" @click="saveSiteSource(source.id)" x-text="siteSourceSavingLabel(source.id)"></button>
+                                    <button class="secondary-button" @click="testSiteSource(source.id)" x-text="siteSourceTestingLabel(source.id)"></button>
                                     <button class="secondary-button" @click="syncSiteSource(source)">同步</button>
                                     <button class="secondary-button" @click="resetSiteSourceDraft(source)">还原</button>
                                     <button class="secondary-button danger-button" @click="deleteSiteSource(source)">删除</button>

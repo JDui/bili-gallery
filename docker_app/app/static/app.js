@@ -1386,7 +1386,13 @@ function galleryApp() {
     },
 
     reviewSourceUrl(item) {
+      if (item?.original_url) {
+        return item.original_url;
+      }
       const dynamicId = item.source_dynamic_id || item.top_dynamic_id;
+      if (dynamicId && String(dynamicId).startsWith("site:")) {
+        return "";
+      }
       return dynamicId ? `https://www.bilibili.com/opus/${dynamicId}` : "";
     },
 
@@ -2763,7 +2769,12 @@ function galleryApp() {
       if (this.currentView === "gallery" && this.selectedSubscriptionUids.length === 1) {
         url = `/api/subscriptions/${encodeURIComponent(this.selectedSubscriptionUids[0])}/pull`;
       }
-      this.setImmediateTaskFeedback("正在提交拉取任务...");
+      const isSitePull = this.selectedSubscriptionUids.length === 1 && String(this.selectedSubscriptionUids[0]).startsWith("site:");
+      if (isSitePull) {
+        this.setImmediateSiteTaskFeedback("正在提交站点拉取任务...", { running: true });
+      } else {
+        this.setImmediateTaskFeedback("正在提交拉取任务...");
+      }
       const result = await this.api(url, { method: "POST" });
       await Promise.all([this.refreshStatus(), this.refreshTasks()]);
       this.notify("info", "任务已提交", result.message);
@@ -2988,18 +2999,19 @@ function galleryApp() {
 
     async loadSiteSources() {
       const payload = await this.api("/api/site-sources");
-      this.siteSources = payload.items || [];
+      const nextSources = payload.items || [];
       const previousDrafts = { ...(this.siteSourceDrafts || {}) };
       const previousExpanded = { ...(this.siteSourceExpanded || {}) };
       this.siteSourceDrafts = Object.fromEntries(
-        this.siteSources.map((source) => [
+        nextSources.map((source) => [
           String(source.id),
           previousDrafts[String(source.id)] || this.siteSourceDraftFromSource(source),
         ]),
       );
       this.siteSourceExpanded = Object.fromEntries(
-        this.siteSources.map((source) => [String(source.id), !!previousExpanded[String(source.id)]]),
+        nextSources.map((source) => [String(source.id), !!previousExpanded[String(source.id)]]),
       );
+      this.siteSources = nextSources;
     },
 
     async loadSiteRules() {
@@ -3084,6 +3096,47 @@ function galleryApp() {
       };
     },
 
+    siteSourceDraft(sourceId) {
+      const key = String(sourceId);
+      if (!this.siteSourceDrafts[key]) {
+        const source = (this.siteSources || []).find((item) => String(item.id) === key);
+        this.siteSourceDrafts = {
+          ...this.siteSourceDrafts,
+          [key]: source ? this.siteSourceDraftFromSource(source) : {},
+        };
+      }
+      return this.siteSourceDrafts[key];
+    },
+
+    siteSourceDraftValue(sourceId, field) {
+      const draft = this.siteSourceDraft(sourceId);
+      if (field === "enabled") {
+        return !!draft.enabled;
+      }
+      return draft[field] ?? "";
+    },
+
+    updateSiteSourceDraft(sourceId, field, value) {
+      const key = String(sourceId);
+      const numericFields = new Set(["max_pages", "skip_head_images", "skip_tail_images"]);
+      const draft = this.siteSourceDraft(sourceId);
+      let nextValue = value;
+      if (numericFields.has(field)) {
+        const fallback = field === "max_pages" ? 1 : 0;
+        nextValue = Math.max(fallback, Number(value) || fallback);
+      }
+      if (field === "enabled") {
+        nextValue = !!value;
+      }
+      this.siteSourceDrafts = {
+        ...this.siteSourceDrafts,
+        [key]: {
+          ...draft,
+          [field]: nextValue,
+        },
+      };
+    },
+
     siteSourceStatusText(source) {
       return source.enabled ? "启用" : "停用";
     },
@@ -3092,11 +3145,23 @@ function galleryApp() {
       return `贴文 ${source.post_count || 0} · 媒体 ${source.asset_count || 0}`;
     },
 
+    siteSourceSavingLabel(sourceId) {
+      return this.siteSourceSavingById[String(sourceId)] ? "保存中" : "保存设置";
+    },
+
+    siteSourceTestingLabel(sourceId) {
+      return this.siteTestLoadingById[String(sourceId)] ? "解析中" : "测试解析";
+    },
+
     async saveSiteSource(sourceId = null) {
       const key = sourceId == null ? null : String(sourceId);
       if (key && this.siteSourceSavingById[key]) return;
       if (!key && this.siteSourceSaving) return;
-      const draft = key ? this.siteSourceDrafts[key] : this.siteSourceForm;
+      const draft = key ? this.siteSourceDraft(sourceId) : this.siteSourceForm;
+      if (!draft?.entry_url) {
+        this.notify("error", "保存失败", "请输入入口 URL。");
+        return;
+      }
       const body = JSON.stringify(draft);
       const url = draft.id
         ? `/api/site-sources/${encodeURIComponent(draft.id)}`
@@ -3111,6 +3176,12 @@ function galleryApp() {
       try {
         const result = await this.api(url, { method, body });
         this.notify("success", "站点来源已保存", result.message || "来源配置已更新。");
+        if (key && result.item) {
+          this.siteSourceDrafts = {
+            ...this.siteSourceDrafts,
+            [key]: this.siteSourceDraftFromSource(result.item),
+          };
+        }
         if (!key) {
           this.resetSiteSourceForm();
           this.newSiteSourceExpanded = false;
@@ -3178,7 +3249,7 @@ function galleryApp() {
       const key = sourceId == null ? null : String(sourceId);
       if (key && this.siteTestLoadingById[key]) return;
       if (!key && this.siteTestLoading) return;
-      const draft = key ? this.siteSourceDrafts[key] : this.siteSourceForm;
+      const draft = key ? this.siteSourceDraft(sourceId) : this.siteSourceForm;
       if (key) {
         this.siteTestLoadingById = { ...this.siteTestLoadingById, [key]: true };
         this.sitePreviewItemsById = { ...this.sitePreviewItemsById, [key]: [] };
@@ -3210,6 +3281,13 @@ function galleryApp() {
       this.setImmediateSiteTaskFeedback(`正在提交 ${source.name || "站点"} 同步任务...`, { running: true });
       const result = await this.api(`/api/site-sources/${encodeURIComponent(source.id)}/sync`, { method: "POST" });
       this.notify("info", "站点同步已提交", result.message || "已开始同步。");
+      await Promise.all([this.refreshStatus(), this.refreshTasks()]);
+    },
+
+    async pullSiteSubscription(item) {
+      this.setImmediateSiteTaskFeedback(`正在提交 ${item.uname || "站点"} 拉取任务...`, { running: true });
+      const result = await this.api(`/api/subscriptions/${encodeURIComponent(item.uid)}/pull`, { method: "POST" });
+      this.notify("info", "站点拉取已提交", result.message || "已开始拉取当前站点。");
       await Promise.all([this.refreshStatus(), this.refreshTasks()]);
     },
 
