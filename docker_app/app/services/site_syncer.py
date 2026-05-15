@@ -21,6 +21,7 @@ from app.services.utils import TIMEZONE, clean_filename, parse_date, safe_slug
 SITE_PAGE_REQUEST_TIMEOUT = 300
 SITE_MEDIA_DOWNLOAD_TIMEOUT = 300
 SITE_MEDIA_DOWNLOAD_CONCURRENCY = 3
+SITE_MEDIA_DOWNLOAD_RETRIES = 5
 
 
 class SiteSyncManager:
@@ -199,6 +200,7 @@ class SiteSyncManager:
         parser = SourceParser(fetcher)
         engine = RuleEngine(self.db.get_site_rules())
         start_date = parse_date(source.get("start_date") or settings.get("site_default_start_date")) or date(2026, 4, 1)
+        incremental_cutoff_date = self._latest_site_sync_date(source)
         request_sleep = max(float(settings.get("site_request_sleep") or 0), 0)
         max_media = max(int(settings.get("site_max_media_per_post") or 100), 1)
         counters = {"discovered": 0, "posts": 0, "downloaded": 0, "blocked": 0, "skipped": 0, "no_media": 0, "errors": 0}
@@ -214,6 +216,10 @@ class SiteSyncManager:
             if pub_date and pub_date < start_date:
                 counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "早于起始日期")
+                continue
+            if incremental_cutoff_date and pub_date and pub_date < incremental_cutoff_date:
+                counters["skipped"] += 1
+                self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "早于本地最新时间")
                 continue
             counters["posts"] += 1
             post = self.db.upsert_site_post(source["id"], self._post_payload(parsed))
@@ -233,13 +239,20 @@ class SiteSyncManager:
                 counters["no_media"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "no-media", "未发现可下载媒体")
             download_jobs = []
+            seen_urls: set[str] = set()
             for index, asset in enumerate(download_assets, start=1):
                 if cooperate:
                     cooperate()
+                asset_url = str(asset.url or "").strip()
+                if not asset_url or asset_url in seen_urls:
+                    continue
+                seen_urls.add(asset_url)
                 filename = clean_filename(asset.url, parsed.title, index, asset.media_type)
                 db_asset = self.db.upsert_site_asset(post["id"], {"url": asset.url, "media_type": asset.media_type, "filename": filename})
                 target = post_folder / filename
-                if db_asset.get("status") == "ready" and target.exists():
+                if db_asset.get("status") == "duplicate":
+                    continue
+                if db_asset.get("status") == "ready" and target.exists() and target.stat().st_size > 0:
                     continue
                 download_jobs.append({"asset_id": db_asset["id"], "url": asset.url, "target": target})
             for result in self._download_assets(download_jobs, settings, request_sleep):
@@ -299,15 +312,22 @@ class SiteSyncManager:
         return results
 
     def _download_asset(self, job: dict[str, Any], settings: dict[str, Any], request_sleep: float) -> dict[str, Any]:
-        try:
-            downloader = self._new_media_downloader(settings)
-            target = job["target"]
-            downloader.download(job["url"], target)
-            if request_sleep:
-                time.sleep(request_sleep)
-            return {**job, "target": target, "error": None}
-        except Exception as exc:
-            return {**job, "error": exc}
+        target = job["target"]
+        last_error: Exception | None = None
+        for attempt in range(SITE_MEDIA_DOWNLOAD_RETRIES):
+            try:
+                downloader = self._new_media_downloader(settings)
+                downloader.download(job["url"], target)
+                if request_sleep:
+                    time.sleep(request_sleep)
+                return {**job, "target": target, "error": None}
+            except Exception as exc:
+                last_error = exc
+                if attempt >= SITE_MEDIA_DOWNLOAD_RETRIES - 1:
+                    break
+                time.sleep(0.2 + attempt * 0.15)
+        target.with_suffix(f"{target.suffix}.part").unlink(missing_ok=True)
+        return {**job, "error": last_error}
 
     def _new_media_downloader(self, settings: dict[str, Any]) -> MediaDownloader:
         return MediaDownloader(
@@ -349,6 +369,19 @@ class SiteSyncManager:
         except (TypeError, ValueError):
             timeout = SITE_PAGE_REQUEST_TIMEOUT
         return max(30, min(timeout, 900))
+
+    def _latest_site_sync_date(self, source: dict[str, Any]) -> date | None:
+        source_id = int(source["id"])
+        dates: list[date] = []
+        for folder in self.db.list_site_gallery_folders(source_id):
+            pub_ts = int(folder.get("pub_ts") or 0)
+            if pub_ts > 0:
+                dates.append(datetime.fromtimestamp(pub_ts, TIMEZONE).date())
+        for post in self.db.list_site_posts(source_id=source_id):
+            pub_date = parse_date(post.get("pub_date"))
+            if pub_date:
+                dates.append(pub_date)
+        return max(dates) if dates else None
 
     def _mirror_post_to_gallery(self, source: dict[str, Any], post: dict[str, Any], parsed: ParsedPost) -> None:
         ready_images = [

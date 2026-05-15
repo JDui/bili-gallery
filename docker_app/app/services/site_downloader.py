@@ -23,13 +23,22 @@ class MediaDownloader:
 
     def download(self, url: str, target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
+        temp_target = target.with_suffix(f"{target.suffix}.part")
+        if temp_target.exists():
+            temp_target.unlink(missing_ok=True)
         if url.startswith("file://"):
             source = Path(urlparse(url).path)
-            target.write_bytes(source.read_bytes())
+            temp_target.write_bytes(source.read_bytes())
+            temp_target.replace(target)
             return
-        with self.session.get(url, timeout=self.timeout, stream=True) as response:
-            response.raise_for_status()
-            with target.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=1024 * 128):
-                    if chunk:
-                        handle.write(chunk)
+        try:
+            with self.session.get(url, timeout=self.timeout, stream=True) as response:
+                response.raise_for_status()
+                with temp_target.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1024 * 128):
+                        if chunk:
+                            handle.write(chunk)
+            temp_target.replace(target)
+        except Exception:
+            temp_target.unlink(missing_ok=True)
+            raise

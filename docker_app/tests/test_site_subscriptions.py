@@ -143,6 +143,101 @@ def create_duplicate_source(db: Database, tmp_path: Path) -> dict:
     )
 
 
+def create_single_image_source(db: Database, tmp_path: Path) -> dict:
+    site_dir = tmp_path / "single-image-site"
+    site_dir.mkdir()
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <article class="post-card"><a class="detail-link" href="post.html">Post</a></article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <article class="content">
+          <h1>Single Image Post</h1>
+          <time datetime="2026-04-06">2026.04.06</time>
+          <p class="body">Single image retry fixture.</p>
+          <img src="retry.jpg">
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    return db.create_site_source(
+        {
+            "name": "Single Image Fixture",
+            "slug": "single-image-fixture",
+            "source_type": "html",
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "max_pages": 1,
+            "list_item_selector": ".post-card",
+            "detail_link_selector": ".detail-link",
+            "title_selector": "h1",
+            "date_selector": "time",
+            "body_selector": ".body",
+            "media_selector": ".content img",
+            "enabled": True,
+        }
+    )
+
+
+def create_incremental_source(db: Database, tmp_path: Path) -> dict:
+    site_dir = tmp_path / "incremental-site"
+    site_dir.mkdir()
+    for name, color in (("older.jpg", (180, 20, 20)), ("newer.jpg", (20, 180, 20))):
+        Image.new("RGB", (32, 32), color).save(site_dir / name)
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <article class="post-card"><a class="detail-link" href="newer.html">Newer</a></article>
+        <article class="post-card"><a class="detail-link" href="older.html">Older</a></article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "newer.html").write_text(
+        """
+        <!doctype html>
+        <article class="content">
+          <h1>Newer Same Day</h1>
+          <time datetime="2026-04-05">2026.04.05</time>
+          <p class="body">Newer same-day post.</p>
+          <img src="newer.jpg">
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "older.html").write_text(
+        """
+        <!doctype html>
+        <article class="content">
+          <h1>Older Previous Day</h1>
+          <time datetime="2026-04-04">2026.04.04</time>
+          <p class="body">Older previous-day post.</p>
+          <img src="older.jpg">
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    return db.create_site_source(
+        {
+            "name": "Incremental Fixture",
+            "slug": "incremental-fixture",
+            "source_type": "html",
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "max_pages": 1,
+            "list_item_selector": ".post-card",
+            "detail_link_selector": ".detail-link",
+            "title_selector": "h1",
+            "date_selector": "time",
+            "body_selector": ".body",
+            "media_selector": ".content img",
+            "enabled": True,
+        }
+    )
+
+
 def test_site_requests_use_browser_like_headers() -> None:
     fetcher = PageFetcher(user_agent="Custom UA")
     downloader = MediaDownloader(user_agent="Custom UA")
@@ -160,7 +255,7 @@ def test_site_requests_use_browser_like_headers() -> None:
     assert proxied_downloader.session.proxies["https"] == "http://127.0.0.1:7890"
 
 
-def test_gallery_thumbnails_use_640_and_240_and_rebuild_cleans_old_derivatives(tmp_path: Path) -> None:
+def test_gallery_thumbnails_use_576_and_258_short_edge_and_rebuild_cleans_old_derivatives(tmp_path: Path) -> None:
     db, storage, _syncer = make_app(tmp_path)
     image_folder = storage.image_folder("thumb-demo")
     image_folder.mkdir(parents=True, exist_ok=True)
@@ -180,9 +275,16 @@ def test_gallery_thumbnails_use_640_and_240_and_rebuild_cleans_old_derivatives(t
     assert not old_marker.exists()
     assert not old_small_marker.exists()
     with Image.open(thumb) as image:
-        assert max(image.size) == 640
+        assert min(image.size) == 576
     with Image.open(small) as image:
-        assert max(image.size) == 240
+        assert min(image.size) == 258
+    Image.new("RGB", (640, 480), (20, 20, 180)).save(thumb, format="WEBP")
+    Image.new("RGB", (320, 240), (20, 20, 180)).save(small, format="WEBP")
+    indexer.refresh_gallery_index("thumb-demo")
+    with Image.open(thumb) as image:
+        assert min(image.size) == 576
+    with Image.open(small) as image:
+        assert min(image.size) == 258
     detail = GalleryService(db, storage).get_folder_detail("thumb-demo")
     assert "/.thumbs/small/" in detail["pairs"][0]["preview_url"]
 
@@ -318,6 +420,123 @@ def test_site_sync_dedupes_images_with_same_content(tmp_path: Path) -> None:
     assert assets[1]["error"] == "重复图片"
     assert detail["folder"]["original_url"] == assets[0]["url"].rsplit("/", 1)[0] + "/post.html"
     assert len(detail["images"]) == 2
+
+
+def test_site_sync_does_not_redownload_duplicate_assets(tmp_path: Path, monkeypatch) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    source = create_duplicate_source(db, tmp_path)
+    syncer._sync_source(source)
+
+    class FailingDownloader:
+        def download(self, url: str, target: Path) -> None:
+            raise AssertionError(f"unexpected download: {url}")
+
+    monkeypatch.setattr(syncer, "_new_media_downloader", lambda settings: FailingDownloader())
+
+    result = syncer._sync_source(source)
+    post = db.list_site_posts()[0]
+    assets = db.list_site_assets(post["id"])
+
+    assert result["downloaded"] == 0
+    assert [asset["status"] for asset in assets] == ["ready", "duplicate", "ready"]
+
+
+def test_site_sync_retries_media_download_until_fifth_attempt(tmp_path: Path, monkeypatch) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    source = create_single_image_source(db, tmp_path)
+    attempts = {"count": 0}
+
+    class FlakyDownloader:
+        def download(self, url: str, target: Path) -> None:
+            attempts["count"] += 1
+            if attempts["count"] < 5:
+                raise OSError("temporary failure")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"ok")
+
+    monkeypatch.setattr(syncer, "_new_media_downloader", lambda settings: FlakyDownloader())
+    monkeypatch.setattr("app.services.site_syncer.time.sleep", lambda seconds: None)
+
+    result = syncer._sync_source(source)
+    post = db.list_site_posts()[0]
+    asset = db.list_site_assets(post["id"])[0]
+
+    assert attempts["count"] == 5
+    assert result["downloaded"] == 1
+    assert result["errors"] == 0
+    assert asset["status"] == "ready"
+
+
+def test_site_sync_records_failed_media_after_five_attempts(tmp_path: Path, monkeypatch) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    source = create_single_image_source(db, tmp_path)
+    attempts = {"count": 0}
+
+    class BrokenDownloader:
+        def download(self, url: str, target: Path) -> None:
+            attempts["count"] += 1
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.with_suffix(f"{target.suffix}.part").write_bytes(b"partial")
+            raise OSError("permanent failure")
+
+    monkeypatch.setattr(syncer, "_new_media_downloader", lambda settings: BrokenDownloader())
+    monkeypatch.setattr("app.services.site_syncer.time.sleep", lambda seconds: None)
+
+    result = syncer._sync_source(source)
+    post = db.list_site_posts()[0]
+    asset = db.list_site_assets(post["id"])[0]
+    target = _site_asset_target(storage=_storage, asset=asset)
+    logs = db.list_site_filter_logs()
+
+    assert attempts["count"] == 5
+    assert result["downloaded"] == 0
+    assert result["errors"] == 1
+    assert asset["status"] == "failed"
+    assert "permanent failure" in asset["error"]
+    assert any(log["decision"] == "download-error" and "permanent failure" in log["reason"] for log in logs)
+    assert not target.exists()
+
+
+def _site_asset_target(storage: StorageService, asset: dict) -> Path:
+    rel_path = asset.get("rel_path")
+    if rel_path:
+        resolved = storage.resolve_storage_path(rel_path)
+        if resolved:
+            return resolved
+    post = asset["filename"]
+    candidates = list(storage.config.data_dir.glob(f"sites/**/{post}"))
+    return candidates[0] if candidates else storage.config.data_dir / post
+
+
+def test_site_sync_skips_older_than_latest_but_repairs_same_day_missing_media(tmp_path: Path, monkeypatch) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    source = create_incremental_source(db, tmp_path)
+    first = syncer._sync_source(source)
+    assert first["downloaded"] == 2
+
+    newer_post = next(post for post in db.list_site_posts(source_id=source["id"]) if post["title"] == "Newer Same Day")
+    newer_asset = db.list_site_assets(newer_post["id"])[0]
+    newer_target = storage.resolve_storage_path(newer_asset["rel_path"])
+    assert newer_target and newer_target.exists()
+    newer_target.unlink()
+    downloaded_urls: list[str] = []
+
+    class CaptureDownloader:
+        def download(self, url: str, target: Path) -> None:
+            downloaded_urls.append(url)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"repaired")
+
+    monkeypatch.setattr(syncer, "_new_media_downloader", lambda settings: CaptureDownloader())
+
+    second = syncer._sync_source(source)
+    logs = db.list_site_filter_logs()
+
+    assert second["downloaded"] == 1
+    assert second["skipped"] == 1
+    assert len(downloaded_urls) == 1
+    assert downloaded_urls[0].endswith("/newer.jpg")
+    assert any(log["decision"] == "skipped" and log["reason"] == "早于本地最新时间" for log in logs)
 
 
 def test_site_full_validation_clears_and_resyncs_source(tmp_path: Path) -> None:

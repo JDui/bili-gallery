@@ -117,11 +117,6 @@ class MediaIndexer:
     def _backfill_thumbnails(self, assets: list[dict]) -> list[dict]:
         output: list[dict] = []
         for asset in assets:
-            thumb_path = self.storage.resolve_storage_path(asset.get("thumb_rel_path"))
-            small_thumb_path = self.storage.resolve_storage_path(asset.get("small_thumb_rel_path"))
-            if thumb_path and thumb_path.exists() and small_thumb_path and small_thumb_path.exists():
-                output.append(asset)
-                continue
             thumb_rel_path, small_thumb_rel_path = self._ensure_asset_thumbnails(asset)
             if (thumb_rel_path or small_thumb_rel_path) and asset.get("id"):
                 self.db.update_asset_thumbnails(int(asset["id"]), thumb_rel_path, small_thumb_rel_path)
