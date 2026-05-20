@@ -408,6 +408,98 @@ def test_gallery_indexes_rebuild_and_query_are_stable(tmp_path: Path) -> None:
     ]
 
 
+def test_gallery_source_kind_filters_up_and_site_sources(tmp_path: Path) -> None:
+    config = DummyConfig(tmp_path)
+    storage = StorageService(config)
+    storage.ensure()
+    db = Database(config.database_path)
+    db.init()
+    indexer = MediaIndexer(db, storage, ThumbnailService())
+    gallery = GalleryService(db, storage)
+
+    folders = [
+        {
+            "folder_name": "20250103_UP收藏",
+            "title": "UP收藏",
+            "text_prefix": "UP收藏",
+            "pub_ts": 30,
+            "pub_time": "1970-01-01 00:00:30",
+            "top_dynamic_id": "top-up",
+            "source_dynamic_id": "src-up",
+            "subscription_uid": "300",
+            "subscription_name": "UP-C",
+            "has_images": True,
+            "has_livephoto": False,
+            "is_favorite": True,
+        },
+        {
+            "folder_name": "20250102_站点图片",
+            "title": "站点图片",
+            "text_prefix": "站点图",
+            "pub_ts": 20,
+            "pub_time": "1970-01-01 00:00:20",
+            "top_dynamic_id": "top-site",
+            "source_dynamic_id": "src-site",
+            "subscription_uid": "site:9",
+            "subscription_name": "站点来源",
+            "has_images": True,
+            "has_livephoto": False,
+        },
+        {
+            "folder_name": "20250101_旧数据",
+            "title": "旧数据",
+            "text_prefix": "旧数据",
+            "pub_ts": 10,
+            "pub_time": "1970-01-01 00:00:10",
+            "top_dynamic_id": "top-legacy",
+            "source_dynamic_id": "src-legacy",
+            "has_images": True,
+            "has_livephoto": False,
+        },
+    ]
+    for folder in folders:
+        db.upsert_folder(folder)
+        db.replace_folder_assets(
+            folder["folder_name"],
+            "image",
+            [
+                {
+                    "pair_index": 1,
+                    "filename": "001__source.jpg",
+                    "rel_path": f"data/images/{folder['folder_name']}/001__source.jpg",
+                    "thumb_rel_path": f"data/images/{folder['folder_name']}/.thumbs/001__source.webp",
+                    "width": 800,
+                    "height": 600,
+                }
+            ],
+        )
+
+    fallback_site = gallery.get_gallery_items(source_kind="site", page_size=10)
+    fallback_up = gallery.get_gallery_items(source_kind="up", page_size=10)
+    assert [item["folder_name"] for item in fallback_site["items"]] == ["20250102_站点图片"]
+    assert [item["folder_name"] for item in fallback_up["items"]] == ["20250103_UP收藏", "20250101_旧数据"]
+    assert gallery.get_gallery_items(source_kind="invalid", page_size=10)["total"] == 3
+
+    indexer.rebuild_gallery_indexes()
+
+    assert gallery.get_gallery_items(source_kind="all", page_size=10)["total"] == 3
+    site_folders = gallery.get_gallery_items(source_kind="site", page_size=10)
+    up_folders = gallery.get_gallery_items(source_kind="up", page_size=10)
+    favorite_up = gallery.get_gallery_items(category="favorites", source_kind="up", page_size=10)
+    site_pairs = gallery.get_gallery_items(source_kind="site", view_mode="pair", page_size=10)
+    precise_subscription = gallery.get_gallery_items(
+        source_kind="up",
+        subscription_uids=["site:9"],
+        page_size=10,
+    )
+
+    assert [item["folder_name"] for item in site_folders["items"]] == ["20250102_站点图片"]
+    assert [item["folder_name"] for item in up_folders["items"]] == ["20250103_UP收藏", "20250101_旧数据"]
+    assert [item["folder_name"] for item in favorite_up["items"]] == ["20250103_UP收藏"]
+    assert [item["folder_name"] for item in site_pairs["items"]] == ["20250102_站点图片"]
+    assert [item["folder_name"] for item in precise_subscription["items"]] == ["20250102_站点图片"]
+
+
 def test_gallery_index_favorite_and_meta_follow_index_rows(tmp_path: Path) -> None:
     config = DummyConfig(tmp_path)
     storage = StorageService(config)

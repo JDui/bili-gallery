@@ -1888,6 +1888,7 @@ class Database:
         start_month: str | None = None,
         end_month: str | None = None,
         subscription_uids: list[str] | None = None,
+        source_kind: str = "all",
         page: int = 1,
         page_size: int = 24,
         sort_order: str = "desc",
@@ -1899,6 +1900,7 @@ class Database:
             start_month=start_month,
             end_month=end_month,
             subscription_uids=subscription_uids,
+            source_kind=source_kind,
             table_alias="folder_index",
             pair_mode=False,
         )
@@ -1941,6 +1943,7 @@ class Database:
         start_month: str | None = None,
         end_month: str | None = None,
         subscription_uids: list[str] | None = None,
+        source_kind: str = "all",
         page: int = 1,
         page_size: int = 24,
         sort_order: str = "desc",
@@ -1952,6 +1955,7 @@ class Database:
             start_month=start_month,
             end_month=end_month,
             subscription_uids=subscription_uids,
+            source_kind=source_kind,
             table_alias="pair_index",
             pair_mode=True,
         )
@@ -2072,6 +2076,7 @@ class Database:
         start_month: str | None,
         end_month: str | None,
         subscription_uids: list[str] | None,
+        source_kind: str,
         table_alias: str,
         pair_mode: bool,
     ) -> tuple[str, list[Any]]:
@@ -2084,6 +2089,10 @@ class Database:
                 placeholders = ", ".join("?" for _ in normalized)
                 clauses.append(f"{column('subscription_uid')} in ({placeholders})")
                 params.extend(normalized)
+        elif source_kind == "site":
+            clauses.append(f"{column('subscription_uid')} like 'site:%'")
+        elif source_kind == "up":
+            clauses.append(f"coalesce({column('subscription_uid')}, '') not like 'site:%'")
         if year:
             clauses.append(f"{column('year_key')} = ?")
             params.append(year)

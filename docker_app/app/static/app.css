@@ -397,6 +397,31 @@ video {
     transition: transform 260ms var(--ease-fluid);
 }
 
+.topbar-title-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.topbar-title-row h2 {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.source-kind-switch {
+    flex: 0 0 auto;
+    max-width: 100%;
+}
+
+.source-kind-switch .chip-button {
+    min-height: 34px;
+    padding-inline: 12px;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
 .topbar-meta {
     display: flex;
     align-items: center;
@@ -518,6 +543,25 @@ video {
     background: #ff8845;
     box-shadow: 0 0 0 8px rgba(255, 136, 69, 0.16);
     animation: pulse-ring 1.8s ease-in-out infinite;
+}
+
+.topbar.compact .topbar-title-row {
+    flex-wrap: nowrap;
+}
+
+.topbar.compact .source-kind-switch {
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.topbar.compact .source-kind-switch::-webkit-scrollbar {
+    display: none;
+}
+
+.topbar.compact .source-kind-switch .chip-button {
+    min-height: 30px;
+    padding-inline: 9px;
+    font-size: 12px;
 }
 
 .primary-button,
@@ -2543,6 +2587,28 @@ video {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+
+    .topbar-title-row {
+        gap: 6px;
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .source-kind-switch {
+        max-width: 100%;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    .source-kind-switch::-webkit-scrollbar {
+        display: none;
+    }
+
+    .source-kind-switch .chip-button {
+        min-height: 28px;
+        padding-inline: 8px;
+        font-size: 11px;
     }
 
     .topbar-actions {

@@ -105,7 +105,20 @@
                     </button>
                     <div class="topbar-copy">
                         <p class="topbar-label" x-text="currentSectionLabel()"></p>
-                        <h2 x-text="currentSectionTitle()"></h2>
+                        <div class="topbar-title-row">
+                            <h2 x-text="currentSectionTitle()"></h2>
+                            <div class="mode-switch source-kind-switch" x-show="currentView === 'gallery'" x-cloak>
+                                <template x-for="option in sourceKindOptions" :key="option.key">
+                                    <button
+                                        class="chip-button"
+                                        :class="{ active: sourceKind === option.key }"
+                                        :data-testid="`source-kind-${option.key}`"
+                                        @click="setSourceKind(option.key)"
+                                        x-text="option.label"
+                                    ></button>
+                                </template>
+                            </div>
+                        </div>
                         <div class="topbar-meta" x-show="currentView === 'gallery'">
                             <template x-for="item in compactStats()" :key="item.label">
                                 <span class="meta-chip">

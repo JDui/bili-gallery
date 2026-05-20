@@ -21,11 +21,13 @@ class GalleryService:
         start_month: str | None = None,
         end_month: str | None = None,
         subscription_uids: list[str] | None = None,
+        source_kind: str = "all",
         page: int = 1,
         page_size: int = 24,
         view_mode: str = "folder",
         sort_order: str = "desc",
     ) -> dict:
+        source_kind = self._normalize_source_kind(source_kind)
         if not self.db.gallery_index_ready():
             return self._fallback_gallery_items(
                 category=category,
@@ -34,6 +36,7 @@ class GalleryService:
                 start_month=start_month,
                 end_month=end_month,
                 subscription_uids=subscription_uids,
+                source_kind=source_kind,
                 page=page,
                 page_size=page_size,
                 view_mode=view_mode,
@@ -47,6 +50,7 @@ class GalleryService:
                 start_month=start_month,
                 end_month=end_month,
                 subscription_uids=subscription_uids,
+                source_kind=source_kind,
                 page=page,
                 page_size=page_size,
                 sort_order=sort_order,
@@ -60,6 +64,7 @@ class GalleryService:
                 start_month=start_month,
                 end_month=end_month,
                 subscription_uids=subscription_uids,
+                source_kind=source_kind,
                 page=page,
                 page_size=page_size,
                 sort_order=sort_order,
@@ -262,6 +267,7 @@ class GalleryService:
         start_month: str | None,
         end_month: str | None,
         subscription_uids: list[str] | None,
+        source_kind: str,
         page: int,
         page_size: int,
         view_mode: str,
@@ -271,7 +277,7 @@ class GalleryService:
         filtered = [
             folder
             for folder in folders
-            if self._match(folder, category, year, month, start_month, end_month, subscription_uids)
+            if self._match(folder, category, year, month, start_month, end_month, subscription_uids, source_kind)
         ]
         if view_mode == "pair":
             items = self._fallback_pair_items(filtered, category, sort_order=sort_order)
@@ -401,12 +407,15 @@ class GalleryService:
         start_month: str | None,
         end_month: str | None,
         subscription_uids: list[str] | None,
+        source_kind: str,
     ) -> bool:
         pub_time = folder.get("pub_time", "")
         month_key = pub_time[:7] if pub_time else ""
         if subscription_uids:
             if str(folder.get("subscription_uid") or "") not in {str(uid) for uid in subscription_uids}:
                 return False
+        elif not self._match_source_kind(folder.get("subscription_uid"), source_kind):
+            return False
         if year and pub_time[:4] != year:
             return False
         if month and pub_time[:7] != month:
@@ -432,6 +441,18 @@ class GalleryService:
             return bool(folder.get("is_favorite"))
         if category == "recent":
             return True
+        return True
+
+    def _normalize_source_kind(self, source_kind: str | None) -> str:
+        if source_kind in {"up", "site"}:
+            return str(source_kind)
+        return "all"
+
+    def _match_source_kind(self, subscription_uid: object, source_kind: str) -> bool:
+        if source_kind == "site":
+            return str(subscription_uid or "").startswith("site:")
+        if source_kind == "up":
+            return not str(subscription_uid or "").startswith("site:")
         return True
 
     def _match_pair(self, pair: dict, category: str) -> bool:

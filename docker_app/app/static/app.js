@@ -13,6 +13,14 @@ function galleryApp() {
     meta: { counts: {}, years: {} },
     subscriptions: [],
     selectedSubscriptionUids: [],
+    sourceKind: ["all", "up", "site"].includes(localStorage.getItem("gallery_source_kind"))
+      ? localStorage.getItem("gallery_source_kind")
+      : "all",
+    sourceKindOptions: [
+      { key: "all", label: "所有项目" },
+      { key: "up", label: "UP订阅" },
+      { key: "site", label: "站点订阅" },
+    ],
     gallery: { items: [], total: 0, page: 1, page_size: 24 },
     galleryLoading: false,
     galleryViewMode: localStorage.getItem("gallery_view_mode") || "folder",
@@ -543,6 +551,8 @@ function galleryApp() {
       }
       if (this.selectedSubscriptionUids.length) {
         params.set("subscription_uids", this.selectedSubscriptionUids.join(","));
+      } else if (this.sourceKind !== "all") {
+        params.set("source_kind", this.sourceKind);
       }
       try {
         const payload = await this.api(`/api/gallery/items?${params.toString()}`);
@@ -671,6 +681,18 @@ function galleryApp() {
 
     subscriptionFilterActive(uid) {
       return this.selectedSubscriptionUids.includes(String(uid));
+    },
+
+    setSourceKind(kind) {
+      if (!["all", "up", "site"].includes(kind) || this.sourceKind === kind) {
+        return;
+      }
+      this.sourceKind = kind;
+      localStorage.setItem("gallery_source_kind", kind);
+      this.closeViewer();
+      this.closeDetail();
+      this.scrollViewTop();
+      this.refreshGallery(true);
     },
 
     setGalleryViewMode(mode) {
