@@ -878,24 +878,23 @@
                                 <div class="panel-card-main subscription-card-main">
                                     <div class="subscription-card-title">
                                         <h4>站点过滤规则</h4>
-                                        <p>全局标题和 tag 白名单、黑名单</p>
+                                        <p>全局标题和 tag 关键词过滤</p>
                                     </div>
                                     <div class="inline-tags subscription-summary-tags">
+                                        <span class="inline-tag" x-text="siteRules.mode === 'whitelist' ? '白名单模式' : '黑名单模式'"></span>
                                         <span class="inline-tag" x-text="siteRules.use_regex ? '正则匹配' : '文本匹配'"></span>
-                                        <span class="inline-tag" x-text="`标题白 ${splitLines(siteRuleText.title_allow).length}`"></span>
-                                        <span class="inline-tag" x-text="`标题黑 ${splitLines(siteRuleText.title_block).length}`"></span>
-                                        <span class="inline-tag" x-text="`tag 白 ${splitLines(siteRuleText.tag_allow).length}`"></span>
-                                        <span class="inline-tag" x-text="`tag 黑 ${splitLines(siteRuleText.tag_block).length}`"></span>
+                                        <span class="inline-tag" x-text="`关键词 ${splitLines(siteRuleText.keywords).length}`"></span>
                                     </div>
                                 </div>
                                 <span class="subscription-expand-indicator" :class="{ open: siteRulesExpanded }">展开</span>
                             </button>
                             <div class="subscription-card-body" x-show="siteRulesExpanded" x-transition.opacity.duration.180ms x-cloak>
                                 <div class="subscription-policy-grid site-policy-grid">
-                                    <label>标题白名单<textarea x-model="siteRuleText.title_allow"></textarea></label>
-                                    <label>标题黑名单<textarea x-model="siteRuleText.title_block"></textarea></label>
-                                    <label>tag 白名单<textarea x-model="siteRuleText.tag_allow"></textarea></label>
-                                    <label>tag 黑名单<textarea x-model="siteRuleText.tag_block"></textarea></label>
+                                    <div class="mode-switch">
+                                        <button class="chip-button" :class="{ active: siteRules.mode === 'blacklist' }" @click="siteRules.mode = 'blacklist'">黑名单模式</button>
+                                        <button class="chip-button" :class="{ active: siteRules.mode === 'whitelist' }" @click="siteRules.mode = 'whitelist'">白名单模式</button>
+                                    </div>
+                                    <label>关键词<textarea x-model="siteRuleText.keywords"></textarea></label>
                                     <label class="toggle-row"><input type="checkbox" x-model="siteRules.use_regex"><span>使用正则匹配</span></label>
                                 </div>
                                 <div class="panel-card-actions subscription-card-actions">

@@ -221,8 +221,19 @@ class SiteSyncManager:
                 counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "早于本地最新时间")
                 continue
+            if self.db.is_site_post_in_active_trash(source["id"], parsed.url):
+                counters["skipped"] += 1
+                self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "仍在内容垃圾桶")
+                continue
             counters["posts"] += 1
             post = self.db.upsert_site_post(source["id"], self._post_payload(parsed))
+            dynamic_id = f"site:{source['id']}:{post['id']}"
+            if self.db.is_blacklisted(dynamic_id, dynamic_id):
+                self.db.set_site_post_status(post["id"], "blocked", "仍在黑名单")
+                self.db.set_site_post_flag(post["id"], "is_blocked", True)
+                counters["blocked"] += 1
+                self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "blocked", "仍在黑名单")
+                continue
             decision = engine.evaluate(parsed.title, parsed.tags)
             self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, decision.decision, decision.reason)
             if not decision.allowed:

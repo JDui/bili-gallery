@@ -15,10 +15,23 @@ class RuleEngine:
     def __init__(self, rules: dict[str, object]) -> None:
         self.rules = rules
         self.use_regex = bool(rules.get("use_regex"))
+        mode = str(rules.get("mode") or "blacklist").strip().lower()
+        self.mode = mode if mode in {"whitelist", "blacklist"} else "blacklist"
 
     def evaluate(self, title: str, tags: list[str]) -> FilterDecision:
         title = title or ""
         tags = [tag or "" for tag in tags]
+        keywords = self._patterns("keywords")
+        if keywords:
+            matched = self._match_any(title, keywords) or self._match_tags(tags, keywords)
+            if self.mode == "whitelist":
+                if matched:
+                    return FilterDecision(True, "allowed", "命中站点白名单")
+                return FilterDecision(False, "blocked", "未命中站点白名单")
+            if matched:
+                return FilterDecision(False, "blocked", "命中站点黑名单")
+            return FilterDecision(True, "allowed", "未命中站点黑名单")
+
         if self._match_any(title, self._patterns("title_block")):
             return FilterDecision(False, "blocked", "命中标题黑名单")
         if self._match_tags(tags, self._patterns("tag_block")):

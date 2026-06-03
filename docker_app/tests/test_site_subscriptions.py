@@ -11,6 +11,7 @@ from app.services.media_indexer import MediaIndexer
 from app.services.puller import PullManager
 from app.services.site_downloader import MediaDownloader
 from app.services.site_parser import PageFetcher, SourceParser, site_request_timeout
+from app.services.site_filtering import RuleEngine
 from app.services.site_syncer import SiteSyncManager
 from app.services.storage import StorageService
 from app.services.thumbnailer import ThumbnailService
@@ -402,6 +403,33 @@ def test_site_sync_downloads_allowed_posts_and_is_idempotent(tmp_path: Path) -> 
     assert any(log["reason"] == "早于起始日期" for log in logs)
 
 
+def test_site_sync_skips_posts_that_are_still_in_trash(tmp_path: Path) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    source = create_fixture_source(db)
+    syncer._sync_source(source)
+    folder = db.list_folders()[0]
+    assets = db.list_assets_for_folder(folder["folder_name"])
+
+    db.upsert_trash_item(folder, assets)
+    storage.remove_folder_assets(folder["folder_name"])
+    db.delete_folder(folder["folder_name"])
+    result = syncer._sync_source(source)
+
+    assert result["skipped"] >= 1
+    assert db.list_folders() == []
+    assert any(log["reason"] == "仍在内容垃圾桶" for log in db.list_site_filter_logs())
+
+
+def test_site_rule_engine_mode_keywords_match_title_or_tags() -> None:
+    blacklist = RuleEngine({"mode": "blacklist", "keywords": ["photo"], "use_regex": False})
+    whitelist = RuleEngine({"mode": "whitelist", "keywords": ["spring"], "use_regex": False})
+
+    assert blacklist.evaluate("Clean Post", ["photo"]).allowed is False
+    assert blacklist.evaluate("Clean Post", ["daily"]).allowed is True
+    assert whitelist.evaluate("Spring Update", ["daily"]).allowed is True
+    assert whitelist.evaluate("Clean Post", ["daily"]).allowed is False
+
+
 def test_site_sync_dedupes_images_with_same_content(tmp_path: Path) -> None:
     db, storage, syncer = make_app(tmp_path)
     source = create_duplicate_source(db, tmp_path)
@@ -771,8 +799,9 @@ def test_site_api_source_preview_sync_and_post_actions(tmp_path: Path, monkeypat
     blocked = client.post(f"/api/site-posts/{post_id}/block", json={"blocked": True}).json()["item"]
     assert blocked["is_blocked"] is True
 
-    rules = client.put("/api/site-rules", json={"title_block": ["测试"], "use_regex": False}).json()
-    assert rules["title_block"] == ["测试"]
+    rules = client.put("/api/site-rules", json={"mode": "blacklist", "keywords": ["测试"], "use_regex": False}).json()
+    assert rules["mode"] == "blacklist"
+    assert rules["keywords"] == ["测试"]
 
     assert client.get("/api/site-filter/logs").json()["items"]
     log_clear = client.post("/api/site-filter/logs/clear").json()

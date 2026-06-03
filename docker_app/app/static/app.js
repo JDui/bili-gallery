@@ -70,8 +70,9 @@ function galleryApp() {
     siteStatus: {},
     siteSources: [],
     siteLogs: [],
-    siteRules: {},
+    siteRules: { mode: "blacklist", keywords: [], use_regex: false },
     siteRuleText: {
+      keywords: "",
       title_allow: "",
       title_block: "",
       tag_allow: "",
@@ -168,22 +169,20 @@ function galleryApp() {
     viewerSyntheticTapUntil: 0,
     bodyLockTop: null,
     bodyLockPaddingRight: "",
+    lazyLoaded: {
+      review: false,
+      logs: false,
+      tasks: false,
+      trash: false,
+      sites: false,
+      settings: false,
+    },
 
     async init() {
       this.updateViewportMode();
-      await Promise.all([
-        this.refreshMeta(),
-        this.loadSubscriptions(),
-        this.resetSiteSourceForm(),
-        this.refreshSites(),
-        this.refreshGallery(true),
-        this.loadSettings(),
-        this.refreshReview(),
-        this.refreshLogs(),
-        this.refreshTasks(),
-        this.refreshTrash(),
-        this.refreshStatus(),
-      ]);
+      this.resetSiteSourceForm();
+      this.settings = { ...this.settings, auto_load_enabled: true };
+      await Promise.all([this.refreshStatus(), this.refreshMeta(), this.loadSubscriptions(), this.refreshGallery(true)]);
       window.setInterval(() => this.refreshStatus(), 5000);
       window.setInterval(() => {
         if (this.qr.image_data_url && this.currentView === "settings") {
@@ -1981,12 +1980,14 @@ function galleryApp() {
     async refreshReview() {
       const payload = await this.api("/api/review/items");
       this.reviewItems = payload.items;
+      this.lazyLoaded.review = true;
     },
 
     async refreshTasks() {
       const payload = await this.api("/api/tasks/runs");
       this.taskRuns = payload.items;
       this.queuedTasks = payload.queue || [];
+      this.lazyLoaded.tasks = true;
       if (this.queuedCancelConfirmId && !this.queuedTasks.some((item) => Number(item.queue_id) === this.queuedCancelConfirmId)) {
         this.queuedCancelConfirmId = null;
       }
@@ -2203,6 +2204,7 @@ function galleryApp() {
     async refreshTrash() {
       const payload = await this.api("/api/trash/items");
       this.trashItems = payload.items;
+      this.lazyLoaded.trash = true;
     },
 
     currentViewerDeleteKey() {
@@ -2668,6 +2670,7 @@ function galleryApp() {
     async refreshLogs() {
       const payload = await this.api("/api/filter/logs");
       this.logs = payload.items;
+      this.lazyLoaded.logs = true;
     },
 
     clearFilterLogsButtonLabel() {
@@ -2705,6 +2708,7 @@ function galleryApp() {
       this.settings = settings;
       this.galleryIndexStatus = health.gallery_index || {};
       this.keywordText = (this.settings.ad_filter_keywords || []).join("\n");
+      this.lazyLoaded.settings = true;
     },
 
     async saveSettings() {
@@ -2906,6 +2910,7 @@ function galleryApp() {
       this.pullStatus = pullStatus;
       this.siteStatus = health.site_status || {};
       this.siteStats = health.site_stats || {};
+      this.galleryIndexStatus = health.gallery_index || this.galleryIndexStatus || {};
       const currentTaskId = this.pullStatus.last_run?.id || null;
       const currentSiteTaskId = this.siteStatus.last_run?.id || null;
       this.lastRunning = !!this.pullStatus.running;
@@ -2916,11 +2921,11 @@ function galleryApp() {
         await Promise.all([
           this.refreshMeta(),
           this.loadSubscriptions(),
-          this.refreshReview(),
-          this.refreshLogs(),
-          this.refreshTasks(),
-          this.refreshTrash(),
-          this.refreshSites(),
+          this.lazyLoaded.review || this.currentView === "review" ? this.refreshReview() : Promise.resolve(),
+          this.lazyLoaded.logs || this.currentView === "logs" ? this.refreshLogs() : Promise.resolve(),
+          this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
+          this.lazyLoaded.trash || this.currentView === "trash" ? this.refreshTrash() : Promise.resolve(),
+          this.lazyLoaded.sites || this.currentView === "sites" ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
           this.currentView === "settings" ? this.loadSettings() : Promise.resolve(),
         ]);
@@ -2928,8 +2933,8 @@ function galleryApp() {
         await Promise.all([
           this.refreshMeta(),
           this.loadSubscriptions(),
-          this.refreshTasks(),
-          this.refreshSites(),
+          this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
+          this.lazyLoaded.sites || this.currentView === "sites" ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
           this.currentView === "settings" ? this.loadSettings() : Promise.resolve(),
         ]);
@@ -2938,8 +2943,8 @@ function galleryApp() {
         await Promise.all([
           this.refreshMeta(),
           this.loadSubscriptions(),
-          this.refreshTasks(),
-          this.refreshSites(),
+          this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
+          this.lazyLoaded.sites || this.currentView === "sites" ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
         ]);
       }
@@ -3111,6 +3116,7 @@ function galleryApp() {
         this.loadSiteRules(),
         this.loadSiteLogs(),
       ]);
+      this.lazyLoaded.sites = true;
     },
 
     async loadSiteSources() {
@@ -3132,6 +3138,8 @@ function galleryApp() {
 
     async loadSiteRules() {
       this.siteRules = await this.api("/api/site-rules");
+      this.siteRules.mode = ["whitelist", "blacklist"].includes(this.siteRules.mode) ? this.siteRules.mode : "blacklist";
+      this.siteRuleText.keywords = this.joinLines(this.siteRules.keywords);
       this.siteRuleText.title_allow = this.joinLines(this.siteRules.title_allow);
       this.siteRuleText.title_block = this.joinLines(this.siteRules.title_block);
       this.siteRuleText.tag_allow = this.joinLines(this.siteRules.tag_allow);
@@ -3450,6 +3458,8 @@ function galleryApp() {
 
     async saveSiteRules() {
       const payload = {
+        mode: ["whitelist", "blacklist"].includes(this.siteRules.mode) ? this.siteRules.mode : "blacklist",
+        keywords: this.splitLines(this.siteRuleText.keywords),
         title_allow: this.splitLines(this.siteRuleText.title_allow),
         title_block: this.splitLines(this.siteRuleText.title_block),
         tag_allow: this.splitLines(this.siteRuleText.tag_allow),

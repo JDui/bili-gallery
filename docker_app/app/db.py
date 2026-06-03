@@ -55,6 +55,8 @@ LEGACY_SITE_REQUEST_TIMEOUTS = {20, 120}
 GALLERY_INDEX_VERSION = 3
 
 DEFAULT_SITE_RULES = {
+    "mode": "blacklist",
+    "keywords": [],
     "title_allow": [],
     "title_block": [],
     "tag_allow": [],
@@ -597,7 +599,11 @@ class Database:
                 if key not in payload:
                     continue
                 value = payload[key]
-                if key != "use_regex":
+                if key == "mode":
+                    value = str(value or "blacklist").strip().lower()
+                    if value not in {"whitelist", "blacklist"}:
+                        value = "blacklist"
+                elif key != "use_regex":
                     value = [str(item).strip() for item in (value or []) if str(item).strip()]
                 conn.execute(
                     """
@@ -607,6 +613,40 @@ class Database:
                     (key, dumps_json(value)),
                 )
         return self.get_site_rules()
+
+    def is_site_post_in_active_trash(self, source_id: int, url: str) -> bool:
+        url = str(url or "").strip()
+        if not url:
+            return False
+        source_prefix = f"site:{int(source_id)}:"
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select folder_json
+                from trash_items
+                where restored_at is null
+                    and (top_dynamic_id like ? or source_dynamic_id like ?)
+                """,
+                (f"{source_prefix}%", f"{source_prefix}%"),
+            ).fetchall()
+        for row in rows:
+            folder = loads_json(row["folder_json"], {})
+            candidates = [
+                str(folder.get("original_url") or "").strip(),
+            ]
+            metadata = loads_json(folder.get("metadata_json"), {})
+            candidates.extend(
+                [
+                    str(metadata.get("site_post_url") or "").strip(),
+                    str(metadata.get("original_url") or "").strip(),
+                ]
+            )
+            if any(self._same_site_url(url, candidate) for candidate in candidates if candidate):
+                return True
+        return False
+
+    def _same_site_url(self, left: str, right: str) -> bool:
+        return left.strip().rstrip("/") == right.strip().rstrip("/")
 
     def list_site_sources(self, include_disabled: bool = True) -> list[dict[str, Any]]:
         sql = "select * from site_sources"
