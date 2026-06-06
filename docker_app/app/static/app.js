@@ -5,12 +5,18 @@ function galleryApp() {
     navItems: [
       { key: "all", label: "全部项目", short: "全", copy: "所有图片与动态内容" },
       { key: "favorites", label: "收藏", short: "藏", copy: "只看已收藏动态" },
-      { key: "images", label: "照片", short: "图", copy: "只看静态图片" },
       { key: "livephoto", label: "Live Photo", short: "动", copy: "只看可播放动态" },
-      { key: "paired", label: "已配对", short: "组", copy: "图片与视频已自动组合" },
-      { key: "unpaired", label: "未配对", short: "缺", copy: "等待补齐素材" },
     ],
-    meta: { counts: {}, years: {} },
+    meta: {
+      counts: (() => {
+        try {
+          return JSON.parse(localStorage.getItem("gallery_meta_counts_cache_v1") || "{}");
+        } catch {
+          return {};
+        }
+      })(),
+      years: {},
+    },
     subscriptions: [],
     selectedSubscriptionUids: [],
     sourceKind: ["all", "up", "site"].includes(localStorage.getItem("gallery_source_kind"))
@@ -160,6 +166,7 @@ function galleryApp() {
     queuedCancelConfirmId: null,
     deletePairConfirmKey: null,
     deletePairConfirmStep: 0,
+    pairDeletingKey: null,
     taskInspector: { open: false, title: "", subtitle: "", body: "" },
     taskInspectorLoading: false,
     toast: { open: false, tone: "info", title: "", message: "" },
@@ -370,12 +377,12 @@ function galleryApp() {
           value: counts.all || 0,
         },
         {
-          label: "照片",
-          value: counts.images || 0,
-        },
-        {
           label: "动态",
           value: counts.livephoto || 0,
+        },
+        {
+          label: "收藏",
+          value: counts.favorites || 0,
         },
         {
           label: "待审核",
@@ -463,7 +470,13 @@ function galleryApp() {
     },
 
     async refreshMeta() {
-      this.meta = await this.api("/api/gallery/meta");
+      const previousCounts = this.meta.counts || {};
+      const payload = await this.api("/api/gallery/meta");
+      this.meta = {
+        ...payload,
+        counts: { ...previousCounts, ...(payload.counts || {}) },
+      };
+      localStorage.setItem("gallery_meta_counts_cache_v1", JSON.stringify(this.meta.counts || {}));
       if (!this.selectedSubscriptionUids.length) {
         this.subscriptions = (this.subscriptions || []).map((item) => {
           const metaItem = (this.meta.subscriptions || []).find((entry) => entry.uid === item.uid);
@@ -808,9 +821,10 @@ function galleryApp() {
         return;
       }
       this.detailLoading = true;
+      const previewPairs = this.detailPreviewPairs(folderName, previewFolder);
       this.detail = {
         open: true,
-        pairs: this.detail.folder?.folder_name === folderName ? this.detail.pairs : [],
+        pairs: this.detail.folder?.folder_name === folderName ? this.detail.pairs : previewPairs,
         folder: previewFolder || this.detail.folder || { folder_name: folderName, title: folderName },
         videos: this.detail.folder?.folder_name === folderName ? (this.detail.videos || []) : [],
       };
@@ -821,8 +835,14 @@ function galleryApp() {
           return;
         }
         this.detailLoading = false;
-        this.detail = { open: true, pairs: payload.pairs || [], folder: payload.folder, videos: payload.videos || [] };
+        this.detail = {
+          open: true,
+          pairs: this.normalizeDetailPairs(payload.pairs || []),
+          folder: payload.folder,
+          videos: payload.videos || [],
+        };
         this.cacheDetailPayload(folderName, this.detail);
+        this.scheduleDetailThumbnailPromotion(folderName, requestId);
         this.syncBodyLock();
       } catch (error) {
         if (requestId !== this.detailRequestId) {
@@ -831,6 +851,87 @@ function galleryApp() {
         this.detailLoading = false;
         this.closeDetail(true);
       }
+    },
+
+    detailPreviewPairs(folderName, previewFolder) {
+      if (this.galleryViewMode === "pair") {
+        return (this.gallery.items || [])
+          .filter((item) => item.folder_name === folderName)
+          .map((item) => ({
+            pair_index: Number(item.pair_index) || 0,
+            image: item.image || {
+              small_thumb_url: item.small_thumb_url,
+              thumb_url: item.thumb_url,
+              url: item.preview_url,
+              width: item.width,
+              height: item.height,
+            },
+            livephoto: item.livephoto || null,
+            preview_url: item.small_thumb_url || item.thumb_url || item.preview_url,
+            preview_kind: item.preview_kind || (item.has_livephoto ? "paired" : "image"),
+            complete: !!(item.has_images && item.has_livephoto),
+            display_ratio: item.display_ratio || "1 / 1",
+            promote_preview: false,
+          }));
+      }
+      return (previewFolder?.preview_tiles || []).map((tile, index) => ({
+        pair_index: Number(tile.pair_index) || index + 1,
+        image: {
+          ...tile,
+          url: tile.url || tile.thumb_url || tile.small_thumb_url,
+        },
+        livephoto: null,
+        preview_url: tile.small_thumb_url || tile.thumb_url || tile.cover_url || tile.url,
+        preview_kind: "image",
+        complete: false,
+        display_ratio: this.assetRatio(tile),
+        promote_preview: false,
+      }));
+    },
+
+    normalizeDetailPairs(pairs) {
+      return (pairs || []).map((pair) => ({ ...pair, promote_preview: false }));
+    },
+
+    assetRatio(asset) {
+      const width = Number(asset?.width || 0);
+      const height = Number(asset?.height || 0);
+      if (width > 0 && height > 0) {
+        return `${width} / ${height}`;
+      }
+      return "1 / 1";
+    },
+
+    detailPairPreviewUrl(pair) {
+      const image = pair?.image || {};
+      const livephoto = pair?.livephoto || {};
+      if (pair?.promote_preview) {
+        return image.thumb_url || livephoto.thumb_url || image.small_thumb_url || livephoto.small_thumb_url || pair.preview_url || image.url || livephoto.cover_url || livephoto.url;
+      }
+      return image.small_thumb_url || livephoto.small_thumb_url || pair?.preview_url || image.thumb_url || livephoto.thumb_url || image.url || livephoto.cover_url || livephoto.url;
+    },
+
+    scheduleDetailThumbnailPromotion(folderName, requestId) {
+      const promoteNext = (index = 0) => {
+        if (requestId !== this.detailRequestId || this.detail.folder?.folder_name !== folderName) {
+          return;
+        }
+        const pairs = this.detail.pairs || [];
+        if (index >= pairs.length) {
+          this.cacheDetailPayload(folderName, this.detail);
+          return;
+        }
+        const end = Math.min(index + 6, pairs.length);
+        this.detail = {
+          ...this.detail,
+          pairs: pairs.map((pair, pairIndex) => (
+            pairIndex >= index && pairIndex < end ? { ...pair, promote_preview: true } : pair
+          )),
+        };
+        const schedule = window.requestIdleCallback || ((callback) => window.setTimeout(callback, 80));
+        schedule(() => promoteNext(end));
+      };
+      window.setTimeout(() => promoteNext(0), 80);
     },
 
     openPair(pairIndex) {
@@ -1131,11 +1232,14 @@ function galleryApp() {
         return;
       }
       const pairs = (cached.pairs || []).filter((pair) => Number(pair.pair_index) !== Number(pairIndex));
+      const removedPair = (cached.pairs || []).find((pair) => Number(pair.pair_index) === Number(pairIndex));
+      const delta = this.pairAssetDelta(removedPair);
       const folder = cached.folder
         ? {
             ...cached.folder,
-            image_count: Math.max(0, (cached.folder.image_count || 0) - 1),
-            asset_count: Math.max(0, (cached.folder.asset_count || 0) - 1),
+            image_count: Math.max(0, (cached.folder.image_count || 0) - delta.images),
+            livephoto_count: Math.max(0, (cached.folder.livephoto_count || 0) - delta.livephotos),
+            asset_count: Math.max(0, (cached.folder.asset_count || 0) - delta.total),
           }
         : cached.folder;
       this.detailCache = {
@@ -2214,6 +2318,17 @@ function galleryApp() {
       return `${this.viewer.folder.folder_name}::${this.viewer.pair.pair_index}`;
     },
 
+    pairDeleteKey(folderName, pairIndex) {
+      if (!folderName || !pairIndex) {
+        return null;
+      }
+      return `${folderName}::${pairIndex}`;
+    },
+
+    pairDeletePending(folderName, pairIndex) {
+      return this.deletePairConfirmKey === this.pairDeleteKey(folderName, pairIndex) && this.deletePairConfirmStep >= 1;
+    },
+
     deletePairButtonLabel() {
       if (this.deletePairConfirmStep === 0) {
         return "删除";
@@ -2226,11 +2341,16 @@ function galleryApp() {
       if (!key) {
         return;
       }
-      if (this.deletePairConfirmKey !== key) {
-        this.deletePairConfirmKey = key;
-        this.deletePairConfirmStep = 1;
+      this.askDeletePair(this.viewer.folder.folder_name, this.viewer.pair.pair_index);
+    },
+
+    askDeletePair(folderName, pairIndex) {
+      const key = this.pairDeleteKey(folderName, pairIndex);
+      if (!key) {
         return;
       }
+      this.deletePairConfirmKey = key;
+      this.deletePairConfirmStep = 1;
     },
 
     cancelDeleteViewerPair() {
@@ -2245,6 +2365,25 @@ function galleryApp() {
       if (!folderName || !pairIndex || this.deletePairConfirmKey !== key || this.deletePairConfirmStep < 1) {
         return;
       }
+      await this.confirmDeletePair(folderName, pairIndex);
+    },
+
+    pairAssetDelta(pair) {
+      const hasImage = !!(pair?.image || pair?.has_images);
+      const hasLivephoto = !!(pair?.livephoto || pair?.has_livephoto);
+      return {
+        images: hasImage ? 1 : 0,
+        livephotos: hasLivephoto ? 1 : 0,
+        total: (hasImage ? 1 : 0) + (hasLivephoto ? 1 : 0),
+      };
+    },
+
+    async confirmDeletePair(folderName, pairIndex) {
+      const key = this.pairDeleteKey(folderName, pairIndex);
+      if (!folderName || !pairIndex || this.deletePairConfirmKey !== key || this.deletePairConfirmStep < 1 || this.pairDeletingKey) {
+        return;
+      }
+      this.pairDeletingKey = key;
       const currentIndex = this.viewerIndex;
       const previousDetail = {
         open: this.detail.open,
@@ -2257,35 +2396,38 @@ function galleryApp() {
         total: this.gallery.total || 0,
       };
       const previousCache = this.detailCache[folderName] ? this.cloneDetailPayload(this.detailCache[folderName]) : null;
+      const removedPair = (this.detail.pairs || []).find((pair) => Number(pair.pair_index) === Number(pairIndex))
+        || (previousCache?.pairs || []).find((pair) => Number(pair.pair_index) === Number(pairIndex))
+        || (this.gallery.items || []).find((item) => item.folder_name === folderName && Number(item.pair_index) === Number(pairIndex));
+      const delta = this.pairAssetDelta(removedPair);
       const nextDetailPairs = (this.detail.pairs || []).filter((pair) => Number(pair.pair_index) !== Number(pairIndex));
       const nextSequence = (this.viewerSequence || []).filter(
         (entry) => !(entry.folder?.folder_name === folderName && Number(entry.pair?.pair_index) === Number(pairIndex)),
       );
       this.cancelDeleteViewerPair();
-      if (this.viewerSource === "detail") {
+      if (this.detail.folder?.folder_name === folderName) {
         this.detail = {
           open: true,
           pairs: nextDetailPairs,
           folder: this.detail.folder
             ? {
                 ...this.detail.folder,
-                image_count: Math.max(0, (this.detail.folder.image_count || 0) - 1),
-                asset_count: Math.max(0, (this.detail.folder.asset_count || 0) - 1),
+                image_count: Math.max(0, (this.detail.folder.image_count || 0) - delta.images),
+                livephoto_count: Math.max(0, (this.detail.folder.livephoto_count || 0) - delta.livephotos),
+                asset_count: Math.max(0, (this.detail.folder.asset_count || 0) - delta.total),
               }
             : this.detail.folder,
           videos: this.detail.videos || [],
         };
         this.cacheDetailPayload(folderName, this.detail);
-        if (!nextSequence.length) {
-          this.closeViewer();
-        } else {
-          this.viewerSequence = nextSequence;
-          this.viewerIndex = Math.min(currentIndex, nextSequence.length - 1);
-          this.openViewerEntry(nextSequence[this.viewerIndex], true, false);
-        }
-      } else {
+      }
+      if (this.galleryViewMode === "pair") {
         this.removePairFromGallery(folderName, pairIndex);
+      }
+      if (this.detail.folder?.folder_name !== folderName) {
         this.removeCachedDetailPair(folderName, pairIndex);
+      }
+      if (this.viewer.open && this.viewer.folder?.folder_name === folderName && Number(this.viewer.pair?.pair_index) === Number(pairIndex)) {
         if (!nextSequence.length) {
           this.closeViewer();
         } else {
@@ -2293,6 +2435,8 @@ function galleryApp() {
           this.viewerIndex = Math.min(currentIndex, nextSequence.length - 1);
           this.openViewerEntry(nextSequence[this.viewerIndex], true, false);
         }
+      } else if (this.viewer.open) {
+        this.viewerSequence = nextSequence;
       }
       this.notify("info", "正在删除", "页面已先更新，后台正在处理删除。");
       try {
@@ -2324,6 +2468,10 @@ function galleryApp() {
           }
         }
         this.notify("error", "删除失败", error.message || "后台删除失败，页面内容已恢复。");
+      } finally {
+        if (this.pairDeletingKey === key) {
+          this.pairDeletingKey = null;
+        }
       }
     },
 
@@ -2968,6 +3116,10 @@ function galleryApp() {
       this.pendingTrashFolder = this.detail.folder?.folder_name || null;
     },
 
+    askTrashFolder(folderName) {
+      this.pendingTrashFolder = folderName || null;
+    },
+
     cancelTrashCurrentFolder() {
       this.pendingTrashFolder = null;
     },
@@ -3012,6 +3164,44 @@ function galleryApp() {
           this.cacheDetailPayload(folderName, previousCache);
         }
         this.syncBodyLock();
+        this.notify("error", "移入垃圾桶失败", error.message || "后端删除没有成功，内容已恢复。");
+      }
+    },
+
+    async trashFolderCard(folderName) {
+      if (!folderName || this.pendingTrashFolder !== folderName) {
+        return;
+      }
+      const folder = (this.gallery.items || []).find((item) => item.folder_name === folderName);
+      const previousGalleryItems = [...(this.gallery.items || [])];
+      const previousGalleryTotal = this.gallery.total || 0;
+      const previousCache = this.detailCache[folderName] ? this.cloneDetailPayload(this.detailCache[folderName]) : null;
+      this.pendingTrashFolder = null;
+      if (this.detail.folder?.folder_name === folderName) {
+        this.closeDetail();
+      }
+      this.removeFolderFromGallery(folderName);
+      this.invalidateDetailCache(folderName);
+      this.notify("info", "正在移入垃圾桶", "页面已先更新，后台正在处理删除。");
+      try {
+        const result = await this.api(`/api/gallery/folders/${encodeURIComponent(folderName)}/trash`, {
+          method: "POST",
+          body: JSON.stringify({ reason: "不喜欢" }),
+        });
+        await Promise.all([this.refreshMeta(), this.refreshTrash(), this.refreshTasks()]);
+        this.notify("success", "已移入垃圾桶", result.message);
+      } catch (error) {
+        this.gallery = {
+          ...this.gallery,
+          items: previousGalleryItems,
+          total: previousGalleryTotal,
+        };
+        if (previousCache) {
+          this.cacheDetailPayload(folderName, previousCache);
+        }
+        if (folder && !this.gallery.items.find((item) => item.folder_name === folderName)) {
+          this.gallery = { ...this.gallery, items: [folder, ...(this.gallery.items || [])] };
+        }
         this.notify("error", "移入垃圾桶失败", error.message || "后端删除没有成功，内容已恢复。");
       }
     },

@@ -1419,6 +1419,13 @@ class Database:
         with self.connect() as conn:
             conn.execute("delete from assets where id = ?", (asset_id,))
 
+    def update_folder_media_flags(self, folder_name: str, has_images: bool, has_livephoto: bool) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "update folders set has_images = ?, has_livephoto = ?, updated_at = ? where folder_name = ?",
+                (1 if has_images else 0, 1 if has_livephoto else 0, now_iso(), folder_name),
+            )
+
     def update_asset_small_thumbnail(self, asset_id: int, small_thumb_rel_path: str | None) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -1495,6 +1502,8 @@ class Database:
             ).fetchone()[0]
             if count == 0:
                 conn.execute("delete from folders where folder_name = ?", (folder_name,))
+                conn.execute("delete from folder_index where folder_name = ?", (folder_name,))
+                conn.execute("delete from pair_index where folder_name = ?", (folder_name,))
 
     def create_task_run(self, task_type: str, status: str, message: str = "", details: dict[str, Any] | None = None) -> int:
         with self.connect() as conn:
@@ -1714,6 +1723,8 @@ class Database:
     def delete_folder(self, folder_name: str) -> None:
         with self.connect() as conn:
             conn.execute("delete from folders where folder_name = ?", (folder_name,))
+            conn.execute("delete from folder_index where folder_name = ?", (folder_name,))
+            conn.execute("delete from pair_index where folder_name = ?", (folder_name,))
 
     def add_filter_log(
         self,

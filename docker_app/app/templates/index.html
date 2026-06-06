@@ -244,6 +244,19 @@
                                             <button class="favorite-button" :class="{ active: item.is_favorite }" @click.stop="toggleFavorite(item, $event)" aria-label="收藏">
                                                 <span>❤</span>
                                             </button>
+                                            <div class="card-trash-zone" @click.stop>
+                                                <template x-if="pendingTrashFolder !== item.folder_name">
+                                                    <button class="mini-trash-button" @click="askTrashFolder(item.folder_name)" aria-label="删除动态">
+                                                        <span class="trash-icon" aria-hidden="true"></span>
+                                                    </button>
+                                                </template>
+                                                <template x-if="pendingTrashFolder === item.folder_name">
+                                                    <div class="mini-confirm-row">
+                                                        <button class="mini-confirm-button danger" @click="trashFolderCard(item.folder_name)">确认</button>
+                                                        <button class="mini-confirm-button" @click="cancelTrashCurrentFolder()">取消</button>
+                                                    </div>
+                                                </template>
+                                            </div>
                                             <div class="photo-meta">
                                             <h4 x-text="cardPrimaryText(item)"></h4>
                                             <p x-text="cardSecondaryText(item)"></p>
@@ -288,6 +301,19 @@
                                                 <span class="photo-badge" x-text="item.pub_time"></span>
                                                 <span class="photo-badge live" x-show="item.has_livephoto">Live Photo</span>
                                             </div>
+                                        </div>
+                                        <div class="card-trash-zone" @click.stop>
+                                            <template x-if="!pairDeletePending(item.folder_name, item.pair_index)">
+                                                <button class="mini-trash-button" @click="askDeletePair(item.folder_name, item.pair_index)" aria-label="删除图片">
+                                                    <span class="trash-icon" aria-hidden="true"></span>
+                                                </button>
+                                            </template>
+                                            <template x-if="pairDeletePending(item.folder_name, item.pair_index)">
+                                                <div class="mini-confirm-row">
+                                                    <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(item.folder_name, item.pair_index)" @click="confirmDeletePair(item.folder_name, item.pair_index)">确认</button>
+                                                    <button class="mini-confirm-button" @click="cancelDeleteViewerPair()">取消</button>
+                                                </div>
+                                            </template>
                                         </div>
                                         <div class="photo-meta asset-meta">
                                             <h4 x-text="item.title"></h4>
@@ -993,11 +1019,15 @@
                 </div>
                 <div class="detail-grid" x-ref="detailGrid" :style="detailGridStyle()">
                     <template x-for="pair in detail.pairs" :key="pair.pair_index">
-                        <button
+                        <article
                             class="detail-card"
                             data-testid="detail-card"
+                            role="button"
+                            tabindex="0"
                             :class="{ live: pair.livephoto }"
                             @click="openPair(pair.pair_index)"
+                            @keydown.enter.prevent="openPair(pair.pair_index)"
+                            @keydown.space.prevent="openPair(pair.pair_index)"
                             @mouseenter="pair.livephoto ? startHoverPreview($event) : null"
                             @mouseleave="pair.livephoto ? stopHoverPreview($event) : null"
                             @touchstart.passive="pair.livephoto ? scheduleHoverPreview($event) : null"
@@ -1005,14 +1035,14 @@
                             @touchcancel="pair.livephoto ? cancelScheduledHoverPreview($event) : null"
                         >
                             <div class="detail-thumb" :style="`aspect-ratio: ${pair.display_ratio || '1 / 1'}`">
-                                <img class="hover-preview-image detail-preview-image" decoding="async" :src="pair.image?.small_thumb_url || pair.livephoto?.small_thumb_url || pair.preview_url" :alt="`第 ${pair.pair_index} 组`">
+                                <img class="hover-preview-image detail-preview-image" decoding="async" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`">
                                 <template x-if="pair.livephoto">
                                     <video
                                         class="hover-preview-video hidden"
                                         playsinline
                                         muted
                                         preload="none"
-                                        :poster="pair.image?.small_thumb_url || pair.livephoto?.small_thumb_url || pair.preview_url"
+                                        :poster="detailPairPreviewUrl(pair)"
                                         :data-src="pair.livephoto?.url"
                                     ></video>
                                 </template>
@@ -1020,8 +1050,21 @@
                                     <span class="photo-badge" x-text="`第 ${pair.pair_index} 组`"></span>
                                     <span class="photo-badge live" x-show="pair.livephoto">Live Photo</span>
                                 </div>
+                                <div class="card-trash-zone detail-card-trash" @click.stop>
+                                    <template x-if="!pairDeletePending(detail.folder?.folder_name, pair.pair_index)">
+                                        <button class="mini-trash-button" @click="askDeletePair(detail.folder?.folder_name, pair.pair_index)" aria-label="删除图片">
+                                            <span class="trash-icon" aria-hidden="true"></span>
+                                        </button>
+                                    </template>
+                                    <template x-if="pairDeletePending(detail.folder?.folder_name, pair.pair_index)">
+                                        <div class="mini-confirm-row">
+                                            <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(detail.folder?.folder_name, pair.pair_index)" @click="confirmDeletePair(detail.folder?.folder_name, pair.pair_index)">确认</button>
+                                            <button class="mini-confirm-button" @click="cancelDeleteViewerPair()">取消</button>
+                                        </div>
+                                    </template>
+                                </div>
                             </div>
-                        </button>
+                        </article>
                     </template>
                 </div>
                 <div class="site-asset-grid detail-video-grid" x-show="detail.videos?.length" x-cloak>

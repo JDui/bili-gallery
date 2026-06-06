@@ -377,11 +377,9 @@ class PullManager:
             reason,
         )
         self.db.clear_deleted_pair_marks(folder["top_dynamic_id"], folder["source_dynamic_id"])
-        removed_dirs = self.storage.remove_folder_assets(folder_name)
         self.db.delete_folder(folder_name)
-        self.cleanup.run()
-        self._finalize_deleted_folder(folder_name)
-        return {"ok": True, "message": "已加入黑名单并移入垃圾桶", "removed_dirs": removed_dirs}
+        self._run_background_cleanup(self._remove_folder_files, folder_name)
+        return {"ok": True, "message": "已加入黑名单并移入垃圾桶，文件会在后台继续清理", "cleanup_queued": True}
 
     def restore_from_trash(self, item_id: int, repull_now: bool = False) -> dict[str, Any]:
         trash_item = self.db.get_trash_item(item_id)
@@ -455,12 +453,42 @@ class PullManager:
             int(pair_index),
             reason="手动删除",
         )
-        removed_files = 0
         for asset in assets:
-            removed_files += self.storage.remove_asset_files(asset)
             self.db.delete_asset(int(asset["id"]))
-        self._finalize_deleted_folder(folder_name, folder)
-        return {"ok": True, "message": "当前图片组已永久删除，后续全量拉取不会恢复", "removed_files": removed_files}
+        remaining_assets = self.db.list_assets_for_folder(folder_name)
+        if remaining_assets:
+            has_images = any(asset.get("media_type") == "image" for asset in remaining_assets)
+            has_livephoto = any(asset.get("media_type") == "livephoto" for asset in remaining_assets)
+            folder_for_index = {**folder, "has_images": has_images, "has_livephoto": has_livephoto}
+            self.db.update_folder_media_flags(folder_name, has_images, has_livephoto)
+            self.indexer._replace_gallery_index(folder_for_index, remaining_assets)
+            remove_empty_folder = False
+        else:
+            self.db.delete_folder_if_empty(folder_name)
+            remove_empty_folder = True
+        self._run_background_cleanup(self._remove_pair_files, [dict(asset) for asset in assets], folder_name, remove_empty_folder)
+        return {"ok": True, "message": "当前图片组已永久删除，文件会在后台继续清理", "cleanup_queued": True}
+
+    def _run_background_cleanup(self, target, *args: Any) -> None:
+        thread = threading.Thread(target=self._background_cleanup_entry, args=(target, args), daemon=True)
+        thread.start()
+
+    def _background_cleanup_entry(self, target, args: tuple[Any, ...]) -> None:
+        try:
+            target(*args)
+        except Exception:
+            return
+
+    def _remove_folder_files(self, folder_name: str) -> None:
+        self.storage.remove_folder_assets(folder_name)
+        self.cleanup.run()
+
+    def _remove_pair_files(self, assets: list[dict[str, Any]], folder_name: str, remove_empty_folder: bool) -> None:
+        for asset in assets:
+            self.storage.remove_asset_files(asset)
+        if remove_empty_folder:
+            self.storage.remove_folder_assets(folder_name)
+        self.cleanup.run()
 
     def _finalize_deleted_folder(self, folder_name: str, folder: dict[str, Any] | None = None) -> None:
         time.sleep(0.2)
