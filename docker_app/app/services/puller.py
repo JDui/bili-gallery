@@ -143,6 +143,7 @@ class PullManager:
         self._pause_requested = False
         self._cancel_requested = False
         self.site_syncer: Any | None = None
+        self.xhs_syncer: Any | None = None
         self._event_log: deque[dict[str, Any]] = deque(maxlen=120)
         self._status: dict[str, Any] = {
             "running": False,
@@ -185,6 +186,9 @@ class PullManager:
 
     def attach_site_syncer(self, site_syncer: Any) -> None:
         self.site_syncer = site_syncer
+
+    def attach_xhs_syncer(self, xhs_syncer: Any) -> None:
+        self.xhs_syncer = xhs_syncer
 
     def start_startup_sync(self) -> bool:
         if not self._acquire(mode="startup", message="正在整理图库"):
@@ -285,8 +289,20 @@ class PullManager:
         queued = self._queue_or_start("site-validate", label, self._run_site_validation, int(source_id))
         return {"ok": True, "message": "已加入任务队列" if queued else "已开始站点全量校验", "queued": queued}
 
+    def start_xhs_anchor(self) -> dict[str, Any]:
+        if self.xhs_syncer is None:
+            raise RuntimeError("小红书同步器未初始化")
+        queued = self._queue_or_start("xhs-anchor", "设置小红书赞过锚点", self._run_xhs_anchor)
+        return {"ok": True, "message": "已加入任务队列" if queued else "已开始设置小红书赞过锚点", "queued": queued}
+
+    def start_xhs_pull(self) -> dict[str, Any]:
+        if self.xhs_syncer is None:
+            raise RuntimeError("小红书同步器未初始化")
+        queued = self._queue_or_start("xhs-sync", "拉取小红书赞过", self._run_xhs_pull)
+        return {"ok": True, "message": "已加入任务队列" if queued else "已开始拉取小红书赞过", "queued": queued}
+
     def status(self) -> dict[str, Any]:
-        latest = self._latest_task_run(["pull", "review", "validate", "startup", "index", "site-sync"])
+        latest = self._latest_task_run(["pull", "review", "validate", "startup", "index", "site-sync", "xhs-sync"])
         return {
             **self._status,
             "paused": self._pause_requested,
@@ -361,6 +377,10 @@ class PullManager:
             return self.start_site_sync(int(source_id) if source_id is not None else None)
         if kind == "site-validate":
             return self.start_site_validation(int(retry_action.get("source_id") or 0))
+        if kind == "xhs-anchor":
+            return self.start_xhs_anchor()
+        if kind == "xhs-sync":
+            return self.start_xhs_pull()
         raise RuntimeError("当前任务不支持重试")
 
     def move_to_trash(self, folder_name: str, reason: str = "不喜欢") -> dict[str, Any]:
@@ -692,6 +712,55 @@ class PullManager:
             self._status = {"running": False, "message": f"站点全量校验失败: {exc}", "mode": "idle"}
             if self.site_syncer is not None:
                 self.site_syncer._status = {"running": False, "message": f"站点全量校验失败: {exc}"}
+        finally:
+            self._release()
+            self._run_next_queued_task()
+
+    def _run_xhs_anchor(self) -> None:
+        if self.xhs_syncer is None:
+            self._release()
+            self._run_next_queued_task()
+            return
+        retry_action = {"kind": "xhs-anchor"}
+        task_id = self.db.create_task_run("xhs-sync", "running", "开始设置小红书赞过锚点", {"retry_action": retry_action})
+        try:
+            result = self.xhs_syncer.set_anchor(cooperate=self._cooperate)
+            stats = {"retry_action": retry_action, "events": self._runtime_events(), **(result.get("state") or {})}
+            self.db.finish_task_run(task_id, "success", result.get("message") or "小红书赞过锚点已设置", stats)
+            self._status = {"running": False, "message": result.get("message") or "小红书赞过锚点已设置", "mode": "idle", "stats": stats}
+        except Exception as exc:
+            self.db.finish_task_run(
+                task_id,
+                "failed",
+                str(exc),
+                {"error": str(exc), "retry_action": retry_action, "events": self._runtime_events()},
+            )
+            self._status = {"running": False, "message": f"小红书锚点设置失败: {exc}", "mode": "idle"}
+        finally:
+            self._release()
+            self._run_next_queued_task()
+
+    def _run_xhs_pull(self) -> None:
+        if self.xhs_syncer is None:
+            self._release()
+            self._run_next_queued_task()
+            return
+        retry_action = {"kind": "xhs-sync"}
+        task_id = self.db.create_task_run("xhs-sync", "running", "开始拉取小红书赞过", {"retry_action": retry_action})
+        try:
+            stats = self.xhs_syncer.execute_pull(cooperate=self._cooperate)
+            stats["retry_action"] = retry_action
+            stats["events"] = self._runtime_events()
+            self.db.finish_task_run(task_id, "success", "小红书赞过拉取完成", stats)
+            self._status = {"running": False, "message": "小红书赞过拉取完成", "mode": "idle", "stats": stats}
+        except Exception as exc:
+            self.db.finish_task_run(
+                task_id,
+                "failed",
+                str(exc),
+                {"error": str(exc), "retry_action": retry_action, "events": self._runtime_events()},
+            )
+            self._status = {"running": False, "message": f"小红书赞过拉取失败: {exc}", "mode": "idle"}
         finally:
             self._release()
             self._run_next_queued_task()
@@ -1945,6 +2014,10 @@ class PullManager:
             elif next_task.kind == "site-validate":
                 source_id = int(next_task.payload.get("args", [0])[0])
                 thread = threading.Thread(target=self._run_site_validation, args=(source_id,), daemon=True)
+            elif next_task.kind == "xhs-anchor":
+                thread = threading.Thread(target=self._run_xhs_anchor, daemon=True)
+            elif next_task.kind == "xhs-sync":
+                thread = threading.Thread(target=self._run_xhs_pull, daemon=True)
             else:
                 self._release()
                 return

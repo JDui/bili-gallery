@@ -19,13 +19,14 @@ function galleryApp() {
     },
     subscriptions: [],
     selectedSubscriptionUids: [],
-    sourceKind: ["all", "up", "site"].includes(localStorage.getItem("gallery_source_kind"))
+    sourceKind: ["all", "up", "site", "xhs"].includes(localStorage.getItem("gallery_source_kind"))
       ? localStorage.getItem("gallery_source_kind")
       : "all",
     sourceKindOptions: [
       { key: "all", label: "所有项目" },
       { key: "up", label: "UP订阅" },
       { key: "site", label: "站点订阅" },
+      { key: "xhs", label: "小红书" },
     ],
     gallery: { items: [], total: 0, page: 1, page_size: 24 },
     galleryLoading: false,
@@ -74,6 +75,7 @@ function galleryApp() {
     trashItems: [],
     siteStats: {},
     siteStatus: {},
+    xhsStatus: {},
     siteSources: [],
     siteLogs: [],
     siteRules: { mode: "blacklist", keywords: [], use_regex: false },
@@ -105,6 +107,7 @@ function galleryApp() {
     keywordText: "",
     pullStatus: {},
     qr: {},
+    xhsQr: {},
     detail: { open: false, pairs: [], folder: null, videos: [] },
     detailCache: {},
     viewer: { open: false, pair: null, folder: null, showVideo: false },
@@ -194,6 +197,9 @@ function galleryApp() {
       window.setInterval(() => {
         if (this.qr.image_data_url && this.currentView === "settings") {
           this.pollQrStatus();
+        }
+        if (this.xhsQr.image_data_url && this.currentView === "settings") {
+          this.pollXhsQrStatus();
         }
       }, 3000);
       window.addEventListener("scroll", () => this.scheduleScrollEffects(), { passive: true });
@@ -696,7 +702,7 @@ function galleryApp() {
     },
 
     setSourceKind(kind) {
-      if (!["all", "up", "site"].includes(kind) || this.sourceKind === kind) {
+      if (!["all", "up", "site", "xhs"].includes(kind) || this.sourceKind === kind) {
         return;
       }
       this.sourceKind = kind;
@@ -2855,12 +2861,13 @@ function galleryApp() {
       const [settings, health] = await Promise.all([this.api("/api/settings"), this.api("/api/health")]);
       this.settings = settings;
       this.galleryIndexStatus = health.gallery_index || {};
+      this.xhsStatus = settings.xhs_liked || health.xhs_status || {};
       this.keywordText = (this.settings.ad_filter_keywords || []).join("\n");
       this.lazyLoaded.settings = true;
     },
 
     async saveSettings() {
-      const { auth, ...settingsPayload } = this.settings || {};
+      const { auth, xhs_auth, xhs_liked, ...settingsPayload } = this.settings || {};
       const payload = {
         ...settingsPayload,
         site_request_timeout: Math.max(30, Math.min(900, Number(settingsPayload.site_request_timeout) || 300)),
@@ -2879,7 +2886,7 @@ function galleryApp() {
         method: "PUT",
         body: JSON.stringify(payload),
       });
-      this.settings = { ...savedSettings, auth: auth || this.settings.auth };
+      this.settings = { ...savedSettings, auth: auth || this.settings.auth, xhs_auth: xhs_auth || this.settings.xhs_auth, xhs_liked: xhs_liked || this.settings.xhs_liked };
       await Promise.all([this.refreshMeta(), this.loadSettings()]);
       this.notify("success", "设置已保存", "新的拉取和过滤参数已经生效。");
     },
@@ -3058,6 +3065,7 @@ function galleryApp() {
       this.pullStatus = pullStatus;
       this.siteStatus = health.site_status || {};
       this.siteStats = health.site_stats || {};
+      this.xhsStatus = health.xhs_status || this.xhsStatus || {};
       this.galleryIndexStatus = health.gallery_index || this.galleryIndexStatus || {};
       const currentTaskId = this.pullStatus.last_run?.id || null;
       const currentSiteTaskId = this.siteStatus.last_run?.id || null;
@@ -3298,6 +3306,55 @@ function galleryApp() {
       this.qr = {};
       await this.loadSettings();
       this.notify("success", "已退出登录", "本地保存的 Cookie 已清除。");
+    },
+
+    async startXhsQrLogin() {
+      this.xhsQr = await this.api("/api/xhs/auth/qr/start", { method: "POST" });
+      this.notify("info", "小红书二维码已生成", "请使用小红书客户端扫码。");
+    },
+
+    async pollXhsQrStatus() {
+      const payload = await this.api("/api/xhs/auth/qr/status");
+      this.xhsQr = { ...this.xhsQr, ...payload };
+      if (payload.status === "scanned") {
+        return;
+      }
+      if (payload.status === "done") {
+        await this.loadSettings();
+        this.xhsQr = { status: "done", message: payload.message };
+        this.notify("success", "小红书登录成功", payload.message || "账号权限已经导入。");
+      }
+    },
+
+    async checkXhsAuth() {
+      this.settings.xhs_auth = await this.api("/api/xhs/auth/check");
+      this.notify(this.settings.xhs_auth?.ok ? "success" : "error", "小红书权限检查", this.settings.xhs_auth?.message || "检查完成。");
+    },
+
+    async logoutXhs() {
+      await this.api("/api/xhs/auth/logout", { method: "POST" });
+      this.xhsQr = {};
+      await this.loadSettings();
+      this.notify("success", "已退出小红书", "本地保存的小红书 Cookie 已清除。");
+    },
+
+    async refreshXhsLikedStatus() {
+      this.xhsStatus = await this.api("/api/xhs/liked/status");
+      this.settings.xhs_liked = this.xhsStatus;
+    },
+
+    async setXhsLikedAnchor() {
+      this.setImmediateTaskFeedback("正在提交小红书赞过锚点设置任务...");
+      const result = await this.api("/api/xhs/liked/anchor", { method: "POST" });
+      await Promise.all([this.refreshStatus(), this.refreshTasks(), this.refreshXhsLikedStatus()]);
+      this.notify("info", "任务已提交", result.message);
+    },
+
+    async pullXhsLiked() {
+      this.setImmediateTaskFeedback("正在提交小红书赞过拉取任务...");
+      const result = await this.api("/api/xhs/liked/pull", { method: "POST" });
+      await Promise.all([this.refreshStatus(), this.refreshTasks()]);
+      this.notify("info", "任务已提交", result.message);
     },
 
     async refreshSites() {
