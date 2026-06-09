@@ -1,4 +1,4 @@
-# Docker 化 B 站动态相簿 v5.10
+# Docker 化 B 站动态相簿 v5.11
 
 ## 启动
 
@@ -12,7 +12,7 @@ AMD64 NAS 可以直接使用 [docker-compose.nas-amd64.yml](/Users/muxinzheng/De
 
 建议流程：
 
-1. 先把镜像包导入 NAS：`docker load -i zzs-bili-gallery_v5.10_amd64.tar`
+1. 先把镜像包导入 NAS：`docker load -i zzs-bili-gallery_v5.11_amd64.tar`
 2. 按你的 NAS 实际目录修改 compose 里的两个挂载路径
 3. 执行 `docker compose -f docker-compose.nas-amd64.yml up -d`
 
@@ -20,6 +20,16 @@ AMD64 NAS 可以直接使用 [docker-compose.nas-amd64.yml](/Users/muxinzheng/De
 
 - `/storage/config` 对应宿主 `config`
 - `/storage/data` 对应宿主 `data`
+
+## 小红书 Chrome Cookie 同步
+
+如果 Web 应用运行在 Docker 中，容器无法直接读取 macOS 宿主机 Chrome Cookie 和钥匙串。请先在 Chrome 完成小红书登录，再在宿主机仓库目录执行：
+
+```bash
+docker_app/.venv/bin/python docker_app/scripts/import_xhs_chrome_cookie.py --app http://localhost:7860
+```
+
+不要只粘贴 `document.cookie`，它不包含小红书登录所需的 HttpOnly `web_session` Cookie。
 
 ## 审查截图
 

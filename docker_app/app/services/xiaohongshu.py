@@ -91,7 +91,7 @@ class XhsCookieState:
 
     @property
     def cookie_header(self) -> str:
-        return "; ".join(f"{key}={value}" for key, value in normalize_xhs_cookie_items(self.cookie_json).items())
+        return format_xhs_cookie_header(self.cookie_json)
 
 
 def normalize_xhs_cookie_items(cookies: Any) -> dict[str, str]:
@@ -236,10 +236,18 @@ def _decrypt_chrome_cookie(host_key: str, encrypted_value: bytes, key: bytes | N
 
 def load_xhs_cookies_from_chrome() -> tuple[dict[str, str], str]:
     errors: list[str] = []
+    searched_dirs: list[str] = []
     key: bytes | None = None
     key_loaded = False
     for user_data_dir in _chrome_user_data_dirs():
-        for profile_dir in _chrome_profile_dirs(user_data_dir):
+        searched_dirs.append(str(user_data_dir))
+        if not user_data_dir.exists():
+            continue
+        profiles = _chrome_profile_dirs(user_data_dir)
+        if not profiles:
+            errors.append(f"{user_data_dir}: 未找到 Chrome Profile Cookie 数据库")
+            continue
+        for profile_dir in profiles:
             for db_path in _chrome_cookie_db_candidates(profile_dir):
                 if not db_path.exists():
                     continue
@@ -255,7 +263,11 @@ def load_xhs_cookies_from_chrome() -> tuple[dict[str, str], str]:
                         return cookies, profile_dir.name
                 except Exception as exc:
                     errors.append(f"{profile_dir.name}: {exc}")
-    detail = f"：{'；'.join(errors[:3])}" if errors else ""
+    if _running_in_container():
+        errors.append("当前服务运行在容器内，无法直接读取宿主机 Chrome Cookie；请在宿主机运行同步脚本")
+    if searched_dirs:
+        errors.append(f"已搜索: {', '.join(searched_dirs[:3])}")
+    detail = f"：{'；'.join(errors[:4])}" if errors else ""
     raise RuntimeError(f"未在 Chrome 中找到小红书登录 Cookie{detail}")
 
 
@@ -307,6 +319,24 @@ def _open_system_browser(url: str) -> bool:
         return bool(webbrowser.open(url, new=2, autoraise=True))
     except Exception:
         return False
+
+
+def _running_in_container() -> bool:
+    if Path("/.dockerenv").exists():
+        return True
+    try:
+        cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+    return any(token in cgroup.lower() for token in ("docker", "container", "kubepods", "lxc"))
+
+
+def format_xhs_cookie_header(cookies: dict[str, str]) -> str:
+    return "; ".join(f"{key}={value}" for key, value in normalize_xhs_cookie_items(cookies).items())
+
+
+def has_xhs_session_cookie(cookies: dict[str, str]) -> bool:
+    return bool(cookies.get("web_session") or cookies.get("web_session_sec"))
 
 
 def _generate_a1() -> str:
@@ -584,11 +614,11 @@ class XhsAuthService:
         cookies = self.get_cookie_state().cookie_json
         if not cookies.get("a1"):
             return {"ok": False, "status": "browser_pending", "message": "等待 Chrome 生成小红书 a1 Cookie"}
-        if not (cookies.get("web_session") or cookies.get("web_session_sec")):
+        if not has_xhs_session_cookie(cookies):
             return {
                 "ok": False,
                 "status": "browser_pending",
-                "message": f"已读取 Chrome Profile {profile}，等待小红书登录态 Cookie",
+                "message": f"已读取 Chrome Profile {profile}，但还没有 web_session 登录态 Cookie；请确认 Chrome 已在小红书完成登录",
             }
         result = self.check_cookie()
         if result.get("ok"):
@@ -684,6 +714,11 @@ class XhsAuthService:
         cookies = {**current, **imported}
         if not cookies.get("a1"):
             raise RuntimeError("未识别到小红书 a1 Cookie，请在小红书页面完成验证后再复制 Cookie")
+        if not has_xhs_session_cookie(cookies):
+            raise RuntimeError(
+                "这份 Cookie 缺少 web_session 登录态。document.cookie 读不到 HttpOnly Cookie，"
+                "请使用 Chrome Cookie 同步脚本，或从浏览器 Cookie 管理器导出完整小红书 Cookie。"
+            )
         self.db.update_xhs_auth_state(
             cookie_json=dumps_json(cookies),
             user_json=None,

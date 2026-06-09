@@ -205,6 +205,13 @@ def test_xhs_cookie_import_saves_browser_cookie_and_checks_auth(
     assert "Path" not in saved_cookies
 
 
+def test_xhs_cookie_import_rejects_document_cookie_without_session(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_db(tmp_path)
+
+    with pytest.raises(RuntimeError, match="缺少 web_session"):
+        XhsAuthService(db).import_cookie_text("a1=browser-a1; webId=browser-webid; gid=browser-gid")
+
+
 def test_xhs_browser_login_opens_system_browser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db, _storage, _syncer = make_db(tmp_path)
     auth = XhsAuthService(db)
