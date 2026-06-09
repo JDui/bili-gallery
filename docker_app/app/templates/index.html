@@ -619,13 +619,23 @@
                             <span class="inline-tag" x-text="settings.xhs_auth?.uname || settings.xhs_auth?.user?.nickname || '未知用户'"></span>
                         </div>
                         <div class="button-row">
-                            <button class="primary-button" @click="startXhsQrLogin()">生成二维码</button>
+                            <button class="primary-button" @click="startXhsBrowserLogin()">系统浏览器登录</button>
+                            <button class="secondary-button" @click="startXhsQrLogin()">备用扫码</button>
                             <button class="secondary-button" @click="checkXhsAuth()">检查 Cookie</button>
                             <button class="secondary-button" @click="logoutXhs()">退出登录</button>
                         </div>
+                        <p class="field-copy" x-show="xhsBrowserLogin.message" x-text="xhsBrowserLogin.message" x-cloak></p>
                         <div class="qr-box" x-show="xhsQr.image_data_url" x-cloak>
                             <img :src="xhsQr.image_data_url" alt="小红书登录二维码">
                             <p x-text="xhsQr.message || '请使用小红书客户端扫码登录'"></p>
+                        </div>
+                        <label>验证 Cookie
+                            <textarea rows="4" x-model="xhsCookieImportText" placeholder="在小红书页面完成验证后粘贴 document.cookie"></textarea>
+                        </label>
+                        <p class="field-copy">系统浏览器登录会自动索引 Chrome Cookie；如果 Chrome Cookie 无法读取，可手动导入 Cookie 作为备用。</p>
+                        <div class="button-row">
+                            <button class="secondary-button" @click="copyXhsCookieCommand()">复制 Cookie 命令</button>
+                            <button class="primary-button" @click="importXhsCookie()">导入 Cookie</button>
                         </div>
                     </article>
 

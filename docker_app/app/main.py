@@ -767,6 +767,16 @@ async def logout() -> dict[str, Any]:
     return {"ok": True, "message": "已退出登录"}
 
 
+@app.post("/api/xhs/auth/browser/start")
+async def start_xhs_browser_login() -> dict[str, Any]:
+    return xhs_auth.start_browser_login()
+
+
+@app.get("/api/xhs/auth/browser/status")
+async def xhs_browser_login_status() -> dict[str, Any]:
+    return xhs_auth.browser_login_status()
+
+
 @app.post("/api/xhs/auth/qr/start")
 async def start_xhs_qr() -> dict[str, Any]:
     try:
@@ -786,6 +796,14 @@ async def poll_xhs_qr() -> dict[str, Any]:
 @app.get("/api/xhs/auth/check")
 async def check_xhs_auth() -> dict[str, Any]:
     return xhs_auth.check_cookie()
+
+
+@app.post("/api/xhs/auth/cookie/import")
+async def import_xhs_cookie(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        return xhs_auth.import_cookie_text(str(payload.get("cookie_text") or ""))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/xhs/auth/logout")

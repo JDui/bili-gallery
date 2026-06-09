@@ -1,18 +1,29 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
+import os
+import platform
 import random
 import shutil
+import sqlite3
+import subprocess
+import tempfile
 import time
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import qrcode
 import requests
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from app.db import Database
 from app.services.media_indexer import MediaIndexer
@@ -43,9 +54,34 @@ XHS_SUBSCRIPTION_UID = "xhs:likes"
 XHS_SUBSCRIPTION_NAME = "小红书赞过"
 XHS_PAGE_SIZE = 30
 XHS_MAX_INCREMENTAL_PAGES = 20
+XHS_BROWSER_LOGIN_URL = f"{XHS_HOME}/explore"
+XHS_CHROME_COOKIE_DOMAINS = ("xiaohongshu.com",)
+XHS_CHROME_PROFILE_ENV = "XHS_CHROME_PROFILE"
+XHS_CHROME_USER_DATA_DIR_ENV = "XHS_CHROME_USER_DATA_DIR"
+XHS_RESERVED_COOKIE_NAMES = {
+    "comment",
+    "domain",
+    "expires",
+    "httponly",
+    "max-age",
+    "path",
+    "samesite",
+    "secure",
+    "version",
+}
+XHS_COOKIE_VALUE_SAFE_CHARS = "!#$%&'()*+-./:<=>?@[]^_`{|}~%"
 QR_WAITING = 0
 QR_SCANNED = 1
 QR_CONFIRMED = 2
+XHS_VERIFICATION_MESSAGE = "小红书触发验证，请稍后重试或重新扫码登录"
+
+
+class XhsAuthRequiredError(RuntimeError):
+    pass
+
+
+class XhsVerificationRequiredError(XhsAuthRequiredError):
+    pass
 
 
 @dataclass
@@ -55,7 +91,222 @@ class XhsCookieState:
 
     @property
     def cookie_header(self) -> str:
-        return "; ".join(f"{key}={value}" for key, value in self.cookie_json.items() if value)
+        return "; ".join(f"{key}={value}" for key, value in normalize_xhs_cookie_items(self.cookie_json).items())
+
+
+def normalize_xhs_cookie_items(cookies: Any) -> dict[str, str]:
+    try:
+        items = dict(cookies).items()
+    except Exception:
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in items:
+        name = _normalize_xhs_cookie_name(key)
+        safe_value = _normalize_xhs_cookie_value(value)
+        if name and safe_value:
+            normalized[name] = safe_value
+    return normalized
+
+
+def _normalize_xhs_cookie_name(value: Any) -> str:
+    name = str(value or "").strip()
+    if not name or name.lower() in XHS_RESERVED_COOKIE_NAMES:
+        return ""
+    if any(char in name for char in (";", ",", "=", " ", "\t", "\r", "\n")):
+        return ""
+    try:
+        name.encode("ascii")
+    except UnicodeEncodeError:
+        return ""
+    return name
+
+
+def _normalize_xhs_cookie_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if any(ord(char) < 32 or ord(char) == 127 for char in text):
+        return quote(text, safe=XHS_COOKIE_VALUE_SAFE_CHARS)
+    try:
+        text.encode("ascii")
+        return text
+    except UnicodeEncodeError:
+        return quote(text, safe=XHS_COOKIE_VALUE_SAFE_CHARS)
+
+
+def _chrome_user_data_dirs() -> list[Path]:
+    configured = os.environ.get(XHS_CHROME_USER_DATA_DIR_ENV, "").strip()
+    if configured:
+        return [Path(configured).expanduser()]
+
+    home = Path.home()
+    system = platform.system().lower()
+    if system == "darwin":
+        return [
+            home / "Library/Application Support/Google/Chrome",
+            home / "Library/Application Support/Google/Chrome Beta",
+            home / "Library/Application Support/Google/Chrome Canary",
+        ]
+    if system == "windows":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            return [Path(local_app_data) / "Google/Chrome/User Data"]
+        return []
+    return [
+        home / ".config/google-chrome",
+        home / ".config/chromium",
+    ]
+
+
+def _chrome_profile_dirs(user_data_dir: Path) -> list[Path]:
+    configured = os.environ.get(XHS_CHROME_PROFILE_ENV, "").strip()
+    if configured:
+        return [user_data_dir / configured]
+    if not user_data_dir.exists():
+        return []
+
+    profiles = []
+    for item in user_data_dir.iterdir():
+        if not item.is_dir():
+            continue
+        if (item / "Network/Cookies").exists() or (item / "Cookies").exists():
+            profiles.append(item)
+
+    def sort_key(path: Path) -> tuple[int, float, str]:
+        name = path.name
+        priority = 0 if name == "Default" else 1 if name.startswith("Profile ") else 2
+        latest_cookie_mtime = max(
+            (candidate.stat().st_mtime for candidate in _chrome_cookie_db_candidates(path) if candidate.exists()),
+            default=0.0,
+        )
+        return (priority, -latest_cookie_mtime, name)
+
+    return sorted(profiles, key=sort_key)
+
+
+def _chrome_cookie_db_candidates(profile_dir: Path) -> list[Path]:
+    return [profile_dir / "Network/Cookies", profile_dir / "Cookies"]
+
+
+def _chrome_safe_storage_password() -> bytes:
+    if platform.system().lower() != "darwin":
+        raise RuntimeError("当前仅支持自动解密 macOS Chrome Cookie；其他系统请手动导入 Cookie")
+    try:
+        password = subprocess.check_output(
+            ["security", "find-generic-password", "-w", "-a", "Chrome", "-s", "Chrome Safe Storage"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception as exc:
+        raise RuntimeError("无法读取 Chrome Safe Storage，请确认钥匙串允许访问 Chrome Cookie") from exc
+    if not password:
+        raise RuntimeError("Chrome Safe Storage 为空，无法解密 Chrome Cookie")
+    return password.encode("utf-8")
+
+
+def _derive_chrome_key(password: bytes) -> bytes:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA1(),
+        length=16,
+        salt=b"saltysalt",
+        iterations=1003,
+    )
+    return kdf.derive(password)
+
+
+def _decrypt_chrome_cookie(host_key: str, encrypted_value: bytes, key: bytes | None) -> str:
+    if not encrypted_value:
+        return ""
+    if key is None:
+        raise RuntimeError("缺少 Chrome Cookie 解密密钥")
+
+    payload = encrypted_value[3:] if encrypted_value.startswith((b"v10", b"v11")) else encrypted_value
+    cipher = Cipher(algorithms.AES(key), modes.CBC(b" " * 16))
+    decryptor = cipher.decryptor()
+    plaintext = decryptor.update(payload) + decryptor.finalize()
+    padding = plaintext[-1]
+    if 0 < padding <= 16:
+        plaintext = plaintext[:-padding]
+
+    host_hash = hashlib.sha256(host_key.encode("utf-8")).digest()
+    if plaintext.startswith(host_hash):
+        plaintext = plaintext[len(host_hash) :]
+    return plaintext.decode("utf-8")
+
+
+def load_xhs_cookies_from_chrome() -> tuple[dict[str, str], str]:
+    errors: list[str] = []
+    key: bytes | None = None
+    key_loaded = False
+    for user_data_dir in _chrome_user_data_dirs():
+        for profile_dir in _chrome_profile_dirs(user_data_dir):
+            for db_path in _chrome_cookie_db_candidates(profile_dir):
+                if not db_path.exists():
+                    continue
+                try:
+                    if not key_loaded:
+                        key_loaded = True
+                        try:
+                            key = _derive_chrome_key(_chrome_safe_storage_password())
+                        except RuntimeError as exc:
+                            errors.append(str(exc))
+                    cookies = _read_xhs_cookies_from_chrome_db(db_path, key)
+                    if cookies:
+                        return cookies, profile_dir.name
+                except Exception as exc:
+                    errors.append(f"{profile_dir.name}: {exc}")
+    detail = f"：{'；'.join(errors[:3])}" if errors else ""
+    raise RuntimeError(f"未在 Chrome 中找到小红书登录 Cookie{detail}")
+
+
+def _read_xhs_cookies_from_chrome_db(db_path: Path, key: bytes | None) -> dict[str, str]:
+    with tempfile.TemporaryDirectory(prefix="zzs-xhs-cookies-") as temp_dir:
+        copied_db = Path(temp_dir) / "Cookies"
+        shutil.copy2(db_path, copied_db)
+        conn = sqlite3.connect(f"file:{copied_db}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                """
+                select host_key, name, value, encrypted_value
+                from cookies
+                where host_key like ?
+                   or host_key like ?
+                order by last_access_utc desc, expires_utc desc, creation_utc desc
+                """,
+                ("%xiaohongshu.com", "%.xiaohongshu.com"),
+            ).fetchall()
+        finally:
+            conn.close()
+
+    cookies: dict[str, str] = {}
+    for host_key, name, value, encrypted_value in rows:
+        host = str(host_key or "").lstrip(".").lower()
+        if not any(host == domain or host.endswith(f".{domain}") for domain in XHS_CHROME_COOKIE_DOMAINS):
+            continue
+        raw_value = str(value or "")
+        if not raw_value and encrypted_value:
+            try:
+                raw_value = _decrypt_chrome_cookie(str(host_key or ""), bytes(encrypted_value), key)
+            except Exception:
+                continue
+        normalized = normalize_xhs_cookie_items({name: raw_value})
+        if normalized:
+            cookies.update({key: value for key, value in normalized.items() if key not in cookies})
+    return cookies
+
+
+def _open_system_browser(url: str) -> bool:
+    system = platform.system().lower()
+    if system == "darwin":
+        try:
+            subprocess.Popen(["open", "-a", "Google Chrome", url])
+            return True
+        except Exception:
+            pass
+    try:
+        return bool(webbrowser.open(url, new=2, autoraise=True))
+    except Exception:
+        return False
 
 
 def _generate_a1() -> str:
@@ -257,7 +508,7 @@ class XhsApiClient:
             if value:
                 self.cookies[key] = value
         if response.status_code in {461, 471}:
-            raise RuntimeError("小红书触发验证，请稍后重试或重新扫码登录")
+            raise XhsVerificationRequiredError(XHS_VERIFICATION_MESSAGE)
         response.raise_for_status()
         payload = response.json()
         if payload.get("success"):
@@ -265,7 +516,7 @@ class XhsApiClient:
             return data if isinstance(data, dict) else {"data": data}
         code = payload.get("code")
         if code == -100:
-            raise RuntimeError("小红书登录已失效，请重新扫码登录")
+            raise XhsAuthRequiredError("小红书登录已失效，请重新扫码登录")
         raise RuntimeError(payload.get("msg") or payload.get("message") or f"小红书接口失败: {payload}")
 
 
@@ -279,6 +530,70 @@ class XhsAuthService:
             cookie_json=_json_loads(state.get("cookie_json"), {}),
             user=_json_loads(state.get("user_json"), {}),
         )
+
+    def start_browser_login(self) -> dict[str, Any]:
+        current = normalize_xhs_cookie_items(self.get_cookie_state().cookie_json)
+        opened = _open_system_browser(XHS_BROWSER_LOGIN_URL)
+        self.db.update_xhs_auth_state(
+            cookie_json=dumps_json(current) if current else None,
+            user_json=None,
+            qr_id=None,
+            qr_code=None,
+            qr_url=XHS_BROWSER_LOGIN_URL,
+            qr_status="browser_pending",
+            qr_created_at=now_iso(),
+        )
+        return {
+            "ok": True,
+            "status": "browser_pending",
+            "url": XHS_BROWSER_LOGIN_URL,
+            "opened": opened,
+            "message": "已在系统浏览器打开小红书，请在 Chrome 完成登录后等待自动同步 Cookie"
+            if opened
+            else f"无法自动打开系统浏览器，请手动访问 {XHS_BROWSER_LOGIN_URL} 后等待 Cookie 同步",
+        }
+
+    def merge_browser_cookies(self, cookies: dict[str, str]) -> None:
+        incoming = normalize_xhs_cookie_items(cookies)
+        if not incoming:
+            return
+        current = normalize_xhs_cookie_items(self.get_cookie_state().cookie_json)
+        self.db.update_xhs_auth_state(
+            cookie_json=dumps_json({**current, **incoming}),
+            qr_status="browser_cookie_captured",
+        )
+
+    def browser_login_status(self) -> dict[str, Any]:
+        try:
+            imported, profile = load_xhs_cookies_from_chrome()
+            self.merge_browser_cookies(imported)
+        except Exception as exc:
+            state = self.get_cookie_state()
+            if state.cookie_json:
+                return {
+                    "ok": False,
+                    "status": "browser_pending",
+                    "message": f"等待 Chrome 写入小红书登录 Cookie：{exc}",
+                }
+            return {
+                "ok": False,
+                "status": "browser_pending",
+                "message": f"等待 Chrome 小红书登录 Cookie：{exc}",
+            }
+
+        cookies = self.get_cookie_state().cookie_json
+        if not cookies.get("a1"):
+            return {"ok": False, "status": "browser_pending", "message": "等待 Chrome 生成小红书 a1 Cookie"}
+        if not (cookies.get("web_session") or cookies.get("web_session_sec")):
+            return {
+                "ok": False,
+                "status": "browser_pending",
+                "message": f"已读取 Chrome Profile {profile}，等待小红书登录态 Cookie",
+            }
+        result = self.check_cookie()
+        if result.get("ok"):
+            return {"status": "done", "profile": profile, **result}
+        return {"status": "browser_cookie_captured", **result}
 
     def start_qr_login(self) -> dict[str, Any]:
         cookies = {"a1": _generate_a1(), "webId": _generate_webid()}
@@ -355,8 +670,30 @@ class XhsAuthService:
                     user_json=dumps_json(result.get("user", {})),
                 )
                 return result
+        except XhsAuthRequiredError as exc:
+            self.logout()
+            return {"ok": False, "message": str(exc), "requires_login": True}
         except Exception as exc:
             return {"ok": False, "message": f"小红书 Cookie 检查失败: {exc}"}
+
+    def import_cookie_text(self, cookie_text: str) -> dict[str, Any]:
+        imported = self._parse_cookie_text(cookie_text)
+        if not imported:
+            raise RuntimeError("未识别到小红书 Cookie")
+        current = self.get_cookie_state().cookie_json
+        cookies = {**current, **imported}
+        if not cookies.get("a1"):
+            raise RuntimeError("未识别到小红书 a1 Cookie，请在小红书页面完成验证后再复制 Cookie")
+        self.db.update_xhs_auth_state(
+            cookie_json=dumps_json(cookies),
+            user_json=None,
+            qr_id=None,
+            qr_code=None,
+            qr_url=None,
+            qr_status="imported",
+            qr_created_at=None,
+        )
+        return self.check_cookie()
 
     def logout(self) -> None:
         self.db.update_xhs_auth_state(
@@ -393,6 +730,41 @@ class XhsAuthService:
         image.save(buffer, format="PNG")
         return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
+    def _parse_cookie_text(self, cookie_text: str) -> dict[str, str]:
+        text = str(cookie_text or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            return normalize_xhs_cookie_items(parsed)
+        if isinstance(parsed, list):
+            cookies: dict[str, str] = {}
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                cookies[str(item.get("name") or "")] = str(item.get("value") or "")
+            return normalize_xhs_cookie_items(cookies)
+
+        cookies = {}
+        normalized = text.replace("\r", "\n").replace("\n", ";")
+        for part in normalized.split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            if part.lower().startswith("cookie:"):
+                part = part.split(":", 1)[1].strip()
+            if "=" not in part:
+                continue
+            name, value = part.split("=", 1)
+            normalized = normalize_xhs_cookie_items({name: value})
+            if not normalized:
+                continue
+            cookies.update(normalized)
+        return cookies
+
 
 class XhsLikedSyncManager:
     def __init__(
@@ -422,20 +794,24 @@ class XhsLikedSyncManager:
         }
 
     def set_anchor(self, cooperate=None) -> dict[str, Any]:
-        with self._client() as client:
-            if cooperate:
-                cooperate()
-            cards = self._liked_cards(client.get_liked_notes(num=2))
-            anchors = [card["note_id"] for card in cards[:2] if card.get("note_id")]
-            if len(anchors) < 1:
-                raise RuntimeError("未获取到小红书赞过笔记，无法设置锚点")
-            state = self.db.update_xhs_liked_state(
-                anchor_note_ids=anchors,
-                anchor_set_at=now_iso(),
-                last_status="anchor",
-                last_message=f"已设置 {len(anchors)} 个锚点",
-                last_stats={"anchors": len(anchors)},
-            )
+        try:
+            with self._client() as client:
+                if cooperate:
+                    cooperate()
+                cards = self._liked_cards(client.get_liked_notes(num=2))
+                anchors = [card["note_id"] for card in cards[:2] if card.get("note_id")]
+                if len(anchors) < 1:
+                    raise RuntimeError("未获取到小红书赞过笔记，无法设置锚点")
+                state = self.db.update_xhs_liked_state(
+                    anchor_note_ids=anchors,
+                    anchor_set_at=now_iso(),
+                    last_status="anchor",
+                    last_message=f"已设置 {len(anchors)} 个锚点",
+                    last_stats={"anchors": len(anchors)},
+                )
+        except XhsAuthRequiredError as exc:
+            self._mark_auth_required(exc)
+            raise
         return {"ok": True, "message": f"已设置 {len(anchors)} 个小红书赞过锚点", "state": state}
 
     def execute_pull(self, cooperate=None) -> dict[str, Any]:
@@ -448,55 +824,59 @@ class XhsLikedSyncManager:
         latest_anchor_candidates: list[str] = []
         cursor = ""
         found_anchor = False
-        with self._client() as client:
-            for _page in range(XHS_MAX_INCREMENTAL_PAGES):
-                if cooperate:
-                    cooperate()
-                page = client.get_liked_notes(cursor=cursor, num=XHS_PAGE_SIZE)
-                cards = self._liked_cards(page)
-                if not cards:
-                    break
-                for card in cards:
-                    note_id = str(card.get("note_id") or "")
-                    if note_id and len(latest_anchor_candidates) < 2:
-                        latest_anchor_candidates.append(note_id)
-                    if note_id in old_anchors:
-                        found_anchor = True
-                        break
-                    new_cards.append(card)
-                if found_anchor:
-                    break
-                cursor = str(page.get("cursor") or "")
-                if not page.get("has_more") or not cursor:
-                    break
-            stats["discovered"] = len(new_cards)
-            if not found_anchor:
-                self.db.update_xhs_liked_state(
-                    last_sync_at=now_iso(),
-                    last_status="failed",
-                    last_message="未在翻页范围内遇到旧锚点，锚点未更新",
-                    last_stats=stats,
-                )
-                raise RuntimeError("未在翻页范围内遇到旧锚点，锚点未更新")
-            for card in new_cards:
-                try:
+        try:
+            with self._client() as client:
+                for _page in range(XHS_MAX_INCREMENTAL_PAGES):
                     if cooperate:
                         cooperate()
-                    result = self._process_card(client, card, cooperate=cooperate)
-                    stats["new"] += 1
-                    stats["downloaded"] += int(result.get("downloaded") or 0)
-                except Exception as exc:
-                    stats["errors"] += 1
-                    note_id = str(card.get("note_id") or "")
-                    if note_id:
-                        self.db.update_xhs_note_counts(note_id, status="failed", error=str(exc))
+                    page = client.get_liked_notes(cursor=cursor, num=XHS_PAGE_SIZE)
+                    cards = self._liked_cards(page)
+                    if not cards:
+                        break
+                    for card in cards:
+                        note_id = str(card.get("note_id") or "")
+                        if note_id and len(latest_anchor_candidates) < 2:
+                            latest_anchor_candidates.append(note_id)
+                        if note_id in old_anchors:
+                            found_anchor = True
+                            break
+                        new_cards.append(card)
+                    if found_anchor:
+                        break
+                    cursor = str(page.get("cursor") or "")
+                    if not page.get("has_more") or not cursor:
+                        break
+                stats["discovered"] = len(new_cards)
+                if not found_anchor:
                     self.db.update_xhs_liked_state(
                         last_sync_at=now_iso(),
                         last_status="failed",
-                        last_message=f"小红书赞过拉取失败: {exc}",
+                        last_message="未在翻页范围内遇到旧锚点，锚点未更新",
                         last_stats=stats,
                     )
-                    raise
+                    raise RuntimeError("未在翻页范围内遇到旧锚点，锚点未更新")
+                for card in new_cards:
+                    try:
+                        if cooperate:
+                            cooperate()
+                        result = self._process_card(client, card, cooperate=cooperate)
+                        stats["new"] += 1
+                        stats["downloaded"] += int(result.get("downloaded") or 0)
+                    except Exception as exc:
+                        stats["errors"] += 1
+                        note_id = str(card.get("note_id") or "")
+                        if note_id:
+                            self.db.update_xhs_note_counts(note_id, status="failed", error=str(exc))
+                        self.db.update_xhs_liked_state(
+                            last_sync_at=now_iso(),
+                            last_status="failed",
+                            last_message=f"小红书赞过拉取失败: {exc}",
+                            last_stats=stats,
+                        )
+                        raise
+        except XhsAuthRequiredError as exc:
+            self._mark_auth_required(exc, stats)
+            raise
         self.db.update_xhs_liked_state(
             anchor_note_ids=latest_anchor_candidates[:2] or list(old_anchors)[:2],
             anchor_set_at=now_iso(),
@@ -512,6 +892,15 @@ class XhsLikedSyncManager:
         if not state.cookie_json.get("a1"):
             raise RuntimeError("小红书未登录，请先扫码登录")
         return XhsApiClient(state.cookie_json)
+
+    def _mark_auth_required(self, exc: XhsAuthRequiredError, stats: dict[str, Any] | None = None) -> None:
+        self.auth.logout()
+        self.db.update_xhs_liked_state(
+            last_sync_at=now_iso(),
+            last_status="auth_required",
+            last_message=str(exc),
+            last_stats=stats or {},
+        )
 
     def _liked_cards(self, page: dict[str, Any]) -> list[dict[str, Any]]:
         raw_notes = page.get("notes") or page.get("items") or page.get("list") or []
