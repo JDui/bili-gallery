@@ -21,7 +21,6 @@ from app.services.site_syncer import SiteSyncManager
 from app.services.storage import StorageService
 from app.services.thumbnailer import ThumbnailService
 from app.services.utils import loads_json
-from app.services.xiaohongshu import XHS_SUBSCRIPTION_UID, XhsAuthService, XhsLikedSyncManager
 from app.version import APP_NAME, APP_TITLE, APP_VERSION
 
 config = load_config()
@@ -31,14 +30,11 @@ thumbnailer = ThumbnailService()
 indexer = MediaIndexer(db, storage, thumbnailer)
 cleanup = CleanupService(db, storage)
 auth = BilibiliAuthService(db)
-xhs_auth = XhsAuthService(db)
 gallery = GalleryService(db, storage)
 legacy_importer = LegacyImporter(db, storage, indexer, config.repo_root)
 pull_manager = PullManager(db, storage, indexer, cleanup, auth, legacy_importer)
 site_syncer = SiteSyncManager(db, storage, indexer)
-xhs_syncer = XhsLikedSyncManager(db, storage, indexer, xhs_auth)
 pull_manager.attach_site_syncer(site_syncer)
-pull_manager.attach_xhs_syncer(xhs_syncer)
 site_syncer.bind_task_queue(pull_manager)
 scheduler = SchedulerService(db, pull_manager, site_syncer)
 templates = Jinja2Templates(directory=str(config.app_root / "templates"))
@@ -82,7 +78,6 @@ async def health() -> dict[str, Any]:
         "status": pull_manager.status(),
         "site_status": site_syncer.status(),
         "site_stats": db.site_stats(),
-        "xhs_status": xhs_syncer.status(),
         "gallery_index": db.gallery_index_status(),
     }
 
@@ -356,13 +351,12 @@ def _subscription_stats() -> list[dict[str, Any]]:
         )
     existing_uids = {str(item["uid"]) for item in output}
     for uid, stat in sorted(stats_by_uid.items(), key=lambda item: str(item[1].get("uname") or item[0]).lower()):
-        if (not uid.startswith("site:") and not uid.startswith("xhs:")) or uid in existing_uids:
+        if not uid.startswith("site:") or uid in existing_uids:
             continue
-        is_xhs = uid.startswith("xhs:")
         output.append(
             {
                 "uid": uid,
-                "uname": stat.get("uname") or stat.get("name") or ("小红书赞过" if is_xhs else uid),
+                "uname": stat.get("uname") or stat.get("name") or uid,
                 "status": "active",
                 "pull_images": 1,
                 "image_min_count": 1,
@@ -372,24 +366,6 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "image_count": stat.get("image_count", 0),
                 "livephoto_count": stat.get("livephoto_count", 0),
                 "is_site": uid.startswith("site:"),
-                "is_xhs": is_xhs,
-            }
-        )
-    if XHS_SUBSCRIPTION_UID not in existing_uids and not any(item["uid"] == XHS_SUBSCRIPTION_UID for item in output):
-        xhs_stats = db.xhs_stats()
-        output.append(
-            {
-                "uid": XHS_SUBSCRIPTION_UID,
-                "uname": "小红书赞过",
-                "status": "active",
-                "pull_images": 1,
-                "image_min_count": 1,
-                "pull_livephoto": 0,
-                "include_forwarded": 0,
-                "folder_count": xhs_stats.get("folder_count", 0),
-                "image_count": xhs_stats.get("downloaded_count", 0),
-                "livephoto_count": 0,
-                "is_xhs": True,
             }
         )
     return output
@@ -487,8 +463,6 @@ async def pull_subscription(uid: str) -> dict[str, Any]:
             if not db.get_site_source(source_id):
                 raise RuntimeError("站点来源不存在")
             return site_syncer.start_sync(source_id)
-        if uid == XHS_SUBSCRIPTION_UID:
-            return pull_manager.start_xhs_pull()
         return pull_manager.start_subscription_pull(uid)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -703,14 +677,12 @@ async def restore_trash(item_id: int, payload: dict[str, Any] = Body(default={})
 async def get_settings() -> dict[str, Any]:
     settings = db.get_settings()
     settings["auth"] = auth.check_cookie()
-    settings["xhs_auth"] = xhs_auth.check_cookie()
-    settings["xhs_liked"] = xhs_syncer.status()
     return settings
 
 
 @app.put("/api/settings")
 async def update_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    payload = {key: value for key, value in payload.items() if key not in {"auth", "xhs_auth", "xhs_liked"}}
+    payload = {key: value for key, value in payload.items() if key not in {"auth"}}
     settings = db.save_settings(payload)
     scheduler.reload()
     return settings
@@ -765,69 +737,3 @@ async def check_auth() -> dict[str, Any]:
 async def logout() -> dict[str, Any]:
     auth.logout()
     return {"ok": True, "message": "已退出登录"}
-
-
-@app.post("/api/xhs/auth/browser/start")
-async def start_xhs_browser_login() -> dict[str, Any]:
-    return xhs_auth.start_browser_login()
-
-
-@app.get("/api/xhs/auth/browser/status")
-async def xhs_browser_login_status() -> dict[str, Any]:
-    return xhs_auth.browser_login_status()
-
-
-@app.post("/api/xhs/auth/qr/start")
-async def start_xhs_qr() -> dict[str, Any]:
-    try:
-        return xhs_auth.start_qr_login()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.get("/api/xhs/auth/qr/status")
-async def poll_xhs_qr() -> dict[str, Any]:
-    try:
-        return xhs_auth.poll_qr_login()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.get("/api/xhs/auth/check")
-async def check_xhs_auth() -> dict[str, Any]:
-    return xhs_auth.check_cookie()
-
-
-@app.post("/api/xhs/auth/cookie/import")
-async def import_xhs_cookie(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    try:
-        return xhs_auth.import_cookie_text(str(payload.get("cookie_text") or ""))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.post("/api/xhs/auth/logout")
-async def logout_xhs() -> dict[str, Any]:
-    xhs_auth.logout()
-    return {"ok": True, "message": "已退出小红书登录"}
-
-
-@app.get("/api/xhs/liked/status")
-async def xhs_liked_status() -> dict[str, Any]:
-    return xhs_syncer.status()
-
-
-@app.post("/api/xhs/liked/anchor")
-async def set_xhs_liked_anchor() -> dict[str, Any]:
-    try:
-        return pull_manager.start_xhs_anchor()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.post("/api/xhs/liked/pull")
-async def pull_xhs_liked() -> dict[str, Any]:
-    try:
-        return pull_manager.start_xhs_pull()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc

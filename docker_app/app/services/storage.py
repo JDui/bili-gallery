@@ -33,26 +33,8 @@ class StorageService:
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
-    def xhs_note_folder(self, note_id: str, pub_date: str | None, title: str | None = None) -> Path:
-        folder = (
-            self.config.data_dir
-            / "xhs"
-            / date_key(pub_date)
-            / f"{safe_slug(note_id, 'note', 24)}_{safe_slug(title or 'note', 'note', 48)}"
-        )
-        folder.mkdir(parents=True, exist_ok=True)
-        return folder
-
     def remove_site_source_assets(self, source_slug: str) -> int:
         folder = self.config.data_dir / "sites" / safe_slug(source_slug, "source")
-        if not folder.exists():
-            return 0
-        removed = sum(1 for item in folder.rglob("*") if item.is_file())
-        shutil.rmtree(folder)
-        return removed
-
-    def clear_xhs_assets(self) -> int:
-        folder = self.config.data_dir / "xhs"
         if not folder.exists():
             return 0
         removed = sum(1 for item in folder.rglob("*") if item.is_file())
@@ -100,14 +82,13 @@ class StorageService:
         return removed
 
     def clear_library_data(self) -> dict[str, int]:
-        removed = {"images": 0, "livephoto": 0, "xhs": 0}
+        removed = {"images": 0, "livephoto": 0}
         for key, folder in (("images", self.config.images_dir), ("livephoto", self.config.livephoto_dir)):
             if folder.exists():
                 children = list(folder.iterdir())
                 removed[key] = len(children)
                 shutil.rmtree(folder)
             folder.mkdir(parents=True, exist_ok=True)
-        removed["xhs"] = self.clear_xhs_assets()
         return removed
 
     def relative_to_storage(self, path: Path) -> str:

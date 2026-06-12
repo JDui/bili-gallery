@@ -611,50 +611,6 @@
                         </div>
                     </article>
 
-                    <article class="settings-card auth-card">
-                        <h4>小红书权限</h4>
-                        <p class="field-copy" x-text="settings.xhs_auth?.message || '未检查 Cookie'"></p>
-                        <div class="inline-tags" x-show="settings.xhs_auth?.ok" x-cloak>
-                            <span class="inline-tag" x-text="`UID ${settings.xhs_auth?.uid || settings.xhs_auth?.user?.user_id || '-'}`"></span>
-                            <span class="inline-tag" x-text="settings.xhs_auth?.uname || settings.xhs_auth?.user?.nickname || '未知用户'"></span>
-                        </div>
-                        <div class="button-row">
-                            <button class="primary-button" @click="startXhsBrowserLogin()">系统浏览器登录</button>
-                            <button class="secondary-button" @click="startXhsQrLogin()">备用扫码</button>
-                            <button class="secondary-button" @click="checkXhsAuth()">检查 Cookie</button>
-                            <button class="secondary-button" @click="logoutXhs()">退出登录</button>
-                        </div>
-                        <p class="field-copy" x-show="xhsBrowserLogin.message" x-text="xhsBrowserLogin.message" x-cloak></p>
-                        <div class="qr-box" x-show="xhsQr.image_data_url" x-cloak>
-                            <img :src="xhsQr.image_data_url" alt="小红书登录二维码">
-                            <p x-text="xhsQr.message || '请使用小红书客户端扫码登录'"></p>
-                        </div>
-                        <label>验证 Cookie
-                            <textarea rows="4" x-model="xhsCookieImportText" placeholder="在小红书页面完成验证后粘贴 document.cookie"></textarea>
-                        </label>
-                        <p class="field-copy">系统浏览器登录会自动索引 Chrome Cookie；如果 Chrome Cookie 无法读取，可手动导入 Cookie 作为备用。</p>
-                        <div class="button-row">
-                            <button class="secondary-button" @click="copyXhsCookieCommand()">复制 Cookie 命令</button>
-                            <button class="primary-button" @click="importXhsCookie()">导入 Cookie</button>
-                        </div>
-                    </article>
-
-                    <article class="settings-card">
-                        <h4>小红书赞过订阅</h4>
-                        <div class="inline-tags">
-                            <span class="inline-tag" x-text="`锚点 ${xhsStatus.anchor_note_ids?.length || 0}`"></span>
-                            <span class="inline-tag" x-text="`笔记 ${xhsStatus.stats?.note_count || 0}`"></span>
-                            <span class="inline-tag" x-text="xhsStatus.last_status || '未同步'"></span>
-                        </div>
-                        <p class="field-copy" x-text="xhsStatus.anchor_set_at ? `锚点时间：${xhsStatus.anchor_set_at}` : '尚未设置锚点。'"></p>
-                        <p class="field-copy" x-text="xhsStatus.last_message || '设置锚点会抓取最新 2 条赞过笔记作为主备起点。'"></p>
-                        <div class="button-row">
-                            <button class="secondary-button" @click="refreshXhsLikedStatus()">刷新状态</button>
-                            <button class="secondary-button" @click="setXhsLikedAnchor()">设置锚点</button>
-                            <button class="primary-button" @click="pullXhsLiked()">拉取赞过</button>
-                        </div>
-                    </article>
-
                     <article class="settings-card danger-settings-card">
                         <h4>内容校验</h4>
                         <p class="field-copy">检查当前资料库里的动态是否缺图、是否存在重复素材。发现重复会清重，发现缺失会重新拉取该动态。</p>
@@ -717,21 +673,20 @@
                             <div class="panel-card-main subscription-card-main">
                                 <div class="subscription-card-title">
                                     <h4 x-text="item.uname || item.uid"></h4>
-                                    <p x-text="item.is_xhs ? '小红书赞过' : (item.is_site ? '站点标签' : `UID ${item.uid}`)"></p>
+                                    <p x-text="item.is_site ? '站点标签' : `UID ${item.uid}`"></p>
                                 </div>
                                 <div class="inline-tags subscription-summary-tags">
-                                    <span class="inline-tag" x-text="item.is_xhs ? '小红书' : (item.is_site ? '站点' : (item.status === 'paused' ? '已暂停' : '订阅中'))"></span>
+                                    <span class="inline-tag" x-text="item.is_site ? '站点' : (item.status === 'paused' ? '已暂停' : '订阅中')"></span>
                                     <span class="inline-tag" x-text="`动态 ${item.folder_count || 0}`"></span>
-                                    <span class="inline-tag" x-show="!item.is_site && !item.is_xhs" x-text="subscriptionThresholdSummary(item)"></span>
-                                    <span class="inline-tag" x-show="!item.is_site && !item.is_xhs" x-text="subscriptionLivePhotoSummary(item)"></span>
+                                    <span class="inline-tag" x-show="!item.is_site" x-text="subscriptionThresholdSummary(item)"></span>
+                                    <span class="inline-tag" x-show="!item.is_site" x-text="subscriptionLivePhotoSummary(item)"></span>
                                 </div>
                             </div>
                             <span class="subscription-expand-indicator" :class="{ open: isSubscriptionExpanded(item.uid) }">展开</span>
                         </button>
                         <div class="subscription-card-body" x-show="isSubscriptionExpanded(item.uid)" x-transition.opacity.duration.180ms x-cloak>
                             <p class="field-copy" x-show="item.is_site">这是站点标签入口，站点配置与清空删除请到站点订阅页面管理。</p>
-                            <p class="field-copy" x-show="item.is_xhs">这是小红书赞过入口，登录和锚点请到拉取与设置页面管理。</p>
-                            <div class="subscription-policy-grid" x-show="!item.is_site && !item.is_xhs">
+                            <div class="subscription-policy-grid" x-show="!item.is_site">
                                 <label>
                                     <span>图片阈值</span>
                                     <input class="threshold-input" type="number" min="-1" max="12" :value="item.image_min_count ?? 6" @change="updateSubscriptionSetting(item, 'image_min_count', $event.target.value)">
@@ -745,7 +700,7 @@
                                     <span>包含转发动态</span>
                                 </label>
                             </div>
-                            <div class="panel-card-actions subscription-card-actions" x-show="!item.is_site && !item.is_xhs">
+                            <div class="panel-card-actions subscription-card-actions" x-show="!item.is_site">
                                 <button class="secondary-button" @click="refreshSubscriptionProfile(item.uid)">刷新昵称</button>
                                 <button class="secondary-button" @click="jumpToSubscriptionSpace(item.uid)">传送</button>
                                 <button class="secondary-button" @click="toggleSubscriptionStatus(item.uid)" x-text="item.status === 'paused' ? '继续订阅' : '暂停订阅'"></button>
@@ -777,11 +732,6 @@
                             <div class="panel-card-actions subscription-card-actions" x-show="item.is_site">
                                 <button class="primary-button" @click="pullSiteSubscription(item)">拉取当前订阅</button>
                                 <button class="secondary-button" @click="selectSubscription(item.uid)">查看内容</button>
-                            </div>
-                            <div class="panel-card-actions subscription-card-actions" x-show="item.is_xhs">
-                                <button class="primary-button" @click="pullXhsLiked()">拉取当前订阅</button>
-                                <button class="secondary-button" @click="selectSubscription(item.uid)">查看内容</button>
-                                <button class="secondary-button" @click="openSettings()">设置锚点</button>
                             </div>
                         </div>
                     </article>

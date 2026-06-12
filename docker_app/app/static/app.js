@@ -19,14 +19,13 @@ function galleryApp() {
     },
     subscriptions: [],
     selectedSubscriptionUids: [],
-    sourceKind: ["all", "up", "site", "xhs"].includes(localStorage.getItem("gallery_source_kind"))
+    sourceKind: ["all", "up", "site"].includes(localStorage.getItem("gallery_source_kind"))
       ? localStorage.getItem("gallery_source_kind")
       : "all",
     sourceKindOptions: [
       { key: "all", label: "所有项目" },
       { key: "up", label: "UP订阅" },
       { key: "site", label: "站点订阅" },
-      { key: "xhs", label: "小红书" },
     ],
     gallery: { items: [], total: 0, page: 1, page_size: 24 },
     galleryLoading: false,
@@ -75,7 +74,6 @@ function galleryApp() {
     trashItems: [],
     siteStats: {},
     siteStatus: {},
-    xhsStatus: {},
     siteSources: [],
     siteLogs: [],
     siteRules: { mode: "blacklist", keywords: [], use_regex: false },
@@ -107,9 +105,6 @@ function galleryApp() {
     keywordText: "",
     pullStatus: {},
     qr: {},
-    xhsQr: {},
-    xhsBrowserLogin: {},
-    xhsCookieImportText: "",
     detail: { open: false, pairs: [], folder: null, videos: [] },
     detailCache: {},
     viewer: { open: false, pair: null, folder: null, showVideo: false },
@@ -200,12 +195,6 @@ function galleryApp() {
         if (this.qr.image_data_url && this.currentView === "settings") {
           this.pollQrStatus();
         }
-        if (this.xhsQr.image_data_url && this.currentView === "settings") {
-          this.pollXhsQrStatus();
-        }
-        if (this.xhsBrowserLogin.status === "browser_pending" || this.xhsBrowserLogin.status === "browser_cookie_captured") {
-          this.pollXhsBrowserLoginStatus();
-        }
       }, 3000);
       window.addEventListener("scroll", () => this.scheduleScrollEffects(), { passive: true });
       window.addEventListener("keydown", (event) => this.handleKeydown(event));
@@ -270,14 +259,6 @@ function galleryApp() {
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         const error = new Error(payload.detail || payload.message || "请求失败");
-        if (error.message.includes("小红书触发验证")) {
-          this.settings.xhs_auth = {
-            ...(this.settings.xhs_auth || {}),
-            ok: false,
-            requires_login: true,
-            message: error.message,
-          };
-        }
         this.notify("error", "请求失败", error.message);
         throw error;
       }
@@ -715,7 +696,7 @@ function galleryApp() {
     },
 
     setSourceKind(kind) {
-      if (!["all", "up", "site", "xhs"].includes(kind) || this.sourceKind === kind) {
+      if (!["all", "up", "site"].includes(kind) || this.sourceKind === kind) {
         return;
       }
       this.sourceKind = kind;
@@ -2874,13 +2855,12 @@ function galleryApp() {
       const [settings, health] = await Promise.all([this.api("/api/settings"), this.api("/api/health")]);
       this.settings = settings;
       this.galleryIndexStatus = health.gallery_index || {};
-      this.xhsStatus = settings.xhs_liked || health.xhs_status || {};
       this.keywordText = (this.settings.ad_filter_keywords || []).join("\n");
       this.lazyLoaded.settings = true;
     },
 
     async saveSettings() {
-      const { auth, xhs_auth, xhs_liked, ...settingsPayload } = this.settings || {};
+      const { auth, ...settingsPayload } = this.settings || {};
       const payload = {
         ...settingsPayload,
         site_request_timeout: Math.max(30, Math.min(900, Number(settingsPayload.site_request_timeout) || 300)),
@@ -2899,7 +2879,7 @@ function galleryApp() {
         method: "PUT",
         body: JSON.stringify(payload),
       });
-      this.settings = { ...savedSettings, auth: auth || this.settings.auth, xhs_auth: xhs_auth || this.settings.xhs_auth, xhs_liked: xhs_liked || this.settings.xhs_liked };
+      this.settings = { ...savedSettings, auth: auth || this.settings.auth };
       await Promise.all([this.refreshMeta(), this.loadSettings()]);
       this.notify("success", "设置已保存", "新的拉取和过滤参数已经生效。");
     },
@@ -3078,7 +3058,6 @@ function galleryApp() {
       this.pullStatus = pullStatus;
       this.siteStatus = health.site_status || {};
       this.siteStats = health.site_stats || {};
-      this.xhsStatus = health.xhs_status || this.xhsStatus || {};
       this.galleryIndexStatus = health.gallery_index || this.galleryIndexStatus || {};
       const currentTaskId = this.pullStatus.last_run?.id || null;
       const currentSiteTaskId = this.siteStatus.last_run?.id || null;
@@ -3319,107 +3298,6 @@ function galleryApp() {
       this.qr = {};
       await this.loadSettings();
       this.notify("success", "已退出登录", "本地保存的 Cookie 已清除。");
-    },
-
-    async startXhsQrLogin() {
-      this.xhsQr = await this.api("/api/xhs/auth/qr/start", { method: "POST" });
-      this.notify("info", "小红书二维码已生成", "请使用小红书客户端扫码。");
-    },
-
-    async pollXhsQrStatus() {
-      const payload = await this.api("/api/xhs/auth/qr/status");
-      this.xhsQr = { ...this.xhsQr, ...payload };
-      if (payload.status === "scanned") {
-        return;
-      }
-      if (payload.status === "done") {
-        await this.loadSettings();
-        this.xhsQr = { status: "done", message: payload.message };
-        this.notify("success", "小红书登录成功", payload.message || "账号权限已经导入。");
-      }
-    },
-
-    async checkXhsAuth() {
-      this.settings.xhs_auth = await this.api("/api/xhs/auth/check");
-      this.notify(this.settings.xhs_auth?.ok ? "success" : "error", "小红书权限检查", this.settings.xhs_auth?.message || "检查完成。");
-    },
-
-    async startXhsBrowserLogin() {
-      const payload = await this.api("/api/xhs/auth/browser/start", { method: "POST" });
-      this.xhsBrowserLogin = payload;
-      if (!payload.opened && payload.url) {
-        window.open(payload.url, "_blank", "noopener,noreferrer");
-      }
-      this.notify(payload.opened ? "info" : "error", "小红书系统浏览器登录", payload.message || "请在 Chrome 完成登录后等待 Cookie 同步。");
-    },
-
-    async pollXhsBrowserLoginStatus() {
-      const payload = await this.api("/api/xhs/auth/browser/status");
-      this.xhsBrowserLogin = { ...this.xhsBrowserLogin, ...payload };
-      this.settings.xhs_auth = payload.ok !== undefined ? payload : this.settings.xhs_auth;
-      if (payload.status === "done" && payload.ok) {
-        await this.loadSettings();
-        await this.refreshXhsLikedStatus();
-        this.xhsBrowserLogin = { status: "done", message: payload.message };
-        this.notify("success", "小红书登录成功", payload.message || "已从 Chrome 自动同步 Cookie。");
-      }
-    },
-
-    async copyXhsCookieCommand() {
-      const command = "copy(document.cookie)";
-      try {
-        await navigator.clipboard.writeText(command);
-        this.notify("success", "命令已复制", "在小红书验证窗口的控制台执行后粘贴结果。");
-      } catch (error) {
-        this.notify("error", "复制失败", command);
-      }
-    },
-
-    async importXhsCookie() {
-      const cookieText = String(this.xhsCookieImportText || "").trim();
-      if (!cookieText) {
-        this.notify("error", "Cookie 为空", "请先粘贴小红书页面 Cookie。");
-        return;
-      }
-      this.settings.xhs_auth = await this.api("/api/xhs/auth/cookie/import", {
-        method: "POST",
-        body: JSON.stringify({ cookie_text: cookieText }),
-      });
-      await this.refreshXhsLikedStatus();
-      if (this.settings.xhs_auth?.ok) {
-        this.xhsCookieImportText = "";
-        this.notify("success", "小红书 Cookie 已导入", this.settings.xhs_auth.message || "账号权限已经更新。");
-        return;
-      }
-      this.notify("error", "小红书 Cookie 无效", this.settings.xhs_auth?.message || "请重新完成验证后再导入。");
-    },
-
-    async logoutXhs() {
-      await this.api("/api/xhs/auth/logout", { method: "POST" });
-      this.xhsQr = {};
-      this.xhsBrowserLogin = {};
-      this.xhsCookieImportText = "";
-      await this.loadSettings();
-      this.notify("success", "已退出小红书", "本地保存的小红书 Cookie 已清除。");
-    },
-
-    async refreshXhsLikedStatus() {
-      this.xhsStatus = await this.api("/api/xhs/liked/status");
-      this.settings.xhs_liked = this.xhsStatus;
-    },
-
-    async setXhsLikedAnchor() {
-      this.setImmediateTaskFeedback("正在提交小红书赞过锚点设置任务...");
-      const result = await this.api("/api/xhs/liked/anchor", { method: "POST" });
-      await Promise.all([this.refreshStatus(), this.refreshTasks(), this.refreshXhsLikedStatus()]);
-      this.notify("info", "任务已提交", result.message);
-    },
-
-    async pullXhsLiked() {
-      this.setImmediateTaskFeedback("正在提交小红书赞过拉取任务...");
-      const result = await this.api("/api/xhs/liked/pull", { method: "POST" });
-      await Promise.all([this.refreshStatus(), this.refreshTasks()]);
-      this.notify("info", "任务已提交", result.message);
     },
 
     async refreshSites() {

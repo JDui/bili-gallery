@@ -444,18 +444,16 @@ class GalleryService:
         return True
 
     def _normalize_source_kind(self, source_kind: str | None) -> str:
-        if source_kind in {"up", "site", "xhs"}:
+        if source_kind in {"up", "site"}:
             return str(source_kind)
         return "all"
 
     def _match_source_kind(self, subscription_uid: object, source_kind: str) -> bool:
         uid = str(subscription_uid or "")
-        if source_kind == "xhs":
-            return uid.startswith("xhs:")
         if source_kind == "site":
             return uid.startswith("site:")
         if source_kind == "up":
-            return not uid.startswith("site:") and not uid.startswith("xhs:")
+            return not uid.startswith("site:")
         return True
 
     def _match_pair(self, pair: dict, category: str) -> bool:

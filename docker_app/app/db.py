@@ -296,63 +296,6 @@ class Database:
                     created_at text not null
                 );
 
-                create table if not exists xhs_auth_state (
-                    id integer primary key check (id = 1),
-                    cookie_json text,
-                    user_json text,
-                    qr_id text,
-                    qr_code text,
-                    qr_url text,
-                    qr_status text,
-                    qr_created_at text
-                );
-
-                create table if not exists xhs_liked_state (
-                    id integer primary key check (id = 1),
-                    anchor_note_ids_json text not null default '[]',
-                    anchor_set_at text,
-                    last_sync_at text,
-                    last_status text,
-                    last_message text,
-                    last_stats_json text not null default '{}'
-                );
-
-                create table if not exists xhs_notes (
-                    note_id text primary key,
-                    url text not null,
-                    title text,
-                    excerpt text,
-                    author_name text,
-                    author_id text,
-                    liked_at text,
-                    pub_ts integer not null default 0,
-                    pub_time text,
-                    xsec_token text,
-                    xsec_source text,
-                    raw_json text not null default '{}',
-                    folder_name text,
-                    status text not null default 'discovered',
-                    error text,
-                    asset_count integer not null default 0,
-                    downloaded_count integer not null default 0,
-                    created_at text not null,
-                    updated_at text not null
-                );
-
-                create table if not exists xhs_note_assets (
-                    id integer primary key autoincrement,
-                    note_id text not null references xhs_notes(note_id) on delete cascade,
-                    url text not null,
-                    media_type text not null,
-                    filename text not null,
-                    rel_path text,
-                    status text not null default 'pending',
-                    error text,
-                    created_at text not null,
-                    updated_at text not null,
-                    unique(note_id, url)
-                );
-
                 create table if not exists folder_index (
                     folder_name text primary key references folders(folder_name) on delete cascade,
                     title text,
@@ -415,8 +358,6 @@ class Database:
                 create index if not exists idx_site_posts_flags on site_posts(is_favorite, is_blocked, status);
                 create index if not exists idx_site_assets_post on site_assets(post_id, status);
                 create index if not exists idx_site_filter_logs_created on site_filter_logs(created_at desc);
-                create index if not exists idx_xhs_notes_pub_ts on xhs_notes(pub_ts desc, note_id desc);
-                create index if not exists idx_xhs_assets_note on xhs_note_assets(note_id, status);
                 create index if not exists idx_folder_index_pub_ts on folder_index(pub_ts desc, folder_name desc);
                 create index if not exists idx_folder_index_subscription_pub_ts on folder_index(subscription_uid, pub_ts desc, folder_name desc);
                 create index if not exists idx_folder_index_review_pub_ts on folder_index(review_status, pub_ts desc, folder_name desc);
@@ -442,8 +383,6 @@ class Database:
             self._ensure_default_settings(conn)
             self._ensure_default_site_rules(conn)
             conn.execute("insert or ignore into auth_state(id, qr_status) values (1, 'idle')")
-            conn.execute("insert or ignore into xhs_auth_state(id, qr_status) values (1, 'idle')")
-            conn.execute("insert or ignore into xhs_liked_state(id) values (1)")
             self._ensure_default_subscription(conn)
             self._migrate_subscription_policies(conn)
             self._migrate_image_threshold_defaults(conn)
@@ -1212,242 +1151,6 @@ class Database:
         values = list(kwargs.values())
         with self.connect() as conn:
             conn.execute(f"update auth_state set {assignments} where id = 1", values)
-
-    def get_xhs_auth_state(self) -> dict[str, Any]:
-        with self.connect() as conn:
-            row = conn.execute("select * from xhs_auth_state where id = 1").fetchone()
-        if not row:
-            return {"qr_status": "idle"}
-        return dict(row)
-
-    def update_xhs_auth_state(self, **kwargs: Any) -> None:
-        if not kwargs:
-            return
-        assignments = ", ".join(f"{key} = ?" for key in kwargs)
-        values = list(kwargs.values())
-        with self.connect() as conn:
-            conn.execute(f"update xhs_auth_state set {assignments} where id = 1", values)
-
-    def get_xhs_liked_state(self) -> dict[str, Any]:
-        with self.connect() as conn:
-            row = conn.execute("select * from xhs_liked_state where id = 1").fetchone()
-        item = dict(row) if row else {}
-        return {
-            "anchor_note_ids": loads_json(item.get("anchor_note_ids_json"), []),
-            "anchor_set_at": item.get("anchor_set_at"),
-            "last_sync_at": item.get("last_sync_at"),
-            "last_status": item.get("last_status"),
-            "last_message": item.get("last_message"),
-            "last_stats": loads_json(item.get("last_stats_json"), {}),
-        }
-
-    def update_xhs_liked_state(
-        self,
-        *,
-        anchor_note_ids: list[str] | None = None,
-        anchor_set_at: str | None = None,
-        last_sync_at: str | None = None,
-        last_status: str | None = None,
-        last_message: str | None = None,
-        last_stats: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        assignments = []
-        values: list[Any] = []
-        if anchor_note_ids is not None:
-            assignments.append("anchor_note_ids_json = ?")
-            values.append(dumps_json([str(item) for item in anchor_note_ids if str(item).strip()]))
-        if anchor_set_at is not None:
-            assignments.append("anchor_set_at = ?")
-            values.append(anchor_set_at)
-        if last_sync_at is not None:
-            assignments.append("last_sync_at = ?")
-            values.append(last_sync_at)
-        if last_status is not None:
-            assignments.append("last_status = ?")
-            values.append(last_status)
-        if last_message is not None:
-            assignments.append("last_message = ?")
-            values.append(last_message)
-        if last_stats is not None:
-            assignments.append("last_stats_json = ?")
-            values.append(dumps_json(last_stats))
-        if assignments:
-            with self.connect() as conn:
-                conn.execute(f"update xhs_liked_state set {', '.join(assignments)} where id = 1", values)
-        return self.get_xhs_liked_state()
-
-    def upsert_xhs_note(self, payload: dict[str, Any]) -> dict[str, Any]:
-        now = now_iso()
-        note_id = str(payload.get("note_id") or "").strip()
-        if not note_id:
-            raise ValueError("note_id is required")
-        with self.connect() as conn:
-            existing = conn.execute("select * from xhs_notes where note_id = ?", (note_id,)).fetchone()
-            conn.execute(
-                """
-                insert into xhs_notes(
-                    note_id, url, title, excerpt, author_name, author_id, liked_at, pub_ts, pub_time,
-                    xsec_token, xsec_source, raw_json, folder_name, status, error, asset_count,
-                    downloaded_count, created_at, updated_at
-                )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(note_id) do update set
-                    url = excluded.url,
-                    title = excluded.title,
-                    excerpt = excluded.excerpt,
-                    author_name = excluded.author_name,
-                    author_id = excluded.author_id,
-                    liked_at = excluded.liked_at,
-                    pub_ts = excluded.pub_ts,
-                    pub_time = excluded.pub_time,
-                    xsec_token = excluded.xsec_token,
-                    xsec_source = excluded.xsec_source,
-                    raw_json = excluded.raw_json,
-                    folder_name = coalesce(excluded.folder_name, xhs_notes.folder_name),
-                    status = excluded.status,
-                    error = excluded.error,
-                    asset_count = excluded.asset_count,
-                    downloaded_count = excluded.downloaded_count,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    note_id,
-                    payload.get("url") or f"https://www.xiaohongshu.com/explore/{note_id}",
-                    payload.get("title") or "",
-                    payload.get("excerpt") or "",
-                    payload.get("author_name") or "",
-                    payload.get("author_id") or "",
-                    payload.get("liked_at"),
-                    int(payload.get("pub_ts") or 0),
-                    payload.get("pub_time") or "",
-                    payload.get("xsec_token") or "",
-                    payload.get("xsec_source") or "",
-                    dumps_json(payload.get("raw", {})),
-                    payload.get("folder_name") or (existing["folder_name"] if existing else None),
-                    payload.get("status") or "discovered",
-                    payload.get("error"),
-                    int(payload.get("asset_count") or 0),
-                    int(payload.get("downloaded_count") or 0),
-                    existing["created_at"] if existing else now,
-                    now,
-                ),
-            )
-        return self.get_xhs_note(note_id) or {}
-
-    def get_xhs_note(self, note_id: str) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute("select * from xhs_notes where note_id = ?", (str(note_id),)).fetchone()
-        return dict(row) if row else None
-
-    def list_xhs_notes(self) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute("select * from xhs_notes order by pub_ts desc, note_id desc").fetchall()
-        return [dict(row) for row in rows]
-
-    def upsert_xhs_note_asset(self, note_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        now = now_iso()
-        with self.connect() as conn:
-            conn.execute(
-                """
-                insert into xhs_note_assets(note_id, url, media_type, filename, status, created_at, updated_at)
-                values (?, ?, ?, ?, 'pending', ?, ?)
-                on conflict(note_id, url) do update set
-                    media_type = excluded.media_type,
-                    filename = excluded.filename,
-                    updated_at = excluded.updated_at
-                """,
-                (str(note_id), payload["url"], payload["media_type"], payload["filename"], now, now),
-            )
-            row = conn.execute(
-                "select * from xhs_note_assets where note_id = ? and url = ?",
-                (str(note_id), payload["url"]),
-            ).fetchone()
-        return dict(row)
-
-    def set_xhs_note_asset_result(
-        self,
-        asset_id: int,
-        status: str,
-        rel_path: str | None = None,
-        error: str | None = None,
-    ) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                "update xhs_note_assets set status = ?, rel_path = coalesce(?, rel_path), error = ?, updated_at = ? where id = ?",
-                (status, rel_path, error, now_iso(), int(asset_id)),
-            )
-
-    def list_xhs_note_assets(self, note_id: str) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                "select * from xhs_note_assets where note_id = ? order by media_type, id asc",
-                (str(note_id),),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def update_xhs_note_counts(self, note_id: str, status: str | None = None, error: str | None = None) -> None:
-        with self.connect() as conn:
-            counts = conn.execute(
-                """
-                select count(*) as asset_count,
-                       sum(case when status = 'ready' then 1 else 0 end) as downloaded_count
-                from xhs_note_assets
-                where note_id = ?
-                """,
-                (str(note_id),),
-            ).fetchone()
-            conn.execute(
-                """
-                update xhs_notes
-                set asset_count = ?, downloaded_count = ?, status = coalesce(?, status), error = ?, updated_at = ?
-                where note_id = ?
-                """,
-                (
-                    int(counts["asset_count"] or 0),
-                    int(counts["downloaded_count"] or 0),
-                    status,
-                    error,
-                    now_iso(),
-                    str(note_id),
-                ),
-            )
-
-    def xhs_stats(self) -> dict[str, int]:
-        with self.connect() as conn:
-            row = conn.execute(
-                """
-                select count(*) as note_count,
-                       sum(asset_count) as asset_count,
-                       sum(downloaded_count) as downloaded_count
-                from xhs_notes
-                """
-            ).fetchone()
-            folder_count = conn.execute(
-                "select count(*) from folders where subscription_uid = 'xhs:likes'"
-            ).fetchone()[0]
-        return {
-            "note_count": int(row["note_count"] or 0),
-            "asset_count": int(row["asset_count"] or 0),
-            "downloaded_count": int(row["downloaded_count"] or 0),
-            "folder_count": int(folder_count or 0),
-        }
-
-    def clear_xhs_content(self) -> None:
-        with self.connect() as conn:
-            conn.execute("delete from xhs_note_assets")
-            conn.execute("delete from xhs_notes")
-            conn.execute(
-                """
-                update xhs_liked_state
-                set anchor_note_ids_json = '[]',
-                    anchor_set_at = null,
-                    last_sync_at = null,
-                    last_status = null,
-                    last_message = null,
-                    last_stats_json = '{}'
-                where id = 1
-                """
-            )
 
     def get_folder(self, folder_name: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -2439,11 +2142,8 @@ class Database:
                 params.extend(normalized)
         elif source_kind == "site":
             clauses.append(f"{column('subscription_uid')} like 'site:%'")
-        elif source_kind == "xhs":
-            clauses.append(f"{column('subscription_uid')} like 'xhs:%'")
         elif source_kind == "up":
             clauses.append(f"coalesce({column('subscription_uid')}, '') not like 'site:%'")
-            clauses.append(f"coalesce({column('subscription_uid')}, '') not like 'xhs:%'")
         if year:
             clauses.append(f"{column('year_key')} = ?")
             params.append(year)
@@ -2482,17 +2182,3 @@ class Database:
             conn.execute("delete from deleted_pair_marks")
             conn.execute("delete from trash_items")
             conn.execute("delete from task_runs")
-            conn.execute("delete from xhs_note_assets")
-            conn.execute("delete from xhs_notes")
-            conn.execute(
-                """
-                update xhs_liked_state
-                set anchor_note_ids_json = '[]',
-                    anchor_set_at = null,
-                    last_sync_at = null,
-                    last_status = null,
-                    last_message = null,
-                    last_stats_json = '{}'
-                where id = 1
-                """
-            )
