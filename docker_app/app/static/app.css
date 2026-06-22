@@ -72,6 +72,11 @@ body {
     scrollbar-gutter: stable;
 }
 
+html.scroll-restore-instant,
+html.scroll-restore-instant body {
+    scroll-behavior: auto !important;
+}
+
 body {
     position: relative;
     color: var(--text);

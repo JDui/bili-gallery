@@ -210,6 +210,10 @@ function galleryApp() {
     },
 
     scheduleScrollEffects() {
+      if (this.bodyLockTop !== null) {
+        this.lastScrollTop = this.bodyLockTop;
+        return;
+      }
       this.lastScrollTop = window.scrollY || window.pageYOffset || 0;
       if (this.headerScrollRaf) {
         return;
@@ -758,7 +762,16 @@ function galleryApp() {
     },
 
     galleryReadyForLoad() {
-      return this.currentView === "gallery" && !this.detail.open && !this.viewer.open && this.hasMoreItems();
+      return (
+        this.currentView === "gallery" &&
+        !this.detail.open &&
+        !this.detailClosing &&
+        !this.viewer.open &&
+        !this.viewerClosing &&
+        !this.taskInspector.open &&
+        this.bodyLockTop === null &&
+        this.hasMoreItems()
+      );
     },
 
     randomModeActive() {
@@ -1188,8 +1201,12 @@ function galleryApp() {
         }
         return;
       }
+      if (this.bodyLockTop === null) {
+        return;
+      }
       const scrollTop = this.bodyLockTop;
       const previousStyles = this.bodyLockStyles || {};
+      html.classList.add("scroll-restore-instant");
       html.style.overflow = previousStyles.htmlOverflow || "";
       body.style.overflow = previousStyles.bodyOverflow || "";
       body.style.position = previousStyles.bodyPosition || "";
@@ -1202,7 +1219,15 @@ function galleryApp() {
       this.bodyLockPaddingRight = "";
       this.bodyLockStyles = null;
       if (scrollTop !== null) {
-        window.scrollTo({ top: scrollTop, behavior: "auto" });
+        window.scrollTo(0, scrollTop);
+        document.documentElement.scrollTop = scrollTop;
+        document.body.scrollTop = scrollTop;
+      }
+      const removeInstantRestore = () => html.classList.remove("scroll-restore-instant");
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(removeInstantRestore);
+      } else {
+        window.setTimeout(removeInstantRestore, 0);
       }
     },
 
