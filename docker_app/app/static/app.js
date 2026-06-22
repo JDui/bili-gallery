@@ -76,9 +76,10 @@ function galleryApp() {
     siteStatus: {},
     siteSources: [],
     siteLogs: [],
-    siteRules: { mode: "blacklist", keywords: [], use_regex: false },
+    siteRules: { mode: "blacklist", keywords: [], allow_keywords: [], block_keywords: [], use_regex: false },
     siteRuleText: {
-      keywords: "",
+      allow_keywords: "",
+      block_keywords: "",
       title_allow: "",
       title_block: "",
       tag_allow: "",
@@ -176,6 +177,7 @@ function galleryApp() {
     viewerSyntheticTapUntil: 0,
     bodyLockTop: null,
     bodyLockPaddingRight: "",
+    bodyLockStyles: null,
     lazyLoaded: {
       review: false,
       logs: false,
@@ -1153,6 +1155,9 @@ function galleryApp() {
       const locked = this.detail.open || this.viewer.open || this.detailClosing || this.viewerClosing || this.taskInspector.open;
       const html = document.documentElement;
       const body = document.body;
+      body.classList.toggle("detail-layer-open", this.detail.open || this.detailClosing || this.taskInspector.open);
+      body.classList.toggle("viewer-layer-open", this.viewer.open || this.viewerClosing);
+      body.classList.toggle("overlay-locked", locked);
       if (locked) {
         if (this.bodyLockTop !== null) {
           return;
@@ -1161,19 +1166,41 @@ function galleryApp() {
         const scrollbarWidth = Math.max(window.innerWidth - html.clientWidth, 0);
         this.bodyLockTop = scrollTop;
         this.bodyLockPaddingRight = body.style.paddingRight || "";
+        this.bodyLockStyles = {
+          htmlOverflow: html.style.overflow || "",
+          bodyOverflow: body.style.overflow || "",
+          bodyPosition: body.style.position || "",
+          bodyTop: body.style.top || "",
+          bodyLeft: body.style.left || "",
+          bodyRight: body.style.right || "",
+          bodyWidth: body.style.width || "",
+          bodyPaddingRight: body.style.paddingRight || "",
+        };
         html.style.overflow = "hidden";
         body.style.overflow = "hidden";
+        body.style.position = "fixed";
+        body.style.top = `-${scrollTop}px`;
+        body.style.left = "0";
+        body.style.right = "0";
+        body.style.width = "100%";
         if (scrollbarWidth) {
           body.style.paddingRight = `${scrollbarWidth}px`;
         }
         return;
       }
       const scrollTop = this.bodyLockTop;
-      html.style.overflow = "";
-      body.style.overflow = "";
-      body.style.paddingRight = this.bodyLockPaddingRight || "";
+      const previousStyles = this.bodyLockStyles || {};
+      html.style.overflow = previousStyles.htmlOverflow || "";
+      body.style.overflow = previousStyles.bodyOverflow || "";
+      body.style.position = previousStyles.bodyPosition || "";
+      body.style.top = previousStyles.bodyTop || "";
+      body.style.left = previousStyles.bodyLeft || "";
+      body.style.right = previousStyles.bodyRight || "";
+      body.style.width = previousStyles.bodyWidth || "";
+      body.style.paddingRight = previousStyles.bodyPaddingRight ?? (this.bodyLockPaddingRight || "");
       this.bodyLockTop = null;
       this.bodyLockPaddingRight = "";
+      this.bodyLockStyles = null;
       if (scrollTop !== null) {
         window.scrollTo({ top: scrollTop, behavior: "auto" });
       }
@@ -3328,12 +3355,43 @@ function galleryApp() {
 
     async loadSiteRules() {
       this.siteRules = await this.api("/api/site-rules");
-      this.siteRules.mode = ["whitelist", "blacklist"].includes(this.siteRules.mode) ? this.siteRules.mode : "blacklist";
-      this.siteRuleText.keywords = this.joinLines(this.siteRules.keywords);
-      this.siteRuleText.title_allow = this.joinLines(this.siteRules.title_allow);
-      this.siteRuleText.title_block = this.joinLines(this.siteRules.title_block);
-      this.siteRuleText.tag_allow = this.joinLines(this.siteRules.tag_allow);
-      this.siteRuleText.tag_block = this.joinLines(this.siteRules.tag_block);
+      this.siteRules.mode = this.normalizeSiteRuleMode(this.siteRules.mode);
+      const legacy = this.siteRules.keywords || [];
+      const allowFallback = this.siteRules.mode === "whitelist" ? legacy : [];
+      const blockFallback = this.siteRules.mode === "blacklist" ? legacy : [];
+      const allowKeywords = this.uniqueLines([
+        ...(this.siteRules.allow_keywords || []),
+        ...(this.siteRules.title_allow || []),
+        ...(this.siteRules.tag_allow || []),
+        ...allowFallback,
+      ]);
+      const blockKeywords = this.uniqueLines([
+        ...(this.siteRules.block_keywords || []),
+        ...(this.siteRules.title_block || []),
+        ...(this.siteRules.tag_block || []),
+        ...blockFallback,
+      ]);
+      this.siteRuleText.allow_keywords = this.joinLines(allowKeywords);
+      this.siteRuleText.block_keywords = this.joinLines(blockKeywords);
+      this.siteRuleText.title_allow = "";
+      this.siteRuleText.title_block = "";
+      this.siteRuleText.tag_allow = "";
+      this.siteRuleText.tag_block = "";
+    },
+
+    normalizeSiteRuleMode(mode) {
+      return ["whitelist", "blacklist", "both"].includes(mode) ? mode : "blacklist";
+    },
+
+    siteRuleModeLabel() {
+      if (this.siteRules.mode === "whitelist") return "仅白名单";
+      if (this.siteRules.mode === "both") return "黑白同时";
+      return "仅黑名单";
+    },
+
+    siteRuleKeywordCount(kind) {
+      const key = kind === "allow" ? "allow_keywords" : "block_keywords";
+      return this.splitLines(this.siteRuleText[key]).length;
     },
 
     async loadSiteLogs() {
@@ -3647,16 +3705,21 @@ function galleryApp() {
     },
 
     async saveSiteRules() {
+      const allowKeywords = this.splitLines(this.siteRuleText.allow_keywords);
+      const blockKeywords = this.splitLines(this.siteRuleText.block_keywords);
       const payload = {
-        mode: ["whitelist", "blacklist"].includes(this.siteRules.mode) ? this.siteRules.mode : "blacklist",
-        keywords: this.splitLines(this.siteRuleText.keywords),
-        title_allow: this.splitLines(this.siteRuleText.title_allow),
-        title_block: this.splitLines(this.siteRuleText.title_block),
-        tag_allow: this.splitLines(this.siteRuleText.tag_allow),
-        tag_block: this.splitLines(this.siteRuleText.tag_block),
+        mode: this.normalizeSiteRuleMode(this.siteRules.mode),
+        keywords: [],
+        allow_keywords: allowKeywords,
+        block_keywords: blockKeywords,
+        title_allow: [],
+        title_block: [],
+        tag_allow: [],
+        tag_block: [],
         use_regex: Boolean(this.siteRules.use_regex),
       };
       this.siteRules = await this.api("/api/site-rules", { method: "PUT", body: JSON.stringify(payload) });
+      this.siteRules.mode = this.normalizeSiteRuleMode(this.siteRules.mode);
       this.notify("success", "站点规则已保存", "后续同步会使用新的过滤规则。");
     },
 
@@ -3678,6 +3741,18 @@ function galleryApp() {
 
     joinLines(items) {
       return (items || []).join("\n");
+    },
+
+    uniqueLines(items) {
+      const seen = new Set();
+      const output = [];
+      for (const item of items || []) {
+        const value = String(item || "").trim();
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        output.push(value);
+      }
+      return output;
     },
 
     splitLines(text) {

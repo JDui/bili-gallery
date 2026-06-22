@@ -282,6 +282,9 @@ async def toggle_site_post_block(post_id: int, payload: dict[str, Any] = Body(de
     value = bool(payload.get("blocked", not current.get("is_blocked")))
     db.set_site_post_flag(post_id, "is_blocked", value)
     db.set_site_post_status(post_id, "blocked" if value else "ready", "手动屏蔽" if value else None)
+    if value:
+        for folder_name in db.delete_site_gallery_post(current["source_id"], post_id):
+            storage.remove_folder_assets(folder_name)
     return {"ok": True, "item": db.get_site_post(post_id)}
 
 

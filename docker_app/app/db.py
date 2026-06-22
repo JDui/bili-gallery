@@ -57,6 +57,8 @@ GALLERY_INDEX_VERSION = 3
 DEFAULT_SITE_RULES = {
     "mode": "blacklist",
     "keywords": [],
+    "allow_keywords": [],
+    "block_keywords": [],
     "title_allow": [],
     "title_block": [],
     "tag_allow": [],
@@ -601,9 +603,11 @@ class Database:
                 value = payload[key]
                 if key == "mode":
                     value = str(value or "blacklist").strip().lower()
-                    if value not in {"whitelist", "blacklist"}:
+                    if value not in {"whitelist", "blacklist", "both"}:
                         value = "blacklist"
-                elif key != "use_regex":
+                elif key == "use_regex":
+                    value = bool(value)
+                else:
                     value = [str(item).strip() for item in (value or []) if str(item).strip()]
                 conn.execute(
                     """
@@ -1725,6 +1729,29 @@ class Database:
             conn.execute("delete from folders where folder_name = ?", (folder_name,))
             conn.execute("delete from folder_index where folder_name = ?", (folder_name,))
             conn.execute("delete from pair_index where folder_name = ?", (folder_name,))
+
+    def delete_site_gallery_post(self, source_id: int, post_id: int, fallback_folder_name: str | None = None) -> list[str]:
+        dynamic_id = f"site:{int(source_id)}:{int(post_id)}"
+        folder_names: set[str] = set()
+        if fallback_folder_name:
+            folder_names.add(str(fallback_folder_name))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select folder_name from folders
+                where top_dynamic_id = ? or source_dynamic_id = ?
+                union
+                select folder_name from folder_index
+                where top_dynamic_id = ? or source_dynamic_id = ?
+                """,
+                (dynamic_id, dynamic_id, dynamic_id, dynamic_id),
+            ).fetchall()
+            folder_names.update(str(row["folder_name"]) for row in rows)
+            for folder_name in folder_names:
+                conn.execute("delete from folders where folder_name = ?", (folder_name,))
+                conn.execute("delete from folder_index where folder_name = ?", (folder_name,))
+                conn.execute("delete from pair_index where folder_name = ?", (folder_name,))
+        return sorted(folder_names)
 
     def add_filter_log(
         self,

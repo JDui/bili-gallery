@@ -423,11 +423,43 @@ def test_site_sync_skips_posts_that_are_still_in_trash(tmp_path: Path) -> None:
 def test_site_rule_engine_mode_keywords_match_title_or_tags() -> None:
     blacklist = RuleEngine({"mode": "blacklist", "keywords": ["photo"], "use_regex": False})
     whitelist = RuleEngine({"mode": "whitelist", "keywords": ["spring"], "use_regex": False})
+    both = RuleEngine(
+        {
+            "mode": "both",
+            "allow_keywords": ["spring"],
+            "block_keywords": ["ad"],
+            "use_regex": False,
+        }
+    )
 
     assert blacklist.evaluate("Clean Post", ["photo"]).allowed is False
     assert blacklist.evaluate("Clean Post", ["daily"]).allowed is True
     assert whitelist.evaluate("Spring Update", ["daily"]).allowed is True
     assert whitelist.evaluate("Clean Post", ["daily"]).allowed is False
+    assert both.evaluate("Spring Update", ["daily"]).allowed is True
+    assert both.evaluate("Spring Ad", ["daily"]).allowed is False
+    assert both.evaluate("Clean Post", ["daily"]).allowed is False
+    assert both.evaluate("Clean Post", ["spring"]).allowed is True
+
+
+def test_site_sync_removes_gallery_when_rules_start_blocking(tmp_path: Path) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    source = create_fixture_source(db)
+
+    syncer._sync_source(source)
+    gallery = GalleryService(db, storage)
+    gallery_items = gallery.get_gallery_items(category="all", subscription_uids=[f"site:{source['id']}"])
+    folder_name = gallery_items["items"][0]["folder_name"]
+    assert gallery_items["total"] == 1
+    assert storage.image_folder(folder_name).exists()
+
+    db.save_site_rules({"mode": "blacklist", "block_keywords": ["Spring"], "use_regex": False})
+    result = syncer._sync_source(source)
+
+    assert result["blocked"] == 1
+    assert len(db.list_site_posts(category="blocked", source_id=source["id"])) == 1
+    assert gallery.get_gallery_items(category="all", subscription_uids=[f"site:{source['id']}"])["total"] == 0
+    assert not storage.image_folder(folder_name).exists()
 
 
 def test_site_sync_dedupes_images_with_same_content(tmp_path: Path) -> None:
@@ -798,10 +830,15 @@ def test_site_api_source_preview_sync_and_post_actions(tmp_path: Path, monkeypat
 
     blocked = client.post(f"/api/site-posts/{post_id}/block", json={"blocked": True}).json()["item"]
     assert blocked["is_blocked"] is True
+    assert client.get(f"/api/gallery/items?subscription_uids=site:{created['id']}").json()["items"] == []
 
-    rules = client.put("/api/site-rules", json={"mode": "blacklist", "keywords": ["测试"], "use_regex": False}).json()
-    assert rules["mode"] == "blacklist"
-    assert rules["keywords"] == ["测试"]
+    rules = client.put(
+        "/api/site-rules",
+        json={"mode": "both", "allow_keywords": ["测试"], "block_keywords": ["广告"], "use_regex": False},
+    ).json()
+    assert rules["mode"] == "both"
+    assert rules["allow_keywords"] == ["测试"]
+    assert rules["block_keywords"] == ["广告"]
 
     assert client.get("/api/site-filter/logs").json()["items"]
     log_clear = client.post("/api/site-filter/logs/clear").json()
@@ -811,7 +848,7 @@ def test_site_api_source_preview_sync_and_post_actions(tmp_path: Path, monkeypat
     db.add_site_filter_log(created["id"], "https://example.test/again", "Again", "allowed", "重新生成")
     clear_result = client.post(f"/api/site-sources/{created['id']}/clear-delete").json()
     assert clear_result["ok"] is True
-    assert clear_result["folders"] == 1
+    assert clear_result["folders"] == 0
     assert db.get_site_source(created["id"]) is None
     assert db.list_site_posts() == []
     assert db.list_site_filter_logs() == []

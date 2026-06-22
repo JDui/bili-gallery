@@ -904,12 +904,13 @@
                                 <div class="panel-card-main subscription-card-main">
                                     <div class="subscription-card-title">
                                         <h4>站点过滤规则</h4>
-                                        <p>全局标题和 tag 关键词过滤</p>
+                                        <p>全局标题和 tag 关键词过滤，黑白名单可单独或同时启用</p>
                                     </div>
                                     <div class="inline-tags subscription-summary-tags">
-                                        <span class="inline-tag" x-text="siteRules.mode === 'whitelist' ? '白名单模式' : '黑名单模式'"></span>
+                                        <span class="inline-tag" x-text="siteRuleModeLabel()"></span>
                                         <span class="inline-tag" x-text="siteRules.use_regex ? '正则匹配' : '文本匹配'"></span>
-                                        <span class="inline-tag" x-text="`关键词 ${splitLines(siteRuleText.keywords).length}`"></span>
+                                        <span class="inline-tag" x-text="`白 ${siteRuleKeywordCount('allow')}`"></span>
+                                        <span class="inline-tag" x-text="`黑 ${siteRuleKeywordCount('block')}`"></span>
                                     </div>
                                 </div>
                                 <span class="subscription-expand-indicator" :class="{ open: siteRulesExpanded }">展开</span>
@@ -917,10 +918,12 @@
                             <div class="subscription-card-body" x-show="siteRulesExpanded" x-transition.opacity.duration.180ms x-cloak>
                                 <div class="subscription-policy-grid site-policy-grid">
                                     <div class="mode-switch">
-                                        <button class="chip-button" :class="{ active: siteRules.mode === 'blacklist' }" @click="siteRules.mode = 'blacklist'">黑名单模式</button>
-                                        <button class="chip-button" :class="{ active: siteRules.mode === 'whitelist' }" @click="siteRules.mode = 'whitelist'">白名单模式</button>
+                                        <button class="chip-button" :class="{ active: siteRules.mode === 'blacklist' }" @click="siteRules.mode = 'blacklist'">仅黑名单</button>
+                                        <button class="chip-button" :class="{ active: siteRules.mode === 'whitelist' }" @click="siteRules.mode = 'whitelist'">仅白名单</button>
+                                        <button class="chip-button" :class="{ active: siteRules.mode === 'both' }" @click="siteRules.mode = 'both'">黑白同时</button>
                                     </div>
-                                    <label>关键词<textarea x-model="siteRuleText.keywords"></textarea></label>
+                                    <label>白名单关键词<textarea x-model="siteRuleText.allow_keywords" placeholder="标题或 tag 命中任一行才允许"></textarea></label>
+                                    <label>黑名单关键词<textarea x-model="siteRuleText.block_keywords" placeholder="标题或 tag 命中任一行会拦截"></textarea></label>
                                     <label class="toggle-row"><input type="checkbox" x-model="siteRules.use_regex"><span>使用正则匹配</span></label>
                                 </div>
                                 <div class="panel-card-actions subscription-card-actions">
@@ -969,8 +972,8 @@
             </section>
         </main>
 
-        <div class="detail-backdrop" data-testid="detail-backdrop" x-show="detail.open || detailClosing" :class="{ open: detail.open && !detailClosing, closing: detailClosing }" @click.self="closeDetail()" x-cloak>
-            <section class="detail-shell" x-ref="detailShell" x-show="detail.open || detailClosing" :class="{ open: detail.open && !detailClosing, closing: detailClosing }">
+        <div class="detail-backdrop" data-testid="detail-backdrop" x-show="detail.open || detailClosing" :class="{ open: detail.open && !detailClosing, closing: detailClosing }" @click.self="closeDetail()" @wheel.prevent.stop @touchmove.prevent.self x-cloak>
+            <section class="detail-shell" x-ref="detailShell" x-show="detail.open || detailClosing" :class="{ open: detail.open && !detailClosing, closing: detailClosing }" @wheel.stop @touchmove.stop>
                 <header class="detail-head">
                     <div class="detail-head-copy">
                         <p class="viewer-kicker" x-text="detail.folder?.pub_time || ''"></p>
@@ -1078,9 +1081,9 @@
             </section>
         </div>
 
-        <div class="viewer-backdrop" data-testid="viewer-backdrop" x-show="viewer.open || viewerClosing" :class="{ open: viewer.open && !viewerClosing, closing: viewerClosing }" @click.self="closeViewer()" x-cloak>
-            <div class="viewer-shell viewer-shell-full" x-show="viewer.open || viewerClosing" :class="{ open: viewer.open && !viewerClosing, closing: viewerClosing }" @click="viewerShellClick($event)">
-                <div class="viewer-floating viewer-floating-right" @click.stop>
+        <div class="viewer-backdrop" data-testid="viewer-backdrop" x-show="viewer.open || viewerClosing" :class="{ open: viewer.open && !viewerClosing, closing: viewerClosing }" @click.self="closeViewer()" @wheel.prevent.stop @touchmove.prevent.stop x-cloak>
+            <div class="viewer-shell viewer-shell-full" x-show="viewer.open || viewerClosing" :class="{ open: viewer.open && !viewerClosing, closing: viewerClosing }" @click="viewerShellClick($event)" @wheel.prevent.stop @touchmove.prevent.stop>
+                <div class="viewer-floating viewer-floating-right" @click.stop @wheel.prevent.stop @touchmove.prevent.stop>
                     <button class="secondary-button confirm-anchor viewer-action-button" x-show="viewer.pair?.livephoto" @click="cyclePlayback()" x-text="`播放模式: ${playbackModeLabel()}`"></button>
                     <button class="secondary-button confirm-anchor viewer-action-button" x-show="viewerSource === 'gallery' && viewer.folder?.folder_name" @click="openViewerFolder()">查看动态</button>
                     <button class="secondary-button confirm-anchor viewer-action-button" :disabled="!canShowPreviousPair()" @click="showPreviousPair()">上一张</button>
@@ -1104,7 +1107,7 @@
                         :class="{ replayable: playbackMode === 'once' && viewer.pair?.livephoto && !viewer.showVideo, dragging: !viewerTransitionEnabled }"
                         @click.stop="viewerStageClick($event)"
                         @dblclick.stop.prevent="viewerDoubleClick($event)"
-                        @wheel.prevent="viewerWheel($event)"
+                        @wheel.prevent.stop="viewerWheel($event)"
                         @pointerdown="viewerPointerDown($event)"
                         @pointermove="viewerPointerMove($event)"
                         @pointerup="viewerPointerUp($event)"
@@ -1147,8 +1150,8 @@
             </article>
         </div>
 
-        <div class="detail-backdrop" x-show="taskInspector.open" x-transition.opacity @click.self="closeTaskInspector()" x-cloak>
-            <section class="inspector-shell" x-show="taskInspector.open" x-transition:enter="drawer-enter" x-transition:enter-start="drawer-enter-start" x-transition:enter-end="drawer-enter-end" x-transition:leave="drawer-leave" x-transition:leave-start="drawer-leave-start" x-transition:leave-end="drawer-leave-end">
+        <div class="detail-backdrop" x-show="taskInspector.open" x-transition.opacity @click.self="closeTaskInspector()" @wheel.prevent.stop @touchmove.prevent.self x-cloak>
+            <section class="inspector-shell" x-show="taskInspector.open" x-transition:enter="drawer-enter" x-transition:enter-start="drawer-enter-start" x-transition:enter-end="drawer-enter-end" x-transition:leave="drawer-leave" x-transition:leave-start="drawer-leave-start" x-transition:leave-end="drawer-leave-end" @wheel.stop @touchmove.stop>
                 <header class="detail-head">
                     <div>
                         <p class="viewer-kicker">任务详情</p>

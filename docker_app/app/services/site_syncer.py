@@ -239,10 +239,16 @@ class SiteSyncManager:
             if not decision.allowed:
                 self.db.set_site_post_status(post["id"], "blocked", decision.reason)
                 self.db.set_site_post_flag(post["id"], "is_blocked", True)
+                self._remove_post_from_gallery(source, post)
                 counters["blocked"] += 1
                 continue
             if post.get("is_blocked"):
-                continue
+                if post.get("filter_reason") == "手动屏蔽":
+                    self._remove_post_from_gallery(source, post)
+                    continue
+                self.db.set_site_post_flag(post["id"], "is_blocked", False)
+                self.db.set_site_post_status(post["id"], "discovered", None)
+                post = self.db.get_site_post(post["id"]) or {**post, "is_blocked": False, "filter_reason": None}
 
             post_folder = self.storage.site_post_folder(source["slug"], parsed.pub_date, post["slug"])
             download_assets = self._apply_image_skip(parsed.assets, source)[:max_media]
@@ -393,6 +399,12 @@ class SiteSyncManager:
             if pub_date:
                 dates.append(pub_date)
         return max(dates) if dates else None
+
+    def _remove_post_from_gallery(self, source: dict[str, Any], post: dict[str, Any]) -> None:
+        fallback_folder_name = self._gallery_folder_name(source, post)
+        folder_names = self.db.delete_site_gallery_post(source["id"], post["id"], fallback_folder_name)
+        for folder_name in folder_names:
+            self.storage.remove_folder_assets(folder_name)
 
     def _mirror_post_to_gallery(self, source: dict[str, Any], post: dict[str, Any], parsed: ParsedPost) -> None:
         ready_images = [
