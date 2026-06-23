@@ -175,6 +175,16 @@ async def import_site_sources(payload: dict[str, Any] = Body(...)) -> dict[str, 
     return {"ok": True, **result}
 
 
+@app.post("/api/site-sources/suggest")
+async def suggest_site_source(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    if not payload.get("entry_url"):
+        raise HTTPException(status_code=400, detail="请输入入口 URL")
+    try:
+        return {"ok": True, "suggestion": site_syncer.suggest_source(payload)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/site-sources")
 async def create_site_source(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     if not payload.get("entry_url"):

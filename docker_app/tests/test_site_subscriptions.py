@@ -239,6 +239,59 @@ def create_incremental_source(db: Database, tmp_path: Path) -> dict:
     )
 
 
+def create_rule_guard_source(db: Database, tmp_path: Path) -> dict:
+    site_dir = tmp_path / "rule-guard-site"
+    site_dir.mkdir()
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <article class="post-card"><a class="detail-link" href="blocked.html">Blocked</a></article>
+        <article class="post-card"><a class="detail-link" href="nodate.html">No Date</a></article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "blocked.html").write_text(
+        """
+        <!doctype html>
+        <article class="content">
+          <h1>Other Post</h1>
+          <time datetime="2026-04-06">2026.04.06</time>
+          <a class="tag">daily</a>
+          <p class="body">This post should miss the allow list.</p>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "nodate.html").write_text(
+        """
+        <!doctype html>
+        <article class="content">
+          <h1>Allowed Without Date</h1>
+          <a class="tag">spring</a>
+          <p class="body">This post should be skipped because it has no date.</p>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    return db.create_site_source(
+        {
+            "name": "Rule Guard Fixture",
+            "slug": "rule-guard-fixture",
+            "source_type": "html",
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "max_pages": 1,
+            "list_item_selector": ".post-card",
+            "detail_link_selector": ".detail-link",
+            "title_selector": "h1",
+            "date_selector": "time",
+            "tag_selector": ".tag",
+            "body_selector": ".body",
+            "media_selector": ".content img",
+            "enabled": True,
+        }
+    )
+
+
 def test_site_requests_use_browser_like_headers() -> None:
     fetcher = PageFetcher(user_agent="Custom UA")
     downloader = MediaDownloader(user_agent="Custom UA")
@@ -376,6 +429,75 @@ def test_site_parser_extracts_html_rss_and_paged_preview() -> None:
     assert [post.title for post in parser.preview(paged, limit=3)] == ["Allowed Spring Post", "Old Post", "Third Post"]
 
 
+def test_site_source_suggestion_detects_blog_list_structure(tmp_path: Path) -> None:
+    site_dir = tmp_path / "blog-list-site"
+    (site_dir / "page").mkdir(parents=True)
+    Image.new("RGB", (32, 32), (20, 80, 160)).save(site_dir / "image.jpg")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>Example Blog | Archive</title></head>
+          <body>
+            <div class="post-list cf" role="article">
+              <a href="post.html">
+                <section class="entry-content">
+                  <span class="date updated">2026.06.19</span>
+                  <span class="cat-name">daily</span>
+                  <h2 class="entry-title">Example Blog Post</h2>
+                </section>
+              </a>
+            </div>
+            <div class="post-list cf" role="article">
+              <a href="post2.html">
+                <section class="entry-content">
+                  <span class="date updated">2026.06.18</span>
+                  <span class="cat-name">daily</span>
+                  <h2 class="entry-title">Second Blog Post</h2>
+                </section>
+              </a>
+            </div>
+            <a href="page/2">2</a>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <article class="post">
+          <h1>Example Blog Post</h1>
+          <time datetime="2026-06-19">2026.06.19</time>
+          <span class="cat-name">daily</span>
+          <div class="entry-content"><img data-src="image.jpg" src="data:image/svg+xml,placeholder"></div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post2.html").write_text(
+        """
+        <!doctype html>
+        <article class="post">
+          <h1>Second Blog Post</h1>
+          <time datetime="2026-06-18">2026.06.18</time>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+
+    parser = SourceParser(PageFetcher())
+    suggestion = parser.suggest((site_dir / "index.html").resolve().as_uri())
+    posts = parser.discover(suggestion, limit=1)
+
+    assert suggestion["name"] == "Example Blog"
+    assert suggestion["list_item_selector"] == ".post-list"
+    assert suggestion["page_url_template"].endswith("/page/{page}")
+    assert posts[0].title == "Example Blog Post"
+    assert posts[0].pub_date == "2026-06-19"
+    assert posts[0].assets[0].url.endswith("/image.jpg")
+
+
 def test_site_sync_downloads_allowed_posts_and_is_idempotent(tmp_path: Path) -> None:
     db, storage, syncer = make_app(tmp_path)
     source = create_fixture_source(db)
@@ -401,6 +523,24 @@ def test_site_sync_downloads_allowed_posts_and_is_idempotent(tmp_path: Path) -> 
     assert gallery_detail["folder"]["original_url"] == fixture_url("post1.html")
     assert gallery_detail and len(gallery_detail["videos"]) == 1
     assert any(log["reason"] == "早于起始日期" for log in logs)
+
+
+def test_site_sync_does_not_store_new_posts_without_date_or_rule_match(tmp_path: Path) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    db.save_site_rules({"mode": "whitelist", "allow_keywords": ["spring"], "use_regex": False})
+    source = create_rule_guard_source(db, tmp_path)
+
+    result = syncer._sync_source(source)
+    logs = db.list_site_filter_logs()
+
+    assert result["discovered"] == 2
+    assert result["posts"] == 0
+    assert result["blocked"] == 1
+    assert result["skipped"] == 1
+    assert db.list_site_posts(source_id=source["id"]) == []
+    assert db.list_site_posts(category="blocked", source_id=source["id"]) == []
+    assert any(log["reason"] == "未命中站点白名单" for log in logs)
+    assert any(log["reason"] == "无有效发布日期" for log in logs)
 
 
 def test_site_sync_skips_posts_that_are_still_in_trash(tmp_path: Path) -> None:
@@ -802,6 +942,9 @@ def test_site_api_source_preview_sync_and_post_actions(tmp_path: Path, monkeypat
     }
     created = client.post("/api/site-sources", json=source_payload).json()["item"]
     assert created["id"] > 0
+
+    suggestion = client.post("/api/site-sources/suggest", json={"entry_url": fixture_url("index.html")}).json()["suggestion"]
+    assert suggestion["list_item_selector"] == ".post-card"
 
     preview = client.post("/api/site-sources/test", json=source_payload).json()["items"]
     assert len(preview) == 2

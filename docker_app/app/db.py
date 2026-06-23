@@ -667,6 +667,14 @@ class Database:
             row = conn.execute("select * from site_sources where id = ?", (int(source_id),)).fetchone()
         return dict(row) if row else None
 
+    def get_site_post_by_source_url(self, source_id: int, url: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select * from site_posts where source_id = ? and url = ?",
+                (int(source_id), str(url)),
+            ).fetchone()
+        return dict(row) if row else None
+
     def create_site_source(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = now_iso()
         name = str(payload.get("name") or "未命名来源").strip()

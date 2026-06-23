@@ -87,6 +87,8 @@ function galleryApp() {
     },
     sitePreviewItems: [],
     siteTestLoading: false,
+    siteSuggestLoading: false,
+    siteSuggestion: null,
     siteSourceForm: {},
     newSiteSourceExpanded: false,
     siteSourceExpanded: {},
@@ -3445,6 +3447,7 @@ function galleryApp() {
         start_date: "",
       };
       this.sitePreviewItems = [];
+      this.siteSuggestion = null;
     },
 
     siteSourceDraftFromSource(source) {
@@ -3672,6 +3675,62 @@ function galleryApp() {
           this.siteTestLoading = false;
         }
       }
+    },
+
+    async suggestSiteSource() {
+      if (this.siteSuggestLoading) return;
+      const entryUrl = String(this.siteSourceForm.entry_url || "").trim();
+      if (!entryUrl) {
+        this.notify("error", "自动填写失败", "请输入入口 URL。");
+        return;
+      }
+      this.siteSuggestLoading = true;
+      this.siteSuggestion = null;
+      try {
+        const payload = await this.api("/api/site-sources/suggest", {
+          method: "POST",
+          body: JSON.stringify({ entry_url: entryUrl }),
+        });
+        const suggestion = payload.suggestion || {};
+        this.siteSourceForm = this.applySiteSourceSuggestion(this.siteSourceForm, suggestion);
+        this.sitePreviewItems = suggestion.preview || [];
+        this.siteSuggestion = suggestion;
+        this.notify("success", "自动填写完成", suggestion.message || "已生成站点解析参数。");
+      } finally {
+        this.siteSuggestLoading = false;
+      }
+    },
+
+    applySiteSourceSuggestion(form, suggestion) {
+      const next = { ...form };
+      const fields = [
+        "source_type",
+        "entry_url",
+        "page_url_template",
+        "max_pages",
+        "list_item_selector",
+        "detail_link_selector",
+        "title_selector",
+        "date_selector",
+        "tag_selector",
+        "body_selector",
+        "media_selector",
+        "skip_head_images",
+        "skip_tail_images",
+        "enabled",
+        "start_date",
+      ];
+      for (const field of fields) {
+        if (suggestion[field] !== undefined && suggestion[field] !== null) {
+          next[field] = suggestion[field];
+        }
+      }
+      for (const field of ["name", "slug"]) {
+        if (!String(next[field] || "").trim() && suggestion[field]) {
+          next[field] = suggestion[field];
+        }
+      }
+      return next;
     },
 
     async syncSiteSource(source) {

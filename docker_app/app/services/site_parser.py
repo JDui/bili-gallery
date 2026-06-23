@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree
@@ -202,6 +203,64 @@ class SourceParser:
     def __init__(self, fetcher: PageFetcher) -> None:
         self.fetcher = fetcher
 
+    def suggest(self, entry_url: str) -> dict[str, Any]:
+        entry_url = str(entry_url or "").strip()
+        if not entry_url:
+            raise ValueError("请输入入口 URL")
+        text = self.fetcher.get_text(entry_url)
+        xml_type, xml_title = self._xml_source_hint(text)
+        if xml_type:
+            name = xml_title or self._url_site_name(entry_url)
+            return {
+                "name": name,
+                "slug": safe_slug(name, "source"),
+                "source_type": xml_type,
+                "entry_url": entry_url,
+                "page_url_template": "",
+                "max_pages": 1,
+                "list_item_selector": "",
+                "detail_link_selector": "a",
+                "title_selector": "h1",
+                "date_selector": "time, .entry-date, .date, .updated, [datetime]",
+                "tag_selector": ".tag, .tags a, .cat-name, .category a",
+                "body_selector": "article, .entry-content, .post-content, .content, main",
+                "media_selector": "article img, article video, article source, .entry-content img, .post-content img, .content img, .content video, .content source",
+                "skip_head_images": 0,
+                "skip_tail_images": 0,
+                "enabled": True,
+                "start_date": "",
+                "confidence": 90,
+                "message": "已识别为 RSS" if xml_type == "rss" else "已识别为 Sitemap",
+                "preview": [],
+            }
+
+        soup = parse_html(text)
+        name = self._html_site_name(soup, entry_url)
+        html_hint = self._html_source_hint(soup, entry_url)
+        return {
+            "name": name,
+            "slug": safe_slug(name, "source"),
+            "source_type": "html",
+            "entry_url": entry_url,
+            "page_url_template": html_hint.get("page_url_template") or "",
+            "max_pages": 1,
+            "list_item_selector": html_hint.get("list_item_selector") or "",
+            "detail_link_selector": html_hint.get("detail_link_selector") or "a",
+            "title_selector": html_hint.get("title_selector") or "h1",
+            "date_selector": html_hint.get("date_selector") or "time, .entry-date, .date, .updated, [datetime]",
+            "tag_selector": html_hint.get("tag_selector") or ".tag, .tags a, .cat-name, .category a",
+            "body_selector": html_hint.get("body_selector") or "article, .entry-content, .post-content, .content, main",
+            "media_selector": html_hint.get("media_selector")
+            or "article img, article video, article source, .entry-content img, .post-content img, .content img, .content video, .content source",
+            "skip_head_images": 0,
+            "skip_tail_images": 0,
+            "enabled": True,
+            "start_date": "",
+            "confidence": int(html_hint.get("confidence") or 30),
+            "message": html_hint.get("message") or "已按 HTML 列表页生成建议",
+            "preview": html_hint.get("preview") or [],
+        }
+
     def preview(self, source: dict[str, Any], limit: int = 3) -> list[ParsedPost]:
         return self.discover(source, limit=limit, parse_assets=False)
 
@@ -310,7 +369,178 @@ class SourceParser:
         assets = self._media_assets(soup, source.get("media_selector"), url) if parse_assets else []
         return ParsedPost(url=url, title=title.strip(), pub_date=pub_date, tags=tags, excerpt=excerpt.strip(), assets=assets)
 
+    def _xml_source_hint(self, text: str) -> tuple[str | None, str | None]:
+        try:
+            root = ElementTree.fromstring(text.encode("utf-8"))
+        except ElementTree.ParseError:
+            return None, None
+        root_name = self._xml_name(root.tag).lower()
+        if root_name in {"rss", "feed"}:
+            return "rss", self._xml_child_text(root, "title") or None
+        if root_name in {"urlset", "sitemapindex"}:
+            return "sitemap", self._xml_child_text(root, "loc") or None
+        return None, None
+
+    def _html_site_name(self, soup: Any, entry_url: str) -> str:
+        title = self._selector_text(soup, "title") or self._selector_text(soup, "h1")
+        title = re.sub(r"\s+", " ", title).strip()
+        if title:
+            return title.split("|", 1)[0].split(" - ", 1)[0].strip() or title
+        return self._url_site_name(entry_url)
+
+    def _url_site_name(self, url: str) -> str:
+        parsed = urlparse(url)
+        if parsed.netloc:
+            return parsed.netloc.removeprefix("www.")
+        name = Path(parsed.path).stem or Path(parsed.path).parent.name
+        return name or "未命名来源"
+
+    def _html_source_hint(self, soup: Any, entry_url: str) -> dict[str, Any]:
+        candidates = []
+        for selector in [
+            ".post-list",
+            ".post-card",
+            "article",
+            ".hentry",
+            ".entry",
+            ".post",
+            ".article",
+            ".item",
+            "[role='article']",
+            "li",
+        ]:
+            try:
+                nodes = soup.select(selector)
+            except Exception:
+                continue
+            score, preview = self._score_list_selector(selector, nodes, entry_url)
+            if score > 0:
+                candidates.append((score, selector, preview))
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        if candidates:
+            score, selector, preview = candidates[0]
+            return {
+                "list_item_selector": selector,
+                "detail_link_selector": "a",
+                "title_selector": "h1",
+                "date_selector": "time, .entry-date, .date, .updated, [datetime]",
+                "tag_selector": ".tag, .tags a, .cat-name, .category a",
+                "body_selector": "article, .entry-content, .post-content, .content, main",
+                "media_selector": "article img, article video, article source, .entry-content img, .post-content img, .content img, .content video, .content source",
+                "page_url_template": self._guess_page_url_template(soup, entry_url),
+                "confidence": min(95, max(40, score)),
+                "message": f"已识别列表项选择器 {selector}",
+                "preview": preview,
+            }
+        return {
+            "list_item_selector": "",
+            "detail_link_selector": "a",
+            "title_selector": "h1",
+            "date_selector": "time, .entry-date, .date, .updated, [datetime]",
+            "tag_selector": ".tag, .tags a, .cat-name, .category a",
+            "body_selector": "article, .entry-content, .post-content, .content, main",
+            "media_selector": "article img, article video, article source, .entry-content img, .post-content img, .content img, .content video, .content source",
+            "page_url_template": self._guess_page_url_template(soup, entry_url),
+            "confidence": 25,
+            "message": "未找到稳定列表项，已保留自动嗅探详情链接",
+            "preview": [],
+        }
+
+    def _score_list_selector(self, selector: str, nodes: list[Any], base_url: str) -> tuple[int, list[dict[str, str]]]:
+        if len(nodes) < 2:
+            return 0, []
+        score = 0
+        preview: list[dict[str, str]] = []
+        valid_links = 0
+        dated = 0
+        titled = 0
+        media = 0
+        for node in nodes[:30]:
+            detail_url = self._first_detail_url(node, base_url)
+            if not detail_url:
+                continue
+            valid_links += 1
+            title = self._node_title_hint(node)
+            pub_date = self._selector_date(node, "time, .entry-date, .date, .updated, [datetime]")
+            if title:
+                titled += 1
+            if pub_date:
+                dated += 1
+            if self._node_has_media(node):
+                media += 1
+            if len(preview) < 3:
+                preview.append({"url": detail_url, "title": title or detail_url, "pub_date": pub_date or ""})
+        if valid_links < 2:
+            return 0, []
+        score += valid_links * 5
+        score += dated * 4
+        score += titled * 2
+        score += media
+        if "." in selector or "[" in selector:
+            score += 8
+        if selector == "li":
+            score -= 25
+        if len(nodes) > 60:
+            score -= min(35, len(nodes) - 60)
+        return max(score, 0), preview
+
+    def _first_detail_url(self, node: Any, base_url: str) -> str | None:
+        links = []
+        if getattr(node, "name", "") == "a" and node.get("href"):
+            links.append(node)
+        try:
+            links.extend(node.select("a[href]")[:8])
+        except Exception:
+            return None
+        for link in links:
+            href = link.get("href")
+            if not href:
+                continue
+            detail_url = urljoin(base_url, href).split("#", 1)[0]
+            if self._detail_url_score(base_url, detail_url, link.get_text(" ", strip=True)) > 0:
+                return detail_url
+        return None
+
+    def _node_title_hint(self, node: Any) -> str:
+        for selector in [".entry-title", ".title", "h1", "h2", "h3", "a"]:
+            title = self._selector_text(node, selector)
+            title = re.sub(r"\s+", " ", title).strip()
+            if title and not parse_date(title):
+                return title[:160]
+        return ""
+
+    def _node_has_media(self, node: Any) -> bool:
+        try:
+            return bool(node.select_one("img, video, source"))
+        except Exception:
+            return False
+
+    def _guess_page_url_template(self, soup: Any, entry_url: str) -> str:
+        try:
+            links = soup.select("a[href]")
+        except Exception:
+            return ""
+        parsed_entry = urlparse(entry_url)
+        for link in links:
+            label = link.get_text(" ", strip=True)
+            href = link.get("href") or ""
+            if label.strip() != "2" and not re.search(r"(^|[/?=&])2($|[/?&#])", href):
+                continue
+            absolute = urljoin(entry_url, href)
+            parsed = urlparse(absolute)
+            if parsed_entry.netloc and parsed.netloc != parsed_entry.netloc:
+                continue
+            if re.search(r"/page/2/?$", parsed.path):
+                return absolute.replace("/page/2", "/page/{page}").rstrip("/")
+            if "page=2" in parsed.query:
+                return absolute.replace("page=2", "page={page}")
+            if "paged=2" in parsed.query:
+                return absolute.replace("paged=2", "paged={page}")
+        return ""
+
     def _page_url(self, source: dict[str, Any], page: int) -> str:
+        if page <= 1:
+            return source["entry_url"]
         template = source.get("page_url_template")
         if template:
             return str(template).format(page=page)
@@ -406,7 +636,7 @@ class SourceParser:
             selected_ids = {id(node) for node in selected_nodes}
             selected_nodes = [node for node in soup._descendants() if id(node) in selected_ids]
         for node in selected_nodes:
-            url = node.get("src") or node.get("data-src") or node.get("data-original") or node.get("href")
+            url = self._media_url(node)
             if not url:
                 continue
             media_url = urljoin(base_url, url)
@@ -414,6 +644,22 @@ class SourceParser:
             if media_type in {"image", "video"}:
                 assets.append(ParsedAsset(media_url, media_type))
         return self._dedupe_assets(assets)
+
+    def _media_url(self, node: Any) -> str:
+        values = [
+            node.get("data-src"),
+            node.get("data-original"),
+            node.get("data-lazy-src"),
+            node.get("src"),
+            node.get("href"),
+            node.get("poster"),
+        ]
+        for value in values:
+            url = str(value or "").strip()
+            if not url or url.startswith("data:") or url.startswith("about:"):
+                continue
+            return url
+        return ""
 
     def _rss_link(self, item: Any) -> str:
         for child in item.iter():

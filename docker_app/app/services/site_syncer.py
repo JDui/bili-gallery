@@ -70,6 +70,21 @@ class SiteSyncManager:
         parser = SourceParser(fetcher)
         return [self._preview_dict(post) for post in parser.preview(source, limit=3)]
 
+    def suggest_source(self, payload: dict[str, Any]) -> dict[str, Any]:
+        settings = self.db.get_settings()
+        fetcher = PageFetcher(
+            timeout=self._page_request_timeout(settings),
+            user_agent=str(settings.get("site_user_agent")),
+            proxies=self._site_proxies(settings),
+        )
+        parser = SourceParser(fetcher)
+        suggestion = parser.suggest(str(payload.get("entry_url") or ""))
+        try:
+            suggestion["preview"] = [self._preview_dict(post) for post in parser.preview(suggestion, limit=3)]
+        except Exception:
+            suggestion["preview"] = suggestion.get("preview") or []
+        return suggestion
+
     def _run_sync_thread(self, source_id: int | None) -> None:
         task_id = self.db.create_task_run("site-sync", "running", "同步站点来源")
         try:
@@ -213,6 +228,10 @@ class SiteSyncManager:
             if cooperate:
                 cooperate()
             pub_date = parse_date(parsed.pub_date)
+            if not pub_date:
+                counters["skipped"] += 1
+                self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "无有效发布日期")
+                continue
             if pub_date and pub_date < start_date:
                 counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "早于起始日期")
@@ -225,6 +244,16 @@ class SiteSyncManager:
                 counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "仍在内容垃圾桶")
                 continue
+            decision = engine.evaluate(parsed.title, parsed.tags)
+            if not decision.allowed:
+                existing_post = self.db.get_site_post_by_source_url(source["id"], parsed.url)
+                if existing_post:
+                    self.db.set_site_post_status(existing_post["id"], "blocked", decision.reason)
+                    self.db.set_site_post_flag(existing_post["id"], "is_blocked", True)
+                    self._remove_post_from_gallery(source, existing_post)
+                counters["blocked"] += 1
+                self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, decision.decision, decision.reason)
+                continue
             counters["posts"] += 1
             post = self.db.upsert_site_post(source["id"], self._post_payload(parsed))
             dynamic_id = f"site:{source['id']}:{post['id']}"
@@ -234,14 +263,7 @@ class SiteSyncManager:
                 counters["blocked"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "blocked", "仍在黑名单")
                 continue
-            decision = engine.evaluate(parsed.title, parsed.tags)
             self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, decision.decision, decision.reason)
-            if not decision.allowed:
-                self.db.set_site_post_status(post["id"], "blocked", decision.reason)
-                self.db.set_site_post_flag(post["id"], "is_blocked", True)
-                self._remove_post_from_gallery(source, post)
-                counters["blocked"] += 1
-                continue
             if post.get("is_blocked"):
                 if post.get("filter_reason") == "手动屏蔽":
                     self._remove_post_from_gallery(source, post)

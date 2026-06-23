@@ -802,9 +802,14 @@
                             </div>
                             <div class="panel-card-actions subscription-card-actions">
                                 <button class="primary-button" @click="saveSiteSource()" :disabled="siteSourceSaving" x-text="siteSourceSaving ? '保存中' : '保存来源'"></button>
+                                <button class="secondary-button" @click="suggestSiteSource()" :disabled="siteSuggestLoading || !siteSourceForm.entry_url" x-text="siteSuggestLoading ? '探测中' : '自动填写'"></button>
                                 <button class="secondary-button" @click="testSiteSource()" :disabled="siteTestLoading" x-text="siteTestLoading ? '解析中' : '测试解析'"></button>
                                 <button class="secondary-button" @click="resetSiteSourceForm()">清空</button>
                             </div>
+                            <p class="field-copy" x-show="siteSuggestion" x-cloak>
+                                <span x-text="siteSuggestion?.message"></span>
+                                <span x-show="siteSuggestion?.confidence" x-text="`可信度 ${siteSuggestion.confidence}%`"></span>
+                            </p>
                             <div class="site-preview-list" x-show="sitePreviewItems.length" x-cloak>
                                 <h4>测试结果</h4>
                                 <template x-for="item in sitePreviewItems" :key="item.url">
