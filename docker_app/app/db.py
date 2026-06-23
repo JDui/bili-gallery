@@ -46,6 +46,7 @@ DEFAULT_SETTINGS = {
     "site_proxy_enabled": False,
     "site_proxy_host": "127.0.0.1",
     "site_proxy_port": 7890,
+    "review_source_open_mode": "browser",
 }
 LEGACY_SITE_USER_AGENTS = {
     "PostArchiver/0.1 (+authorized personal archive)",
@@ -298,6 +299,14 @@ class Database:
                     created_at text not null
                 );
 
+                create table if not exists sidebar_count_cache (
+                    key text primary key,
+                    count integer not null default 0,
+                    label text,
+                    payload_json text,
+                    updated_at text not null
+                );
+
                 create table if not exists folder_index (
                     folder_name text primary key references folders(folder_name) on delete cascade,
                     title text,
@@ -382,6 +391,7 @@ class Database:
             self._ensure_column(conn, "subscriptions", "include_forwarded", "integer not null default 1")
             self._ensure_column(conn, "site_sources", "skip_head_images", "integer not null default 0")
             self._ensure_column(conn, "site_sources", "skip_tail_images", "integer not null default 0")
+            self._ensure_sidebar_count_cache(conn)
             self._ensure_default_settings(conn)
             self._ensure_default_site_rules(conn)
             conn.execute("insert or ignore into auth_state(id, qr_status) values (1, 'idle')")
@@ -427,6 +437,28 @@ class Database:
         if column in columns:
             return
         conn.execute(f"alter table {table} add column {column} {definition}")
+
+    def _ensure_sidebar_count_cache(self, conn: sqlite3.Connection) -> None:
+        defaults = {
+            "all": "全部项目",
+            "favorites": "收藏",
+            "livephoto": "Live Photo",
+            "review": "待审核",
+            "logs": "过滤日志",
+            "tasks": "任务队列",
+            "trash": "内容垃圾桶",
+            "subscriptions": "订阅管理",
+            "sites": "站点订阅",
+        }
+        now = now_iso()
+        for key, label in defaults.items():
+            conn.execute(
+                """
+                insert or ignore into sidebar_count_cache(key, count, label, payload_json, updated_at)
+                values (?, 0, ?, null, ?)
+                """,
+                (key, label, now),
+            )
 
     def _ensure_default_subscription(self, conn: sqlite3.Connection) -> None:
         row = conn.execute("select value from settings where key = 'host_mid'").fetchone()
@@ -1566,6 +1598,109 @@ class Database:
                 "delete from task_runs where status != 'running'"
             )
             return int(cursor.rowcount or 0)
+
+    def get_sidebar_count_cache(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            rows = conn.execute("select * from sidebar_count_cache order by key asc").fetchall()
+        counts = {str(row["key"]): int(row["count"] or 0) for row in rows}
+        updated_at = {str(row["key"]): row["updated_at"] for row in rows}
+        payloads = {
+            str(row["key"]): loads_json(row["payload_json"], None)
+            for row in rows
+            if row["payload_json"]
+        }
+        return {"counts": counts, "updated_at": updated_at, "payloads": payloads}
+
+    def refresh_sidebar_count_cache(self, keys: list[str] | None = None) -> dict[str, Any]:
+        requested = {str(key) for key in keys or [] if str(key)}
+        if not requested:
+            requested = {"all", "favorites", "livephoto", "review", "logs", "tasks", "trash", "subscriptions", "sites"}
+        computed = self._compute_sidebar_counts(requested)
+        now = now_iso()
+        with self.connect() as conn:
+            for key, value in computed.items():
+                conn.execute(
+                    """
+                    insert into sidebar_count_cache(key, count, label, payload_json, updated_at)
+                    values (?, ?, ?, ?, ?)
+                    on conflict(key) do update set
+                        count = excluded.count,
+                        label = excluded.label,
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        key,
+                        int(value.get("count") or 0),
+                        value.get("label"),
+                        dumps_json(value.get("payload")) if value.get("payload") is not None else None,
+                        now,
+                    ),
+                )
+        return self.get_sidebar_count_cache()
+
+    def _compute_sidebar_counts(self, keys: set[str]) -> dict[str, dict[str, Any]]:
+        labels = {
+            "all": "全部项目",
+            "favorites": "收藏",
+            "livephoto": "Live Photo",
+            "review": "待审核",
+            "logs": "过滤日志",
+            "tasks": "任务队列",
+            "trash": "内容垃圾桶",
+            "subscriptions": "订阅管理",
+            "sites": "站点订阅",
+        }
+        output: dict[str, dict[str, Any]] = {}
+        with self.connect() as conn:
+            if keys & {"all", "favorites", "livephoto"}:
+                source_table = "folder_index" if self._gallery_index_ready_conn(conn) else "folders"
+                row = conn.execute(
+                    f"""
+                    select
+                        count(*) as all_count,
+                        sum(case when has_livephoto = 1 then 1 else 0 end) as livephoto_count,
+                        sum(case when is_favorite = 1 then 1 else 0 end) as favorites_count
+                    from {source_table}
+                    """
+                ).fetchone()
+                output["all"] = {"count": int(row["all_count"] or 0), "label": labels["all"]}
+                output["livephoto"] = {"count": int(row["livephoto_count"] or 0), "label": labels["livephoto"]}
+                output["favorites"] = {"count": int(row["favorites_count"] or 0), "label": labels["favorites"]}
+            if "review" in keys:
+                count = conn.execute("select count(*) from review_items where status = 'pending'").fetchone()[0]
+                output["review"] = {"count": int(count or 0), "label": labels["review"]}
+            if "logs" in keys:
+                count = conn.execute("select count(*) from filter_logs").fetchone()[0]
+                output["logs"] = {"count": int(count or 0), "label": labels["logs"]}
+            if "tasks" in keys:
+                count = conn.execute("select count(*) from task_runs").fetchone()[0]
+                queued = conn.execute("select count(*) from task_runs where status = 'running'").fetchone()[0]
+                output["tasks"] = {
+                    "count": int(count or 0),
+                    "label": labels["tasks"],
+                    "payload": {"running": int(queued or 0)},
+                }
+            if "trash" in keys:
+                count = conn.execute("select count(*) from trash_items where restored_at is null").fetchone()[0]
+                output["trash"] = {"count": int(count or 0), "label": labels["trash"]}
+            if "subscriptions" in keys:
+                count = conn.execute("select count(*) from subscriptions").fetchone()[0]
+                output["subscriptions"] = {"count": int(count or 0), "label": labels["subscriptions"]}
+            if "sites" in keys:
+                count = conn.execute("select count(*) from site_sources").fetchone()[0]
+                output["sites"] = {"count": int(count or 0), "label": labels["sites"]}
+        return {key: value for key, value in output.items() if key in keys}
+
+    def _gallery_index_ready_conn(self, conn: sqlite3.Connection) -> bool:
+        counts = conn.execute(
+            """
+            select
+                (select count(*) from folders) as folder_rows,
+                (select count(*) from folder_index) as folder_index_rows
+            """
+        ).fetchone()
+        return int(counts["folder_rows"] or 0) == int(counts["folder_index_rows"] or 0)
 
     def upsert_review_item(
         self,

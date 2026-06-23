@@ -78,8 +78,22 @@ async def health() -> dict[str, Any]:
         "status": pull_manager.status(),
         "site_status": site_syncer.status(),
         "site_stats": db.site_stats(),
+        "sidebar_counts": db.get_sidebar_count_cache(),
         "gallery_index": db.gallery_index_status(),
     }
+
+
+@app.get("/api/sidebar-counts")
+async def sidebar_counts() -> dict[str, Any]:
+    return db.get_sidebar_count_cache()
+
+
+@app.post("/api/sidebar-counts/refresh")
+async def refresh_sidebar_counts(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    keys = payload.get("keys")
+    if keys is not None and not isinstance(keys, list):
+        raise HTTPException(status_code=400, detail="keys 必须是数组")
+    return db.refresh_sidebar_count_cache([str(key) for key in keys] if keys else None)
 
 
 @app.get("/api/gallery/items")

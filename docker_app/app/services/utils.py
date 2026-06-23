@@ -47,7 +47,11 @@ def parse_date(value: str | None) -> date | None:
         return None
     normalized = text.replace("年", "-").replace("月", "-").replace("日", "")
     normalized = normalized.replace(".", "-").replace("/", "-")
-    candidates = [normalized, normalized[:19], normalized[:10], normalized[:7]]
+    extracted = ""
+    match = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", text)
+    if match:
+        extracted = f"{int(match.group(1)):04d}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
+    candidates = [extracted, normalized, normalized[:19], normalized[:10], normalized[:7]]
     for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m"):
         for candidate in candidates:
             try:

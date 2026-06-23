@@ -498,6 +498,112 @@ def test_site_source_suggestion_detects_blog_list_structure(tmp_path: Path) -> N
     assert posts[0].assets[0].url.endswith("/image.jpg")
 
 
+def test_site_source_suggestion_detects_content_post_structure(tmp_path: Path) -> None:
+    site_dir = tmp_path / "content-post-site"
+    site_dir.mkdir(parents=True)
+    Image.new("RGB", (32, 32), (120, 40, 160)).save(site_dir / "image.jpg")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>Content Post Site | Archive</title></head>
+          <body>
+            <article class="content-post post hentry">
+              <div class="site-images"><a href="post.html"><img src="image.jpg"></a></div>
+              <h2 class="post-title"><a href="post.html">Sample Image Set</a></h2>
+              <div class="post-date">2026年6月23日(火) 21:39</div>
+              <div class="post-categories"><a>sample</a></div>
+            </article>
+            <article class="content-post post hentry">
+              <div class="site-images"><a href="post2.html"><img src="image.jpg"></a></div>
+              <h2 class="post-title"><a href="post2.html">Second Image Set</a></h2>
+              <div class="post-date">2026年6月22日(月) 10:20</div>
+              <div class="post-categories"><a>daily</a></div>
+            </article>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <article class="post">
+          <h1>Sample Image Set</h1>
+          <div class="post-date">2026年6月23日(火) 21:39</div>
+          <div class="post-categories"><a>sample</a></div>
+          <div class="post-page-content"><p>detail text</p><img src="image.jpg"></div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post2.html").write_text(
+        """
+        <!doctype html>
+        <article class="post">
+          <h1>Second Image Set</h1>
+          <div class="post-date">2026年6月22日(月) 10:20</div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+
+    parser = SourceParser(PageFetcher())
+    suggestion = parser.suggest((site_dir / "index.html").resolve().as_uri())
+    posts = parser.discover(suggestion, limit=1)
+
+    assert suggestion["list_item_selector"] == ".content-post"
+    assert suggestion["preview"][0]["pub_date"] == "2026-06-23"
+    assert posts[0].title == "Sample Image Set"
+    assert posts[0].pub_date == "2026-06-23"
+    assert posts[0].tags == ["sample"]
+    assert posts[0].assets[0].url.endswith("/image.jpg")
+
+
+def test_site_parser_stops_when_later_paged_html_is_missing(tmp_path: Path) -> None:
+    site_dir = tmp_path / "paged-missing"
+    site_dir.mkdir(parents=True)
+    Image.new("RGB", (32, 32), (40, 80, 120)).save(site_dir / "image.jpg")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <article class="post-card">
+          <a class="detail-link" href="post.html">Only Post</a>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <article>
+          <h1>Only Post</h1>
+          <time datetime="2026-06-23">2026-06-23</time>
+          <div class="content"><img src="image.jpg"></div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    parser = SourceParser(PageFetcher())
+    source = {
+        "source_type": "html",
+        "entry_url": (site_dir / "index.html").resolve().as_uri(),
+        "page_url_template": (site_dir / "missing-{page}.html").resolve().as_uri(),
+        "max_pages": 20,
+        "list_item_selector": ".post-card",
+        "detail_link_selector": ".detail-link",
+        "title_selector": "h1",
+        "date_selector": "time",
+        "tag_selector": "",
+        "body_selector": ".content",
+        "media_selector": ".content img",
+    }
+
+    posts = parser.discover(source)
+
+    assert [post.title for post in posts] == ["Only Post"]
+
+
 def test_site_sync_downloads_allowed_posts_and_is_idempotent(tmp_path: Path) -> None:
     db, storage, syncer = make_app(tmp_path)
     source = create_fixture_source(db)
@@ -913,6 +1019,7 @@ def test_site_sync_downloads_media_with_three_workers(tmp_path: Path, monkeypatc
 
 def test_site_helpers_parse_date_and_filename() -> None:
     assert parse_date("2026.04.01").isoformat() == "2026-04-01"
+    assert parse_date("2026年6月23日(火) 21:39").isoformat() == "2026-06-23"
     assert clean_filename("https://example.test/a/b/photo.webp?x=1", "Hello / 世界", 2, "image") == "002-hello-世界.webp"
 
 
@@ -942,6 +1049,14 @@ def test_site_api_source_preview_sync_and_post_actions(tmp_path: Path, monkeypat
     }
     created = client.post("/api/site-sources", json=source_payload).json()["item"]
     assert created["id"] > 0
+
+    settings = client.get("/api/settings").json()
+    assert settings["review_source_open_mode"] == "browser"
+    saved_settings = client.put("/api/settings", json={**settings, "review_source_open_mode": "popup"}).json()
+    assert saved_settings["review_source_open_mode"] == "popup"
+
+    sidebar_counts = client.post("/api/sidebar-counts/refresh", json={"keys": ["sites"]}).json()["counts"]
+    assert sidebar_counts["sites"] == 1
 
     suggestion = client.post("/api/site-sources/suggest", json={"entry_url": fixture_url("index.html")}).json()["suggestion"]
     assert suggestion["list_item_selector"] == ".post-card"

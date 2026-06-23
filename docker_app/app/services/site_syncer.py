@@ -131,7 +131,13 @@ class SiteSyncManager:
             if cooperate:
                 cooperate()
             details["sources"] += 1
-            self._status = {"running": True, "message": f"正在同步站点：{source.get('name') or source.get('slug') or source['id']}"}
+            self._status = {
+                "running": True,
+                "message": f"正在同步站点：{source.get('name') or source.get('slug') or source['id']}",
+                "current_source": source.get("name") or source.get("slug") or source["id"],
+                "source_index": details["sources"],
+                "source_total": len([item for item in sources if item]),
+            }
             self._log_site_event(source, "sync-start", "开始同步站点来源")
             try:
                 result = self._sync_source(source, cooperate=cooperate)
@@ -222,27 +228,59 @@ class SiteSyncManager:
 
         posts = parser.discover(source, parse_assets=True)
         counters["discovered"] = len(posts)
+        self._status = {
+            **self._status,
+            "running": True,
+            "message": f"已发现 {len(posts)} 条，开始处理：{source.get('name') or source.get('slug') or source['id']}",
+            "discovered": len(posts),
+            "processed": 0,
+            "progress": 0,
+            "counters": dict(counters),
+        }
         if not posts:
             return counters
-        for parsed in posts:
+
+        def mark_processed(processed: int) -> None:
+            self._status = {
+                **self._status,
+                "processed": processed,
+                "progress": int((processed / len(posts)) * 100) if posts else 100,
+                "counters": dict(counters),
+            }
+
+        for index, parsed in enumerate(posts, start=1):
             if cooperate:
                 cooperate()
+            self._status = {
+                **self._status,
+                "running": True,
+                "message": f"正在处理 {index}/{len(posts)}：{parsed.title or parsed.url}",
+                "current_post": parsed.title or parsed.url,
+                "processed": index - 1,
+                "total": len(posts),
+                "progress": int(((index - 1) / len(posts)) * 100) if posts else 0,
+                "counters": dict(counters),
+            }
             pub_date = parse_date(parsed.pub_date)
             if not pub_date:
                 counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "无有效发布日期")
+                mark_processed(index)
                 continue
             if pub_date and pub_date < start_date:
                 counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "早于起始日期")
+                mark_processed(index)
                 continue
             if incremental_cutoff_date and pub_date and pub_date < incremental_cutoff_date:
                 counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "早于本地最新时间")
+                mark_processed(index)
                 continue
             if self.db.is_site_post_in_active_trash(source["id"], parsed.url):
                 counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "仍在内容垃圾桶")
+                mark_processed(index)
                 continue
             decision = engine.evaluate(parsed.title, parsed.tags)
             if not decision.allowed:
@@ -253,6 +291,7 @@ class SiteSyncManager:
                     self._remove_post_from_gallery(source, existing_post)
                 counters["blocked"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, decision.decision, decision.reason)
+                mark_processed(index)
                 continue
             counters["posts"] += 1
             post = self.db.upsert_site_post(source["id"], self._post_payload(parsed))
@@ -262,11 +301,13 @@ class SiteSyncManager:
                 self.db.set_site_post_flag(post["id"], "is_blocked", True)
                 counters["blocked"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "blocked", "仍在黑名单")
+                mark_processed(index)
                 continue
             self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, decision.decision, decision.reason)
             if post.get("is_blocked"):
                 if post.get("filter_reason") == "手动屏蔽":
                     self._remove_post_from_gallery(source, post)
+                    mark_processed(index)
                     continue
                 self.db.set_site_post_flag(post["id"], "is_blocked", False)
                 self.db.set_site_post_status(post["id"], "discovered", None)
@@ -310,6 +351,7 @@ class SiteSyncManager:
             self.dedupe_post_images(post["id"])
             self.db.update_site_post_counts(post["id"])
             self._mirror_post_to_gallery(source, self.db.get_site_post(post["id"]) or post, parsed)
+            mark_processed(index)
         return counters
 
     def dedupe_post_images(self, post_id: int) -> int:

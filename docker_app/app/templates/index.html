@@ -27,6 +27,7 @@
                 </button>
             </div>
 
+            <div class="sidebar-scroll">
             <section class="nav-section">
                 <div class="section-label" x-show="!sidebarCollapsed">资料库</div>
                 <template x-for="item in navItems" :key="item.key">
@@ -39,7 +40,7 @@
                     >
                         <span class="link-badge" x-text="item.short"></span>
                         <span class="link-text" x-show="!sidebarCollapsed" x-text="item.label"></span>
-                        <span class="link-count" x-show="!sidebarCollapsed" x-text="meta.counts[item.key] || 0"></span>
+                        <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount(item.key)"></span>
                     </button>
                 </template>
             </section>
@@ -60,22 +61,22 @@
                 <button class="sidebar-link" data-testid="nav-review" :class="{ active: currentView === 'review' }" title="待审核" @click="openReview()">
                     <span class="link-badge">审</span>
                     <span class="link-text" x-show="!sidebarCollapsed">待审核</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="reviewItems.length"></span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('review')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-logs" :class="{ active: currentView === 'logs' }" title="过滤日志" @click="openLogs()">
                     <span class="link-badge">滤</span>
                     <span class="link-text" x-show="!sidebarCollapsed">过滤日志</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="logs.length"></span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('logs')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-tasks" :class="{ active: currentView === 'tasks' }" title="任务队列" @click="openTasks()">
                     <span class="link-badge">队</span>
                     <span class="link-text" x-show="!sidebarCollapsed">任务队列</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="taskRuns.length"></span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('tasks')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-trash" :class="{ active: currentView === 'trash' }" title="内容垃圾桶" @click="openTrash()">
                     <span class="link-badge">桶</span>
                     <span class="link-text" x-show="!sidebarCollapsed">内容垃圾桶</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="trashItems.length"></span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('trash')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-settings" :class="{ active: currentView === 'settings' }" title="拉取与设置" @click="openSettings()">
                     <span class="link-badge">设</span>
@@ -85,14 +86,15 @@
                 <button class="sidebar-link" data-testid="nav-subscriptions" :class="{ active: currentView === 'subscriptions' }" title="订阅管理" @click="openSubscriptions()">
                     <span class="link-badge">订</span>
                     <span class="link-text" x-show="!sidebarCollapsed">订阅管理</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="subscriptions.length"></span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('subscriptions')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-sites" :class="{ active: currentView === 'sites' }" title="站点订阅" @click="openSites()">
                     <span class="link-badge">站</span>
                     <span class="link-text" x-show="!sidebarCollapsed">站点订阅</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="siteStats.source_count || siteSources.length || 0"></span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('sites') || siteStats.source_count || 0"></span>
                 </button>
             </section>
+            </div>
 
         </aside>
 
@@ -439,15 +441,27 @@
                         </div>
                     </div>
                 </div>
-                <article class="panel-card">
-                    <div class="panel-card-main">
-                        <h4 x-text="pullStatus.running ? '任务执行中' : '当前空闲'"></h4>
+                <article class="panel-card task-current-card">
+                    <div class="panel-card-main task-current-main">
+                        <div class="task-title-row">
+                            <h4 x-text="pullStatus.running ? '任务执行中' : '当前空闲'"></h4>
+                            <span class="inline-tag accent" x-text="taskModeLabel(pullStatus.mode)"></span>
+                        </div>
                         <p x-text="pullStatus.message || '没有正在运行的任务'"></p>
-                        <div class="inline-tags" x-show="pullStatus.stats">
-                            <span class="inline-tag" x-text="`匹配 ${pullStatus.stats?.matched || 0}`"></span>
-                            <span class="inline-tag" x-text="`已下载 ${pullStatus.stats?.downloaded_candidates || 0}`"></span>
-                            <span class="inline-tag" x-text="`待审核 ${pullStatus.stats?.review_candidates || 0}`"></span>
-                            <span class="inline-tag" x-text="`文件 ${pullStatus.stats?.saved_files || 0}`"></span>
+                        <div class="task-progress-shell" x-show="pullStatus.running || taskProgressValue(pullStatus) > 0" x-cloak>
+                            <div class="task-progress-bar"><span :style="`width: ${taskProgressValue(pullStatus)}%`"></span></div>
+                            <small x-text="taskProgressText(pullStatus)"></small>
+                        </div>
+                        <div class="task-detail-grid">
+                            <span><strong>当前来源</strong><em x-text="pullStatus.current_source || pullStatus.site_detail?.current_source || '-'"></em></span>
+                            <span><strong>当前内容</strong><em x-text="pullStatus.current_post || pullStatus.site_detail?.current_post || '-'"></em></span>
+                            <span><strong>队列</strong><em x-text="`${queuedTasks.length || 0} 个待执行`"></em></span>
+                            <span><strong>最近任务</strong><em x-text="pullStatus.last_run ? `#${pullStatus.last_run.id}` : '-'"></em></span>
+                        </div>
+                        <div class="inline-tags">
+                            <template x-for="tag in taskCounterTags(pullStatus)" :key="tag.label">
+                                <span class="inline-tag" x-text="`${tag.label} ${tag.value}`"></span>
+                            </template>
                         </div>
                     </div>
                     <div class="panel-card-actions">
@@ -460,24 +474,26 @@
                         <button class="secondary-button danger-button" :disabled="!pullStatus.running" @click="cancelTask()">取消</button>
                     </div>
                 </article>
-                <article class="panel-card" x-show="queuedTasks.length > 0" x-cloak>
+                <article class="panel-card task-queue-card" x-show="queuedTasks.length > 0" x-cloak>
                     <div class="panel-card-main">
                         <h4>待执行队列</h4>
                         <p>新的拉取、校验和放行下载会顺序排队执行。</p>
-                        <div class="inline-tags">
+                        <div class="task-queue-list">
                             <template x-for="item in queuedTasks" :key="item.queue_id">
-                                <span class="inline-tag" x-text="`#${item.queue_id} · ${item.kind} · ${item.label}`"></span>
+                                <div class="task-queue-row">
+                                    <div>
+                                        <strong x-text="`#${item.queue_id} · 第 ${item.position || '-'} 位`"></strong>
+                                        <p x-text="item.label || item.kind"></p>
+                                        <small x-text="`${taskModeLabel(item.kind)} · ${item.queued_at || '-'}`"></small>
+                                    </div>
+                                    <div class="button-row confirm-row">
+                                        <button class="secondary-button" @click="openQueuedTaskInspector(item)">细节</button>
+                                        <button class="secondary-button danger-button confirm-anchor" @click="askCancelQueuedTask(item.queue_id)" x-text="queuedTaskCancelLabel(item)"></button>
+                                        <button class="secondary-button" x-show="queuedCancelConfirmId === Number(item.queue_id)" @click="cancelQueuedTaskPrompt()">取消</button>
+                                    </div>
+                                </div>
                             </template>
                         </div>
-                    </div>
-                    <div class="panel-card-actions">
-                        <template x-for="item in queuedTasks" :key="`cancel-${item.queue_id}`">
-                            <div class="button-row confirm-row">
-                                <button class="secondary-button" @click="openQueuedTaskInspector(item)">查看细节</button>
-                                <button class="secondary-button danger-button confirm-anchor" @click="askCancelQueuedTask(item.queue_id)" x-text="`${queuedTaskCancelLabel(item)} · #${item.queue_id}`"></button>
-                                <button class="secondary-button" x-show="queuedCancelConfirmId === Number(item.queue_id)" @click="cancelQueuedTaskPrompt()">取消</button>
-                            </div>
-                        </template>
                     </div>
                 </article>
                 <template x-for="item in taskRuns" :key="item.id">
@@ -576,6 +592,12 @@
                         <h4>推广过滤</h4>
                         <label class="toggle-row"><input type="checkbox" x-model="settings.ad_filter_enabled"> 启用推广过滤</label>
                         <label>长图阈值 <input type="number" step="0.1" x-model="settings.long_image_ratio"></label>
+                        <label>查看原帖打开方式
+                            <select x-model="settings.review_source_open_mode">
+                                <option value="browser">系统浏览器</option>
+                                <option value="popup">站内小浮窗</option>
+                            </select>
+                        </label>
                         <label>关键词列表</label>
                         <textarea rows="10" x-model="keywordText"></textarea>
                         <p class="field-copy">每行一个关键词，命中后动态进入待审核列表。</p>
@@ -808,7 +830,7 @@
                             </div>
                             <p class="field-copy" x-show="siteSuggestion" x-cloak>
                                 <span x-text="siteSuggestion?.message"></span>
-                                <span x-show="siteSuggestion?.confidence" x-text="`可信度 ${siteSuggestion.confidence}%`"></span>
+                                <span x-show="siteSuggestion?.confidence" x-text="`可信度 ${siteSuggestion?.confidence || 0}%`"></span>
                             </p>
                             <div class="site-preview-list" x-show="sitePreviewItems.length" x-cloak>
                                 <h4>测试结果</h4>
@@ -1083,6 +1105,30 @@
                         </article>
                     </template>
                 </div>
+            </section>
+        </div>
+
+        <div class="detail-backdrop source-preview-backdrop" data-testid="source-preview-backdrop" x-show="sourcePreview.open" x-transition.opacity @click.self="closeSourcePreview()" @wheel.prevent.stop @touchmove.prevent.self x-cloak>
+            <section class="source-preview-shell" x-show="sourcePreview.open" x-transition:enter="drawer-enter" x-transition:enter-start="drawer-enter-start" x-transition:enter-end="drawer-enter-end" x-transition:leave="drawer-leave" x-transition:leave-start="drawer-leave-start" x-transition:leave-end="drawer-leave-end" @wheel.stop @touchmove.stop>
+                <header class="source-preview-head">
+                    <div>
+                        <p class="viewer-kicker">原帖预览</p>
+                        <h3 x-text="sourcePreview.title || '原始内容'"></h3>
+                        <p class="detail-copy" x-text="sourcePreview.subtitle"></p>
+                    </div>
+                    <div class="button-row">
+                        <button class="secondary-button" @click="openSourcePreviewExternal()">系统浏览器打开</button>
+                        <button class="secondary-button" @click="closeSourcePreview()">关闭</button>
+                    </div>
+                </header>
+                <iframe
+                    class="source-preview-frame"
+                    :src="sourcePreview.url"
+                    title="原帖预览"
+                    loading="lazy"
+                    referrerpolicy="no-referrer"
+                    sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                ></iframe>
             </section>
         </div>
 

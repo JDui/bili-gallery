@@ -39,6 +39,13 @@ DEFAULT_SITE_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/146.0.0.0 Safari/537.36"
 )
+DEFAULT_DATE_SELECTOR = "time, .entry-date, .date, .updated, .post-date, [datetime]"
+DEFAULT_TAG_SELECTOR = ".tag, .tags a, .cat-name, .category a, .post-categories a"
+DEFAULT_BODY_SELECTOR = "article, .entry-content, .post-content, .post-page-content, .content, main"
+DEFAULT_MEDIA_SELECTOR = (
+    "article img, article video, article source, .entry-content img, .post-content img, "
+    ".post-page-content img, .content img, .content video, .content source, main img"
+)
 
 
 def browser_like_site_headers(user_agent: str | None = None) -> dict[str, str]:
@@ -221,10 +228,10 @@ class SourceParser:
                 "list_item_selector": "",
                 "detail_link_selector": "a",
                 "title_selector": "h1",
-                "date_selector": "time, .entry-date, .date, .updated, [datetime]",
-                "tag_selector": ".tag, .tags a, .cat-name, .category a",
-                "body_selector": "article, .entry-content, .post-content, .content, main",
-                "media_selector": "article img, article video, article source, .entry-content img, .post-content img, .content img, .content video, .content source",
+                "date_selector": DEFAULT_DATE_SELECTOR,
+                "tag_selector": DEFAULT_TAG_SELECTOR,
+                "body_selector": DEFAULT_BODY_SELECTOR,
+                "media_selector": DEFAULT_MEDIA_SELECTOR,
                 "skip_head_images": 0,
                 "skip_tail_images": 0,
                 "enabled": True,
@@ -247,11 +254,10 @@ class SourceParser:
             "list_item_selector": html_hint.get("list_item_selector") or "",
             "detail_link_selector": html_hint.get("detail_link_selector") or "a",
             "title_selector": html_hint.get("title_selector") or "h1",
-            "date_selector": html_hint.get("date_selector") or "time, .entry-date, .date, .updated, [datetime]",
-            "tag_selector": html_hint.get("tag_selector") or ".tag, .tags a, .cat-name, .category a",
-            "body_selector": html_hint.get("body_selector") or "article, .entry-content, .post-content, .content, main",
-            "media_selector": html_hint.get("media_selector")
-            or "article img, article video, article source, .entry-content img, .post-content img, .content img, .content video, .content source",
+            "date_selector": html_hint.get("date_selector") or DEFAULT_DATE_SELECTOR,
+            "tag_selector": html_hint.get("tag_selector") or DEFAULT_TAG_SELECTOR,
+            "body_selector": html_hint.get("body_selector") or DEFAULT_BODY_SELECTOR,
+            "media_selector": html_hint.get("media_selector") or DEFAULT_MEDIA_SELECTOR,
             "skip_head_images": 0,
             "skip_tail_images": 0,
             "enabled": True,
@@ -280,10 +286,16 @@ class SourceParser:
         max_pages = max(int(source.get("max_pages") or 1), 1)
         for page in range(1, max_pages + 1):
             page_url = self._page_url(source, page)
-            soup = parse_html(self.fetcher.get_text(page_url))
+            try:
+                soup = parse_html(self.fetcher.get_text(page_url))
+            except Exception:
+                if page > 1:
+                    break
+                raise
             item_selector = source.get("list_item_selector")
             items = soup.select(item_selector) if item_selector else []
             if items:
+                page_posts = 0
                 for item in items:
                     detail_url = self._detail_url(item, page_url, source)
                     if not detail_url:
@@ -292,19 +304,32 @@ class SourceParser:
                     if normalized_url in seen:
                         continue
                     seen.add(normalized_url)
-                    posts.append(self.parse_detail(normalized_url, source, parse_assets=parse_assets, fallback_node=item))
+                    try:
+                        posts.append(self.parse_detail(normalized_url, source, parse_assets=parse_assets, fallback_node=item))
+                    except Exception:
+                        continue
+                    page_posts += 1
                     if limit and len(posts) >= limit:
                         return posts
+                if page > 1 and page_posts == 0:
+                    break
                 continue
 
+            page_posts = 0
             for detail_url in self._sniff_detail_urls(soup, page_url):
                 normalized_url = detail_url.split("#", 1)[0]
                 if normalized_url in seen:
                     continue
                 seen.add(normalized_url)
-                posts.append(self.parse_detail(normalized_url, source, parse_assets=parse_assets))
+                try:
+                    posts.append(self.parse_detail(normalized_url, source, parse_assets=parse_assets))
+                except Exception:
+                    continue
+                page_posts += 1
                 if limit and len(posts) >= limit:
                     return posts
+            if page > 1 and page_posts == 0:
+                break
         return posts
 
     def _discover_rss(self, source: dict[str, Any], parse_assets: bool, limit: int | None = None) -> list[ParsedPost]:
@@ -398,6 +423,7 @@ class SourceParser:
     def _html_source_hint(self, soup: Any, entry_url: str) -> dict[str, Any]:
         candidates = []
         for selector in [
+            ".content-post",
             ".post-list",
             ".post-card",
             "article",
@@ -423,10 +449,10 @@ class SourceParser:
                 "list_item_selector": selector,
                 "detail_link_selector": "a",
                 "title_selector": "h1",
-                "date_selector": "time, .entry-date, .date, .updated, [datetime]",
-                "tag_selector": ".tag, .tags a, .cat-name, .category a",
-                "body_selector": "article, .entry-content, .post-content, .content, main",
-                "media_selector": "article img, article video, article source, .entry-content img, .post-content img, .content img, .content video, .content source",
+                "date_selector": DEFAULT_DATE_SELECTOR,
+                "tag_selector": DEFAULT_TAG_SELECTOR,
+                "body_selector": DEFAULT_BODY_SELECTOR,
+                "media_selector": DEFAULT_MEDIA_SELECTOR,
                 "page_url_template": self._guess_page_url_template(soup, entry_url),
                 "confidence": min(95, max(40, score)),
                 "message": f"已识别列表项选择器 {selector}",
@@ -436,10 +462,10 @@ class SourceParser:
             "list_item_selector": "",
             "detail_link_selector": "a",
             "title_selector": "h1",
-            "date_selector": "time, .entry-date, .date, .updated, [datetime]",
-            "tag_selector": ".tag, .tags a, .cat-name, .category a",
-            "body_selector": "article, .entry-content, .post-content, .content, main",
-            "media_selector": "article img, article video, article source, .entry-content img, .post-content img, .content img, .content video, .content source",
+            "date_selector": DEFAULT_DATE_SELECTOR,
+            "tag_selector": DEFAULT_TAG_SELECTOR,
+            "body_selector": DEFAULT_BODY_SELECTOR,
+            "media_selector": DEFAULT_MEDIA_SELECTOR,
             "page_url_template": self._guess_page_url_template(soup, entry_url),
             "confidence": 25,
             "message": "未找到稳定列表项，已保留自动嗅探详情链接",
@@ -461,7 +487,7 @@ class SourceParser:
                 continue
             valid_links += 1
             title = self._node_title_hint(node)
-            pub_date = self._selector_date(node, "time, .entry-date, .date, .updated, [datetime]")
+            pub_date = self._selector_date(node, DEFAULT_DATE_SELECTOR)
             if title:
                 titled += 1
             if pub_date:
@@ -476,10 +502,12 @@ class SourceParser:
         score += dated * 4
         score += titled * 2
         score += media
-        if "." in selector or "[" in selector:
+        if selector in {".content-post", ".post-list", ".post-card", "article", ".hentry", ".post"}:
+            score += 18
+        elif "." in selector or "[" in selector:
             score += 8
         if selector == "li":
-            score -= 25
+            score -= 45
         if len(nodes) > 60:
             score -= min(35, len(nodes) - 60)
         return max(score, 0), preview
@@ -502,7 +530,7 @@ class SourceParser:
         return None
 
     def _node_title_hint(self, node: Any) -> str:
-        for selector in [".entry-title", ".title", "h1", "h2", "h3", "a"]:
+        for selector in [".entry-title", ".post-title", ".title", "h1", "h2", "h3", "a"]:
             title = self._selector_text(node, selector)
             title = re.sub(r"\s+", " ", title).strip()
             if title and not parse_date(title):

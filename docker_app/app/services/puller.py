@@ -64,6 +64,7 @@ class QueuedTask:
     kind: str
     label: str
     payload: dict[str, Any] = field(default_factory=dict)
+    queued_at: str = field(default_factory=now_iso)
 
 
 def live_url(pic: dict) -> str:
@@ -287,11 +288,25 @@ class PullManager:
 
     def status(self) -> dict[str, Any]:
         latest = self._latest_task_run(["pull", "review", "validate", "startup", "index", "site-sync"])
+        status = dict(self._status)
+        if str(status.get("mode") or "").startswith("site") and self.site_syncer is not None:
+            site_status = self.site_syncer.status()
+            status = {
+                **status,
+                "message": site_status.get("message") or status.get("message"),
+                "site_detail": {key: value for key, value in site_status.items() if key != "last_run"},
+            }
+            for key in ("progress", "current_source", "current_post", "processed", "total", "discovered", "counters"):
+                if key in site_status:
+                    status[key] = site_status[key]
+        queue = []
+        for position, task in enumerate(list(self._queue), start=1):
+            queue.append({**task.__dict__, "position": position})
         return {
-            **self._status,
+            **status,
             "paused": self._pause_requested,
             "cancel_requested": self._cancel_requested,
-            "queue": [task.__dict__ for task in list(self._queue)],
+            "queue": queue,
             "events": self._runtime_events(),
             "last_run": latest,
             "gallery_index": self.db.gallery_index_status(),
