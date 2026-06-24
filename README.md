@@ -5,7 +5,7 @@
 - 根目录脚本：用于拉取九图动态与 Live Photo 数据
 - `docker_app/`：用于浏览、筛选和管理媒体资源的 Web 应用
 
-项目当前内置版本为 `v5.17`，适合在 macOS 本地运行，也支持 AMD64 NAS 通过 Docker 部署。
+项目当前内置版本为 `v5.18`，适合在 macOS 本地运行，也支持 AMD64 NAS 通过 Docker 部署。
 
 ## 功能概览
 
@@ -71,7 +71,7 @@ http://localhost:7860
 2. 导入镜像：
 
 ```bash
-docker load -i zzs-bili-gallery_v5.17_amd64.tar
+docker load -i zzs-bili-gallery_v5.18_amd64.tar
 ```
 
 3. 按实际环境修改 `docker_app/docker-compose.nas-amd64.yml` 中的挂载路径
@@ -95,7 +95,7 @@ docker compose -f docker_app/docker-compose.nas-amd64.yml up -d
 
 当前仓库内最新已编译镜像包为：
 
-- `docker_app/dist/zzs-bili-gallery_v5.17_amd64.tar`
+- `docker_app/dist/zzs-bili-gallery_v5.18_amd64.tar`
 
 该文件适合上传到 GitHub Releases，供 NAS 或其他 Docker 环境直接导入使用。
 

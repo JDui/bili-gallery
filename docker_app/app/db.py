@@ -218,6 +218,7 @@ class Database:
                 create table if not exists subscriptions (
                     uid text primary key,
                     uname text,
+                    avatar_url text,
                     status text not null default 'active',
                     pull_images integer not null default 1,
                     image_min_count integer not null default 1,
@@ -249,6 +250,8 @@ class Database:
                     media_selector text,
                     skip_head_images integer not null default 0,
                     skip_tail_images integer not null default 0,
+                    use_proxy integer not null default 1,
+                    icon_url text,
                     enabled integer not null default 1,
                     start_date text,
                     created_at text not null,
@@ -389,8 +392,11 @@ class Database:
             self._ensure_column(conn, "subscriptions", "image_min_count", "integer not null default 1")
             self._ensure_column(conn, "subscriptions", "pull_livephoto", "integer not null default 1")
             self._ensure_column(conn, "subscriptions", "include_forwarded", "integer not null default 1")
+            self._ensure_column(conn, "subscriptions", "avatar_url", "text")
             self._ensure_column(conn, "site_sources", "skip_head_images", "integer not null default 0")
             self._ensure_column(conn, "site_sources", "skip_tail_images", "integer not null default 0")
+            self._ensure_column(conn, "site_sources", "use_proxy", "integer not null default 1")
+            self._ensure_column(conn, "site_sources", "icon_url", "text")
             self._ensure_sidebar_count_cache(conn)
             self._ensure_default_settings(conn)
             self._ensure_default_site_rules(conn)
@@ -689,7 +695,7 @@ class Database:
         params: tuple[Any, ...] = ()
         if not include_disabled:
             sql += " where enabled = 1"
-        sql += " order by updated_at desc, id desc"
+        sql += " order by created_at desc, id desc"
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
@@ -718,8 +724,8 @@ class Database:
                     name, slug, source_type, entry_url, page_url_template, max_pages,
                     list_item_selector, detail_link_selector, title_selector, date_selector,
                     tag_selector, body_selector, media_selector, skip_head_images, skip_tail_images,
-                    enabled, start_date, created_at, updated_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    use_proxy, icon_url, enabled, start_date, created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -737,6 +743,8 @@ class Database:
                     payload.get("media_selector") or None,
                     max(int(payload.get("skip_head_images") or 0), 0),
                     max(int(payload.get("skip_tail_images") or 0), 0),
+                    1 if payload.get("use_proxy", True) else 0,
+                    payload.get("icon_url") or None,
                     1 if payload.get("enabled", True) else 0,
                     payload.get("start_date") or None,
                     now,
@@ -763,7 +771,7 @@ class Database:
                     max_pages = ?, list_item_selector = ?, detail_link_selector = ?,
                     title_selector = ?, date_selector = ?, tag_selector = ?, body_selector = ?,
                     media_selector = ?, skip_head_images = ?, skip_tail_images = ?,
-                    enabled = ?, start_date = ?, updated_at = ?
+                    use_proxy = ?, icon_url = ?, enabled = ?, start_date = ?, updated_at = ?
                 where id = ?
                 """,
                 (
@@ -782,6 +790,8 @@ class Database:
                     merged.get("media_selector") or None,
                     max(int(merged.get("skip_head_images") or 0), 0),
                     max(int(merged.get("skip_tail_images") or 0), 0),
+                    1 if merged.get("use_proxy", True) else 0,
+                    merged.get("icon_url") or None,
                     1 if merged.get("enabled") else 0,
                     merged.get("start_date") or None,
                     now_iso(),
@@ -922,11 +932,14 @@ class Database:
             "media_selector",
             "skip_head_images",
             "skip_tail_images",
+            "use_proxy",
+            "icon_url",
             "enabled",
             "start_date",
         )
         item = {key: source.get(key) for key in keys}
         item["enabled"] = bool(item.get("enabled"))
+        item["use_proxy"] = bool(item.get("use_proxy", True))
         item["max_pages"] = max(int(item.get("max_pages") or 1), 1)
         item["skip_head_images"] = max(int(item.get("skip_head_images") or 0), 0)
         item["skip_tail_images"] = max(int(item.get("skip_tail_images") or 0), 0)
@@ -951,6 +964,8 @@ class Database:
             "media_selector": source.get("media_selector") or None,
             "skip_head_images": max(int(source.get("skip_head_images") or 0), 0),
             "skip_tail_images": max(int(source.get("skip_tail_images") or 0), 0),
+            "use_proxy": bool(source.get("use_proxy", True)),
+            "icon_url": source.get("icon_url") or None,
             "enabled": bool(source.get("enabled", True)),
             "start_date": source.get("start_date") or None,
         }
@@ -1226,6 +1241,7 @@ class Database:
         image_min_count: int | None = None,
         pull_livephoto: bool | None = None,
         include_forwarded: bool | None = None,
+        avatar_url: str | None = None,
     ) -> dict[str, Any]:
         now = now_iso()
         with self.connect() as conn:
@@ -1251,6 +1267,7 @@ class Database:
             payload = {
                 "uid": str(uid),
                 "uname": uname if uname is not None else (existing["uname"] if existing else None),
+                "avatar_url": avatar_url if avatar_url is not None else (existing["avatar_url"] if existing else None),
                 "status": status if status is not None else (existing["status"] if existing else "active"),
                 "pull_images": pull_images_flag,
                 "image_min_count": normalized_threshold,
@@ -1262,11 +1279,12 @@ class Database:
             conn.execute(
                 """
                 insert into subscriptions(
-                    uid, uname, status, pull_images, image_min_count, pull_livephoto, include_forwarded, created_at, updated_at
+                    uid, uname, avatar_url, status, pull_images, image_min_count, pull_livephoto, include_forwarded, created_at, updated_at
                 )
-                values (:uid, :uname, :status, :pull_images, :image_min_count, :pull_livephoto, :include_forwarded, :created_at, :updated_at)
+                values (:uid, :uname, :avatar_url, :status, :pull_images, :image_min_count, :pull_livephoto, :include_forwarded, :created_at, :updated_at)
                 on conflict(uid) do update set
                     uname = excluded.uname,
+                    avatar_url = excluded.avatar_url,
                     status = excluded.status,
                     pull_images = excluded.pull_images,
                     image_min_count = excluded.image_min_count,
@@ -1279,6 +1297,7 @@ class Database:
         return self.get_subscription(uid) or {
             "uid": str(uid),
             "uname": uname,
+            "avatar_url": avatar_url,
             "status": status,
             "pull_images": 1 if pull_images and self._normalize_image_threshold(image_min_count, DEFAULT_SETTINGS["image_min_count"]) >= 0 else 0,
             "image_min_count": self._normalize_image_threshold(image_min_count, DEFAULT_SETTINGS["image_min_count"]),
@@ -1304,6 +1323,7 @@ class Database:
         payload = {
             "uid": str(uid),
             "uname": current.get("uname"),
+            "avatar_url": current.get("avatar_url"),
             "status": current.get("status", "active"),
             "pull_images": bool(updates.get("pull_images", current.get("pull_images"))) and normalized_threshold >= 0,
             "image_min_count": normalized_threshold,
@@ -1318,6 +1338,27 @@ class Database:
         except (TypeError, ValueError):
             number = int(fallback)
         return max(-1, min(12, number))
+
+    def set_subscription_icon(self, uid: str, avatar_url: str | None) -> dict[str, Any] | None:
+        current = self.get_subscription(uid)
+        if not current:
+            return None
+        with self.connect() as conn:
+            conn.execute(
+                "update subscriptions set avatar_url = ?, updated_at = ? where uid = ?",
+                (avatar_url or None, now_iso(), str(uid)),
+            )
+        return self.get_subscription(uid)
+
+    def set_site_source_icon(self, source_id: int, icon_url: str | None) -> dict[str, Any] | None:
+        if not self.get_site_source(source_id):
+            return None
+        with self.connect() as conn:
+            conn.execute(
+                "update site_sources set icon_url = ?, updated_at = ? where id = ?",
+                (icon_url or None, now_iso(), int(source_id)),
+            )
+        return self.get_site_source(source_id)
 
     def delete_subscription(self, uid: str) -> None:
         with self.connect() as conn:
@@ -1685,7 +1726,9 @@ class Database:
                 count = conn.execute("select count(*) from trash_items where restored_at is null").fetchone()[0]
                 output["trash"] = {"count": int(count or 0), "label": labels["trash"]}
             if "subscriptions" in keys:
-                count = conn.execute("select count(*) from subscriptions").fetchone()[0]
+                count = conn.execute(
+                    "select (select count(*) from subscriptions) + (select count(*) from site_sources)"
+                ).fetchone()[0]
                 output["subscriptions"] = {"count": int(count or 0), "label": labels["subscriptions"]}
             if "sites" in keys:
                 count = conn.execute("select count(*) from site_sources").fetchone()[0]

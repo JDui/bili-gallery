@@ -5,15 +5,18 @@ import time
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time as datetime_time
+from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 from PIL import Image, ImageOps
+import requests
 
 from app.db import Database
 from app.services.media_indexer import MediaIndexer
 from app.services.site_downloader import MediaDownloader
 from app.services.site_filtering import RuleEngine
-from app.services.site_parser import PageFetcher, ParsedPost, SourceParser
+from app.services.site_parser import PageFetcher, ParsedPost, SourceParser, browser_like_site_headers, parse_html
 from app.services.storage import StorageService
 from app.services.utils import TIMEZONE, clean_filename, parse_date, safe_slug
 
@@ -62,10 +65,11 @@ class SiteSyncManager:
 
     def test_source(self, source: dict[str, Any]) -> list[dict[str, Any]]:
         settings = self.db.get_settings()
+        source_settings = self._settings_for_source(settings, source)
         fetcher = PageFetcher(
-            timeout=self._page_request_timeout(settings),
-            user_agent=str(settings.get("site_user_agent")),
-            proxies=self._site_proxies(settings),
+            timeout=self._page_request_timeout(source_settings),
+            user_agent=str(source_settings.get("site_user_agent")),
+            proxies=self._site_proxies(source_settings),
         )
         parser = SourceParser(fetcher)
         return [self._preview_dict(post) for post in parser.preview(source, limit=3)]
@@ -213,10 +217,11 @@ class SiteSyncManager:
 
     def _sync_source(self, source: dict[str, Any], cooperate=None) -> dict[str, int]:
         settings = self.db.get_settings()
+        source_settings = self._settings_for_source(settings, source)
         fetcher = PageFetcher(
-            timeout=self._page_request_timeout(settings),
-            user_agent=str(settings.get("site_user_agent")),
-            proxies=self._site_proxies(settings),
+            timeout=self._page_request_timeout(source_settings),
+            user_agent=str(source_settings.get("site_user_agent")),
+            proxies=self._site_proxies(source_settings),
         )
         parser = SourceParser(fetcher)
         engine = RuleEngine(self.db.get_site_rules())
@@ -335,7 +340,7 @@ class SiteSyncManager:
                 if db_asset.get("status") == "ready" and target.exists() and target.stat().st_size > 0:
                     continue
                 download_jobs.append({"asset_id": db_asset["id"], "url": asset.url, "target": target})
-            for result in self._download_assets(download_jobs, settings, request_sleep):
+            for result in self._download_assets(download_jobs, source_settings, request_sleep):
                 try:
                     if cooperate:
                         cooperate()
@@ -417,8 +422,110 @@ class SiteSyncManager:
             proxies=self._site_proxies(settings),
         )
 
+    def refresh_site_icon(self, source_id: int) -> dict[str, Any]:
+        source = self.db.get_site_source(source_id)
+        if not source:
+            raise RuntimeError("站点来源不存在")
+        icon_url = self.discover_site_icon(source)
+        if not icon_url:
+            raise RuntimeError("未能获取站点图标")
+        item = self.db.set_site_source_icon(source_id, icon_url)
+        if not item:
+            raise RuntimeError("站点来源不存在")
+        return item
+
+    def discover_site_icon(self, source: dict[str, Any]) -> str | None:
+        entry_url = str(source.get("entry_url") or "").strip()
+        if not entry_url:
+            return None
+        settings = self._settings_for_source(self.db.get_settings(), source)
+        candidates: list[str] = []
+        try:
+            fetcher = PageFetcher(
+                timeout=self._page_request_timeout(settings),
+                user_agent=str(settings.get("site_user_agent")),
+                proxies=self._site_proxies(settings),
+            )
+            html = fetcher.get_text(entry_url)
+            candidates.extend(self._icon_candidates_from_html(entry_url, html))
+        except Exception:
+            pass
+        parsed = urlparse(entry_url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            candidates.append(f"{parsed.scheme}://{parsed.netloc}/favicon.ico")
+        return self._first_reachable_icon(candidates, settings)
+
+    def _icon_candidates_from_html(self, base_url: str, html: str) -> list[str]:
+        soup = parse_html(html)
+        candidates: list[str] = []
+        for node in soup.select("link[rel]"):
+            rel_value = node.get("rel") or ""
+            if isinstance(rel_value, (list, tuple)):
+                rel_text = " ".join(str(item) for item in rel_value)
+            else:
+                rel_text = str(rel_value)
+            rel_text = rel_text.lower()
+            if "icon" not in rel_text:
+                continue
+            href = node.get("href")
+            if href:
+                candidates.append(urljoin(base_url, str(href)))
+        for node in soup.select("meta[property], meta[name]"):
+            key = str(node.get("property") or node.get("name") or "").lower()
+            if key not in {"og:image", "twitter:image", "twitter:image:src"}:
+                continue
+            content = node.get("content")
+            if content:
+                candidates.append(urljoin(base_url, str(content)))
+        seen: set[str] = set()
+        output = []
+        for url in candidates:
+            if url and url not in seen:
+                seen.add(url)
+                output.append(url)
+        return output
+
+    def _first_reachable_icon(self, candidates: list[str], settings: dict[str, Any]) -> str | None:
+        session = requests.Session()
+        session.headers.update(browser_like_site_headers(str(settings.get("site_user_agent"))))
+        session.headers["Accept"] = "image/avif,image/webp,image/png,image/svg+xml,image/*,*/*;q=0.6"
+        proxies = self._site_proxies(settings)
+        if proxies:
+            session.proxies.update(proxies)
+        try:
+            for url in candidates:
+                parsed = urlparse(str(url))
+                if parsed.scheme == "file":
+                    if parsed.path and Path(parsed.path).exists():
+                        return str(url)
+                    continue
+                if parsed.scheme not in {"http", "https"}:
+                    continue
+                response = None
+                try:
+                    response = session.get(str(url), stream=True, timeout=(5, min(20, self._page_request_timeout(settings))))
+                    response.raise_for_status()
+                    content_type = response.headers.get("content-type", "").lower()
+                    if content_type.startswith("image/") or parsed.path.lower().endswith((".ico", ".png", ".jpg", ".jpeg", ".webp", ".svg")):
+                        return str(url)
+                except requests.RequestException:
+                    continue
+                finally:
+                    if response is not None:
+                        try:
+                            response.close()
+                        except Exception:
+                            pass
+        finally:
+            session.close()
+        return None
+
+    def _settings_for_source(self, settings: dict[str, Any], source: dict[str, Any] | None) -> dict[str, Any]:
+        use_proxy = True if source is None else bool(source.get("use_proxy", True))
+        return {**settings, "_site_proxy_allowed": use_proxy}
+
     def _site_proxies(self, settings: dict[str, Any]) -> dict[str, str] | None:
-        if not settings.get("site_proxy_enabled"):
+        if not settings.get("site_proxy_enabled") or not settings.get("_site_proxy_allowed", True):
             return None
         host = str(settings.get("site_proxy_host") or "127.0.0.1").strip() or "127.0.0.1"
         try:

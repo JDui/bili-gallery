@@ -11,6 +11,9 @@ function galleryApp() {
     sidebarCounts: {},
     sidebarCountUpdatedAt: {},
     subscriptions: [],
+    subscriptionPanel: ["up", "site"].includes(localStorage.getItem("subscription_panel"))
+      ? localStorage.getItem("subscription_panel")
+      : "up",
     selectedSubscriptionUids: [],
     sourceKind: ["all", "up", "site"].includes(localStorage.getItem("gallery_source_kind"))
       ? localStorage.getItem("gallery_source_kind")
@@ -65,6 +68,7 @@ function galleryApp() {
     taskRuns: [],
     queuedTasks: [],
     trashItems: [],
+    trashGroupExpanded: {},
     siteStats: {},
     siteStatus: {},
     siteSources: [],
@@ -90,9 +94,12 @@ function galleryApp() {
     siteTestLoadingById: {},
     siteSourceSaving: false,
     siteSourceSavingById: {},
+    siteIconRefreshingById: {},
     siteRulesExpanded: false,
     siteLogsExpanded: false,
     siteLogsClearConfirm: false,
+    siteValidateConfirmId: null,
+    siteValidateConfirmStep: 0,
     siteClearDeleteConfirmId: null,
     siteClearDeleteConfirmStep: 0,
     settings: {},
@@ -158,7 +165,9 @@ function galleryApp() {
     subscriptionReloadConfirmStep: 0,
     subscriptionDeleteConfirmUid: null,
     subscriptionDeleteConfirmStep: 0,
+    subscriptionIconRefreshingUid: null,
     subscriptionExpanded: {},
+    iconLoadFailures: {},
     queuedCancelConfirmId: null,
     deletePairConfirmKey: null,
     deletePairConfirmStep: 0,
@@ -187,7 +196,7 @@ function galleryApp() {
       this.updateViewportMode();
       this.resetSiteSourceForm();
       this.settings = { ...this.settings, auto_load_enabled: true };
-      await this.loadSidebarCounts();
+      this.loadSidebarCounts().catch(() => {});
       this.refreshSidebarCounts().catch(() => {});
       await Promise.all([this.refreshStatus(), this.refreshMeta(), this.loadSubscriptions(), this.refreshGallery(true)]);
       window.setInterval(() => this.refreshStatus(), 5000);
@@ -349,7 +358,6 @@ function galleryApp() {
       if (this.currentView === "trash") return "Trash";
       if (this.currentView === "settings") return "Settings";
       if (this.currentView === "subscriptions") return "Subscriptions";
-      if (this.currentView === "sites") return "Site Subscriptions";
       return "Library";
     },
 
@@ -360,7 +368,6 @@ function galleryApp() {
       if (this.currentView === "trash") return "内容垃圾桶";
       if (this.currentView === "settings") return "拉取与设置";
       if (this.currentView === "subscriptions") return "订阅管理";
-      if (this.currentView === "sites") return "站点订阅";
       return this.activeCategory().label;
     },
 
@@ -368,8 +375,7 @@ function galleryApp() {
       if (this.currentView === "review") return "把推广动态拦在相簿之前";
       if (this.currentView === "logs") return "知道每一条动态为什么被筛出去";
       if (this.currentView === "settings") return "同步、账号权限与过滤策略";
-      if (this.currentView === "subscriptions") return "统一管理多个 UP 主订阅与内容策略";
-      if (this.currentView === "sites") return "管理 RSS、Sitemap 和 HTML 来源";
+      if (this.currentView === "subscriptions") return "统一管理 UP 主与站点订阅";
       return `${this.activeCategory().label}，按更像系统相册的方式浏览`;
     },
 
@@ -537,6 +543,8 @@ function galleryApp() {
       this.subscriptions = (payload.items || []).map((item) => ({
         ...item,
         is_site: !!item.is_site || String(item.uid || "").startsWith("site:"),
+        avatar_url: item.avatar_url || "",
+        icon_url: item.icon_url || item.avatar_url || "",
         pull_images: !!item.pull_images,
         pull_livephoto: !!item.pull_livephoto,
         include_forwarded: !!item.include_forwarded,
@@ -545,6 +553,62 @@ function galleryApp() {
       this.subscriptionExpanded = Object.fromEntries(
         this.subscriptions.map((item) => [String(item.uid), !!previousExpanded[String(item.uid)]]),
       );
+    },
+
+    upSubscriptions() {
+      return (this.subscriptions || []).filter((item) => !item.is_site && !String(item.uid || "").startsWith("site:"));
+    },
+
+    siteSubscriptions() {
+      return (this.subscriptions || []).filter((item) => item.is_site || String(item.uid || "").startsWith("site:"));
+    },
+
+    setSubscriptionPanel(panel) {
+      if (!["up", "site"].includes(panel) || this.subscriptionPanel === panel) {
+        return;
+      }
+      this.subscriptionPanel = panel;
+      localStorage.setItem("subscription_panel", panel);
+      this.scrollViewTop();
+      if (panel === "site") {
+        this.refreshSites();
+        this.refreshSidebarCounts(["sites", "subscriptions"]).catch(() => {});
+      } else {
+        this.loadSubscriptions();
+        this.refreshSidebarCounts(["subscriptions"]).catch(() => {});
+      }
+    },
+
+    subscriptionPanelIndicatorStyle() {
+      return `transform: translateX(${this.subscriptionPanel === "site" ? "100%" : "0"});`;
+    },
+
+    isSitePanelActive() {
+      return this.currentView === "subscriptions" && this.subscriptionPanel === "site";
+    },
+
+    subscriptionIconUrl(item) {
+      const key = String(item?.uid || "");
+      if (!key || this.iconLoadFailures[key]) {
+        return "";
+      }
+      return item?.icon_url || item?.avatar_url || item?.site_icon_url || "";
+    },
+
+    handleSubscriptionIconError(item) {
+      const key = String(item?.uid || "");
+      if (!key) {
+        return;
+      }
+      this.iconLoadFailures = { ...this.iconLoadFailures, [key]: true };
+    },
+
+    siteSourceIconUrl(source) {
+      const key = `site:${source?.id || ""}`;
+      if (!source?.icon_url || this.iconLoadFailures[key]) {
+        return "";
+      }
+      return source.icon_url;
     },
 
     isSubscriptionExpanded(uid) {
@@ -680,20 +744,25 @@ function galleryApp() {
       this.refreshSidebarCounts([category]).catch(() => {});
     },
 
-    openSubscriptions() {
+    openSubscriptions(panel = null) {
       this.currentView = "subscriptions";
+      if (["up", "site"].includes(panel)) {
+        this.subscriptionPanel = panel;
+        localStorage.setItem("subscription_panel", panel);
+      }
       this.closeSidebarDrawer();
       this.scrollViewTop();
-      this.loadSubscriptions();
-      this.refreshSidebarCounts(["subscriptions"]).catch(() => {});
+      if (this.subscriptionPanel === "site") {
+        this.refreshSites();
+        this.refreshSidebarCounts(["subscriptions", "sites"]).catch(() => {});
+      } else {
+        this.loadSubscriptions();
+        this.refreshSidebarCounts(["subscriptions"]).catch(() => {});
+      }
     },
 
     openSites() {
-      this.currentView = "sites";
-      this.closeSidebarDrawer();
-      this.scrollViewTop();
-      this.refreshSites();
-      this.refreshSidebarCounts(["sites"]).catch(() => {});
+      this.openSubscriptions("site");
     },
 
     openSettings() {
@@ -2500,6 +2569,65 @@ function galleryApp() {
       this.trashItems = payload.items;
       this.lazyLoaded.trash = true;
       this.sidebarCounts = { ...this.sidebarCounts, trash: this.trashItems.length };
+      const previousExpanded = { ...(this.trashGroupExpanded || {}) };
+      this.trashGroupExpanded = Object.fromEntries(
+        this.trashGroups().map((group) => [group.key, previousExpanded[group.key] ?? true]),
+      );
+    },
+
+    trashGroupKey(item) {
+      const uid = String(item?.subscription_uid || "").trim();
+      if (uid) {
+        return uid;
+      }
+      const name = String(item?.subscription_name || "").trim();
+      return name ? `name:${name}` : "unknown";
+    },
+
+    trashGroups() {
+      const groups = new Map();
+      for (const item of this.trashItems || []) {
+        const key = this.trashGroupKey(item);
+        const uid = String(item?.subscription_uid || "").trim();
+        const name = String(item?.subscription_name || "").trim()
+          || (uid.startsWith("site:") ? "站点订阅" : uid ? `UID ${uid}` : "未归属内容");
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            uid,
+            name,
+            is_site: uid.startsWith("site:"),
+            latest_deleted_at: item.deleted_at || "",
+            items: [],
+          });
+        }
+        const group = groups.get(key);
+        group.items.push(item);
+        if (String(item.deleted_at || "") > String(group.latest_deleted_at || "")) {
+          group.latest_deleted_at = item.deleted_at || "";
+        }
+      }
+      return [...groups.values()].sort((left, right) => String(right.latest_deleted_at || "").localeCompare(String(left.latest_deleted_at || "")));
+    },
+
+    isTrashGroupExpanded(key) {
+      return this.trashGroupExpanded[String(key)] !== false;
+    },
+
+    toggleTrashGroup(key) {
+      const normalized = String(key);
+      this.trashGroupExpanded = {
+        ...this.trashGroupExpanded,
+        [normalized]: !this.isTrashGroupExpanded(normalized),
+      };
+    },
+
+    trashGroupIconUrl(group) {
+      if (!group?.uid) {
+        return "";
+      }
+      const item = (this.subscriptions || []).find((entry) => String(entry.uid) === String(group.uid));
+      return item ? this.subscriptionIconUrl(item) : "";
     },
 
     currentViewerDeleteKey() {
@@ -2764,6 +2892,8 @@ function galleryApp() {
             ? {
                 ...item,
                 ...refreshed,
+                icon_url: refreshed.icon_url || refreshed.avatar_url || item.icon_url || "",
+                avatar_url: refreshed.avatar_url || item.avatar_url || "",
                 pull_images: !!refreshed.pull_images,
                 image_min_count: Number.isFinite(Number(refreshed.image_min_count)) ? Number(refreshed.image_min_count) : 6,
                 pull_livephoto: !!refreshed.pull_livephoto,
@@ -2776,6 +2906,36 @@ function galleryApp() {
       } catch (error) {
         this.replaceSubscriptionLocally(uid, (item) => ({ ...item, uname: previousName || item.uname || item.uid }));
         this.notify("error", "刷新昵称失败", error.message || "订阅名称已恢复。");
+      }
+    },
+
+    async refreshSubscriptionIcon(uid) {
+      const normalized = String(uid);
+      if (!normalized || this.subscriptionIconRefreshingUid === normalized) {
+        return;
+      }
+      this.subscriptionIconRefreshingUid = normalized;
+      this.iconLoadFailures = { ...this.iconLoadFailures, [normalized]: false };
+      try {
+        const result = await this.api(`/api/subscriptions/${encodeURIComponent(normalized)}/refresh-icon`, { method: "POST" });
+        const refreshed = result.item || {};
+        this.subscriptions = (this.subscriptions || []).map((item) =>
+          String(item.uid) === normalized
+            ? {
+                ...item,
+                ...refreshed,
+                icon_url: refreshed.icon_url || refreshed.avatar_url || item.icon_url || "",
+                avatar_url: refreshed.avatar_url || item.avatar_url || "",
+                pull_images: !!refreshed.pull_images,
+                image_min_count: Number.isFinite(Number(refreshed.image_min_count)) ? Number(refreshed.image_min_count) : 6,
+                pull_livephoto: !!refreshed.pull_livephoto,
+                include_forwarded: !!refreshed.include_forwarded,
+              }
+            : item,
+        );
+        this.notify("success", "图标已刷新", result.message || "已更新订阅图标。");
+      } finally {
+        this.subscriptionIconRefreshingUid = null;
       }
     },
 
@@ -3266,7 +3426,7 @@ function galleryApp() {
           this.lazyLoaded.logs || this.currentView === "logs" ? this.refreshLogs() : Promise.resolve(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
           this.lazyLoaded.trash || this.currentView === "trash" ? this.refreshTrash() : Promise.resolve(),
-          this.lazyLoaded.sites || this.currentView === "sites" ? this.refreshSites() : Promise.resolve(),
+          this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
           this.currentView === "settings" ? this.loadSettings() : Promise.resolve(),
         ]);
@@ -3275,7 +3435,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
-          this.lazyLoaded.sites || this.currentView === "sites" ? this.refreshSites() : Promise.resolve(),
+          this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
           this.currentView === "settings" ? this.loadSettings() : Promise.resolve(),
         ]);
@@ -3285,7 +3445,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
-          this.lazyLoaded.sites || this.currentView === "sites" ? this.refreshSites() : Promise.resolve(),
+          this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
         ]);
       }
@@ -3585,8 +3745,10 @@ function galleryApp() {
         media_selector: "article img, article video, article source, .content img, .content video, .content source",
         skip_head_images: 0,
         skip_tail_images: 0,
+        use_proxy: true,
         enabled: true,
         start_date: "",
+        icon_url: "",
       };
       this.sitePreviewItems = [];
       this.siteSuggestion = null;
@@ -3610,8 +3772,10 @@ function galleryApp() {
         media_selector: source.media_selector || "article img, article video, article source, .content img, .content video, .content source",
         skip_head_images: Number(source.skip_head_images || 0),
         skip_tail_images: Number(source.skip_tail_images || 0),
+        use_proxy: source.use_proxy !== false && Number(source.use_proxy ?? 1) !== 0,
         enabled: Boolean(source.enabled),
         start_date: source.start_date || "",
+        icon_url: source.icon_url || "",
       };
     },
 
@@ -3652,8 +3816,8 @@ function galleryApp() {
 
     siteSourceDraftValue(sourceId, field) {
       const draft = this.siteSourceDraft(sourceId);
-      if (field === "enabled") {
-        return !!draft.enabled;
+      if (field === "enabled" || field === "use_proxy") {
+        return field === "enabled" ? !!draft.enabled : draft.use_proxy !== false;
       }
       return draft[field] ?? "";
     },
@@ -3667,7 +3831,7 @@ function galleryApp() {
         const fallback = field === "max_pages" ? 1 : 0;
         nextValue = Math.max(fallback, Number(value) || fallback);
       }
-      if (field === "enabled") {
+      if (field === "enabled" || field === "use_proxy") {
         nextValue = !!value;
       }
       this.siteSourceDrafts = {
@@ -3685,6 +3849,10 @@ function galleryApp() {
 
     siteSourceCountText(source) {
       return `贴文 ${source.post_count || 0} · 媒体 ${source.asset_count || 0}`;
+    },
+
+    siteSourceProxyText(source) {
+      return source.use_proxy === false || Number(source.use_proxy ?? 1) === 0 ? "不使用站点代理" : "应用站点代理";
     },
 
     siteSourceSavingLabel(sourceId) {
@@ -3744,6 +3912,56 @@ function galleryApp() {
       const result = await this.api(`/api/site-sources/${encodeURIComponent(source.id)}`, { method: "DELETE" });
       this.notify("success", "站点来源已删除", result.message || "来源已删除。");
       await Promise.all([this.loadSiteSources(), this.refreshStatus()]);
+    },
+
+    async refreshSiteSourceIcon(source) {
+      const sourceId = Number(source?.id);
+      if (!sourceId || this.siteIconRefreshingById[String(sourceId)]) {
+        return;
+      }
+      const key = String(sourceId);
+      this.siteIconRefreshingById = { ...this.siteIconRefreshingById, [key]: true };
+      this.iconLoadFailures = { ...this.iconLoadFailures, [`site:${sourceId}`]: false };
+      try {
+        const result = await this.api(`/api/site-sources/${encodeURIComponent(sourceId)}/refresh-icon`, { method: "POST" });
+        if (result.item) {
+          this.siteSources = (this.siteSources || []).map((item) =>
+            Number(item.id) === sourceId ? { ...item, ...result.item } : item,
+          );
+          this.siteSourceDrafts = {
+            ...this.siteSourceDrafts,
+            [key]: this.siteSourceDraftFromSource(result.item),
+          };
+          this.subscriptions = (this.subscriptions || []).map((item) =>
+            String(item.uid) === `site:${sourceId}` ? { ...item, icon_url: result.item.icon_url || "" } : item,
+          );
+        }
+        this.notify("success", "站点图标已刷新", result.message || "已更新站点图标。");
+      } finally {
+        this.siteIconRefreshingById = { ...this.siteIconRefreshingById, [key]: false };
+      }
+    },
+
+    askSiteValidate(sourceId) {
+      const normalized = Number(sourceId);
+      if (this.siteValidateConfirmId !== normalized) {
+        this.siteValidateConfirmId = normalized;
+        this.siteValidateConfirmStep = 1;
+        return;
+      }
+      this.siteValidateConfirmStep = 2;
+    },
+
+    cancelSiteValidate() {
+      this.siteValidateConfirmId = null;
+      this.siteValidateConfirmStep = 0;
+    },
+
+    siteValidateLabel(sourceId) {
+      if (this.siteValidateConfirmId !== Number(sourceId)) {
+        return "全量校验";
+      }
+      return "再次确认校验";
     },
 
     askSiteClearDelete(sourceId) {
@@ -3859,6 +4077,8 @@ function galleryApp() {
         "media_selector",
         "skip_head_images",
         "skip_tail_images",
+        "use_proxy",
+        "icon_url",
         "enabled",
         "start_date",
       ];
@@ -3883,6 +4103,10 @@ function galleryApp() {
     },
 
     async validateSiteSource(source) {
+      if (this.siteValidateConfirmId !== Number(source.id) || this.siteValidateConfirmStep < 2) {
+        return;
+      }
+      this.cancelSiteValidate();
       this.setImmediateSiteTaskFeedback(`正在提交 ${source.name || "站点"} 全量校验任务...`, { running: true });
       const result = await this.api(`/api/site-sources/${encodeURIComponent(source.id)}/validate`, { method: "POST" });
       this.notify("info", "站点全量校验已提交", result.message || "已开始全量校验。");

@@ -49,7 +49,14 @@
                 <div class="section-label" x-show="!sidebarCollapsed">订阅</div>
                 <template x-for="item in subscriptions" :key="item.uid">
                     <button class="sidebar-link" :class="{ active: currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid }" :title="item.uname || item.uid" @click="selectSubscription(item.uid)">
-                        <span class="link-badge" x-text="subscriptionBadgeText(item)"></span>
+                        <span class="link-badge subscription-link-badge" :class="{ image: subscriptionIconUrl(item) }">
+                            <template x-if="subscriptionIconUrl(item)">
+                                <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
+                            </template>
+                            <template x-if="!subscriptionIconUrl(item)">
+                                <span x-text="subscriptionBadgeText(item)"></span>
+                            </template>
+                        </span>
                         <span class="link-text" x-show="!sidebarCollapsed" x-text="item.uname || item.uid"></span>
                         <span class="link-count" x-show="!sidebarCollapsed" x-text="item.folder_count || 0"></span>
                     </button>
@@ -87,11 +94,6 @@
                     <span class="link-badge">订</span>
                     <span class="link-text" x-show="!sidebarCollapsed">订阅管理</span>
                     <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('subscriptions')"></span>
-                </button>
-                <button class="sidebar-link" data-testid="nav-sites" :class="{ active: currentView === 'sites' }" title="站点订阅" @click="openSites()">
-                    <span class="link-badge">站</span>
-                    <span class="link-text" x-show="!sidebarCollapsed">站点订阅</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('sites') || siteStats.source_count || 0"></span>
                 </button>
             </section>
             </div>
@@ -141,7 +143,7 @@
                 </div>
             </header>
 
-            <section class="gallery-stage" data-testid="section-gallery" x-show="currentView === 'gallery'" x-transition.opacity.duration.180ms x-ref="galleryStage">
+            <section class="gallery-stage" data-testid="section-gallery" x-show="currentView === 'gallery'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-ref="galleryStage">
                 <div class="section-heading gallery-heading">
                     <div class="section-heading-spacer"></div>
                     <div class="button-row gallery-toolbar">
@@ -355,7 +357,7 @@
                     </div>
             </section>
 
-            <section class="panel-view" data-testid="section-review" x-show="currentView === 'review'" x-transition.opacity.duration.180ms x-cloak>
+            <section class="panel-view" data-testid="section-review" x-show="currentView === 'review'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>审核中心</p>
@@ -387,7 +389,7 @@
                 </div>
             </section>
 
-            <section class="panel-view" data-testid="section-logs" x-show="currentView === 'logs'" x-transition.opacity.duration.160ms x-cloak>
+            <section class="panel-view" data-testid="section-logs" x-show="currentView === 'logs'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>过滤记录</p>
@@ -424,7 +426,7 @@
                 </div>
             </section>
 
-            <section class="panel-view" data-testid="section-tasks" x-show="currentView === 'tasks'" x-transition.opacity.duration.160ms x-cloak>
+            <section class="panel-view" data-testid="section-tasks" x-show="currentView === 'tasks'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>任务中心</p>
@@ -518,7 +520,7 @@
                 </template>
             </section>
 
-            <section class="panel-view" data-testid="section-trash" x-show="currentView === 'trash'" x-transition.opacity.duration.160ms x-cloak>
+            <section class="panel-view" data-testid="section-trash" x-show="currentView === 'trash'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>内容回收站</p>
@@ -526,25 +528,51 @@
                     </div>
                     <button class="secondary-button" @click="refreshTrash()">刷新</button>
                 </div>
-                <template x-for="item in trashItems" :key="item.id">
-                    <article class="panel-card">
-                        <div class="panel-card-main">
-                            <h4 x-text="item.folder?.title || item.folder_name"></h4>
-                            <p x-text="`已删除于 ${item.deleted_at}`"></p>
-                            <div class="inline-tags">
-                                <span class="inline-tag" x-text="item.folder?.folder_name || item.folder_name"></span>
-                                <span class="inline-tag" x-show="item.subscription_name" x-text="item.subscription_name"></span>
-                                <span class="inline-tag" x-text="item.folder?.text_prefix || '已加入黑名单'"></span>
+                <template x-for="group in trashGroups()" :key="group.key">
+                    <article class="panel-card subscription-card trash-group-card" :class="{ expanded: isTrashGroupExpanded(group.key) }">
+                        <button class="subscription-card-head" @click="toggleTrashGroup(group.key)" :aria-expanded="isTrashGroupExpanded(group.key)">
+                            <div class="panel-card-main subscription-card-main">
+                                <span class="link-badge subscription-link-badge trash-group-icon" :class="{ image: trashGroupIconUrl(group) }">
+                                    <template x-if="trashGroupIconUrl(group)">
+                                        <img :src="trashGroupIconUrl(group)" :alt="group.name" loading="lazy" decoding="async">
+                                    </template>
+                                    <template x-if="!trashGroupIconUrl(group)">
+                                        <span x-text="group.is_site ? '站' : 'UP'"></span>
+                                    </template>
+                                </span>
+                                <div class="subscription-card-title">
+                                    <h4 x-text="group.name"></h4>
+                                    <p x-text="`${group.items.length} 条已删除内容 · 最近 ${group.latest_deleted_at || '-'}`"></p>
+                                </div>
+                                <div class="inline-tags subscription-summary-tags">
+                                    <span class="inline-tag" x-text="group.is_site ? '站点' : 'UP 主'"></span>
+                                    <span class="inline-tag" x-text="group.uid || '未归属'"></span>
+                                </div>
                             </div>
-                        </div>
-                        <div class="panel-card-actions" x-show="pendingRestoreTrashId !== item.id">
-                            <button class="secondary-button" @click="openTrashSource(item)">查看原始动态</button>
-                            <button class="secondary-button" @click="askRestoreTrash(item.id)">恢复</button>
-                        </div>
-                        <div class="panel-card-actions" x-show="pendingRestoreTrashId === item.id" x-cloak>
-                            <button class="secondary-button" @click="restoreTrash(item.id, false)">仅恢复</button>
-                            <button class="primary-button" @click="restoreTrash(item.id, true)">恢复并立即拉取</button>
-                            <button class="secondary-button" @click="cancelRestoreTrash()">取消</button>
+                            <span class="subscription-expand-indicator" :class="{ open: isTrashGroupExpanded(group.key) }">展开</span>
+                        </button>
+                        <div class="subscription-card-body trash-group-body" x-show="isTrashGroupExpanded(group.key)" x-transition.opacity.duration.180ms x-cloak>
+                            <template x-for="item in group.items" :key="item.id">
+                                <div class="trash-item-row">
+                                    <div class="panel-card-main">
+                                        <h4 x-text="item.folder?.title || item.folder_name"></h4>
+                                        <p x-text="`已删除于 ${item.deleted_at}`"></p>
+                                        <div class="inline-tags">
+                                            <span class="inline-tag" x-text="item.folder?.folder_name || item.folder_name"></span>
+                                            <span class="inline-tag" x-text="item.folder?.text_prefix || '已加入黑名单'"></span>
+                                        </div>
+                                    </div>
+                                    <div class="panel-card-actions" x-show="pendingRestoreTrashId !== item.id">
+                                        <button class="secondary-button" @click="openTrashSource(item)">查看原始动态</button>
+                                        <button class="secondary-button" @click="askRestoreTrash(item.id)">恢复</button>
+                                    </div>
+                                    <div class="panel-card-actions" x-show="pendingRestoreTrashId === item.id" x-cloak>
+                                        <button class="secondary-button" @click="restoreTrash(item.id, false)">仅恢复</button>
+                                        <button class="primary-button" @click="restoreTrash(item.id, true)">恢复并立即拉取</button>
+                                        <button class="secondary-button" @click="cancelRestoreTrash()">取消</button>
+                                    </div>
+                                </div>
+                            </template>
                         </div>
                     </article>
                 </template>
@@ -554,7 +582,7 @@
                 </div>
             </section>
 
-            <section class="panel-view settings-pane" data-testid="section-settings" x-show="currentView === 'settings'" x-transition.opacity.duration.160ms x-cloak>
+            <section class="panel-view settings-pane" data-testid="section-settings" x-show="currentView === 'settings'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>同步与账号</p>
@@ -678,37 +706,49 @@
                 </div>
             </section>
 
-            <section class="panel-view" data-testid="section-subscriptions" x-show="currentView === 'subscriptions'" x-transition.opacity.duration.160ms x-cloak>
+            <section class="panel-view" data-testid="section-subscriptions" x-show="currentView === 'subscriptions' && subscriptionPanel === 'up'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>订阅中心</p>
-                        <h3>UP 主订阅管理</h3>
+                        <h3>订阅管理</h3>
                     </div>
                     <div class="button-row">
+                        <div class="segmented-pill" role="tablist" aria-label="订阅页面切换">
+                            <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
+                            <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
+                        </div>
                         <input class="subscription-input" type="number" placeholder="输入 UID" x-model="newSubscriptionUid">
                         <button class="primary-button" @click="createSubscription()">添加订阅</button>
                     </div>
                 </div>
-                <template x-for="item in subscriptions" :key="item.uid">
+                <template x-for="item in upSubscriptions()" :key="item.uid">
                     <article class="panel-card subscription-card" :class="{ expanded: isSubscriptionExpanded(item.uid) }">
                         <button class="subscription-card-head" @click="toggleSubscriptionExpanded(item.uid)" :aria-expanded="isSubscriptionExpanded(item.uid)">
                             <div class="panel-card-main subscription-card-main">
+                                <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: subscriptionIconUrl(item) }">
+                                    <template x-if="subscriptionIconUrl(item)">
+                                        <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
+                                    </template>
+                                    <template x-if="!subscriptionIconUrl(item)">
+                                        <span x-text="subscriptionBadgeText(item)"></span>
+                                    </template>
+                                </span>
                                 <div class="subscription-card-title">
                                     <h4 x-text="item.uname || item.uid"></h4>
-                                    <p x-text="item.is_site ? '站点标签' : `UID ${item.uid}`"></p>
+                                    <p x-text="`UID ${item.uid}`"></p>
                                 </div>
                                 <div class="inline-tags subscription-summary-tags">
-                                    <span class="inline-tag" x-text="item.is_site ? '站点' : (item.status === 'paused' ? '已暂停' : '订阅中')"></span>
+                                    <span class="inline-tag" x-text="item.status === 'paused' ? '已暂停' : '订阅中'"></span>
                                     <span class="inline-tag" x-text="`动态 ${item.folder_count || 0}`"></span>
-                                    <span class="inline-tag" x-show="!item.is_site" x-text="subscriptionThresholdSummary(item)"></span>
-                                    <span class="inline-tag" x-show="!item.is_site" x-text="subscriptionLivePhotoSummary(item)"></span>
+                                    <span class="inline-tag" x-text="subscriptionThresholdSummary(item)"></span>
+                                    <span class="inline-tag" x-text="subscriptionLivePhotoSummary(item)"></span>
                                 </div>
                             </div>
                             <span class="subscription-expand-indicator" :class="{ open: isSubscriptionExpanded(item.uid) }">展开</span>
                         </button>
                         <div class="subscription-card-body" x-show="isSubscriptionExpanded(item.uid)" x-transition.opacity.duration.180ms x-cloak>
-                            <p class="field-copy" x-show="item.is_site">这是站点标签入口，站点配置与清空删除请到站点订阅页面管理。</p>
-                            <div class="subscription-policy-grid" x-show="!item.is_site">
+                            <div class="subscription-policy-grid">
                                 <label>
                                     <span>图片阈值</span>
                                     <input class="threshold-input" type="number" min="-1" max="12" :value="item.image_min_count ?? 6" @change="updateSubscriptionSetting(item, 'image_min_count', $event.target.value)">
@@ -722,8 +762,9 @@
                                     <span>包含转发动态</span>
                                 </label>
                             </div>
-                            <div class="panel-card-actions subscription-card-actions" x-show="!item.is_site">
+                            <div class="panel-card-actions subscription-card-actions">
                                 <button class="secondary-button" @click="refreshSubscriptionProfile(item.uid)">刷新昵称</button>
+                                <button class="secondary-button" @click="refreshSubscriptionIcon(item.uid)" :disabled="subscriptionIconRefreshingUid === String(item.uid)" x-text="subscriptionIconRefreshingUid === String(item.uid) ? '刷新中' : '刷新图标'"></button>
                                 <button class="secondary-button" @click="jumpToSubscriptionSpace(item.uid)">传送</button>
                                 <button class="secondary-button" @click="toggleSubscriptionStatus(item.uid)" x-text="item.status === 'paused' ? '继续订阅' : '暂停订阅'"></button>
                                 <template x-if="subscriptionReloadConfirmUid !== item.uid || subscriptionReloadConfirmStep < 2">
@@ -751,22 +792,27 @@
                                     </div>
                                 </template>
                             </div>
-                            <div class="panel-card-actions subscription-card-actions" x-show="item.is_site">
-                                <button class="primary-button" @click="pullSiteSubscription(item)">拉取当前订阅</button>
-                                <button class="secondary-button" @click="selectSubscription(item.uid)">查看内容</button>
-                            </div>
                         </div>
                     </article>
                 </template>
+                <div class="empty-state" x-show="upSubscriptions().length === 0" x-cloak>
+                    <strong>暂无 UP 主订阅</strong>
+                    <p>输入 UID 后即可添加 UP 主动态订阅。</p>
+                </div>
             </section>
 
-            <section class="panel-view site-pane" data-testid="section-sites" x-show="currentView === 'sites'" x-transition.opacity.duration.160ms x-cloak>
+            <section class="panel-view site-pane" data-testid="section-sites" x-show="currentView === 'subscriptions' && subscriptionPanel === 'site'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
                 <div class="section-heading">
                     <div>
-                        <p>站点订阅</p>
-                        <h3>来源与规则管理</h3>
+                        <p>订阅中心</p>
+                        <h3>订阅管理</h3>
                     </div>
                     <div class="button-row">
+                        <div class="segmented-pill" role="tablist" aria-label="订阅页面切换">
+                            <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
+                            <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
+                        </div>
                         <span class="status-pill" :class="{ running: siteStatus.running }" x-text="siteStatus.message || '空闲'"></span>
                         <button class="secondary-button" @click="refreshSites()">刷新</button>
                         <button class="primary-button" @click="syncAllSites()">同步站点</button>
@@ -821,6 +867,7 @@
                                 <label>跳过尾部图片数<input type="number" min="0" x-model.number="siteSourceForm.skip_tail_images"></label>
                                 <label>起始日期<input type="date" x-model="siteSourceForm.start_date"></label>
                                 <label class="toggle-row switch-row"><input type="checkbox" x-model="siteSourceForm.enabled"><span>启用来源</span></label>
+                                <label class="toggle-row switch-row"><input type="checkbox" x-model="siteSourceForm.use_proxy"><span>应用站点网络代理</span></label>
                             </div>
                             <div class="panel-card-actions subscription-card-actions">
                                 <button class="primary-button" @click="saveSiteSource()" :disabled="siteSourceSaving" x-text="siteSourceSaving ? '保存中' : '保存来源'"></button>
@@ -849,6 +896,14 @@
                         <article class="panel-card subscription-card" :class="{ expanded: isSiteSourceExpanded(source.id) }">
                             <button class="subscription-card-head" @click="toggleSiteSourceExpanded(source.id)" :aria-expanded="isSiteSourceExpanded(source.id)">
                                 <div class="panel-card-main subscription-card-main">
+                                    <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: siteSourceIconUrl(source) }">
+                                        <template x-if="siteSourceIconUrl(source)">
+                                            <img :src="siteSourceIconUrl(source)" :alt="source.name" loading="lazy" decoding="async" @error="iconLoadFailures = { ...iconLoadFailures, [`site:${source.id}`]: true }">
+                                        </template>
+                                        <template x-if="!siteSourceIconUrl(source)">
+                                            <span>站</span>
+                                        </template>
+                                    </span>
                                     <div class="subscription-card-title">
                                         <h4 x-text="source.name"></h4>
                                         <p x-text="source.entry_url"></p>
@@ -857,6 +912,7 @@
                                         <span class="inline-tag" x-text="source.source_type"></span>
                                         <span class="inline-tag" x-text="siteSourceStatusText(source)"></span>
                                         <span class="inline-tag" x-text="siteSourceCountText(source)"></span>
+                                        <span class="inline-tag" x-text="siteSourceProxyText(source)"></span>
                                         <span class="inline-tag" x-text="source.start_date || '默认起始日期'"></span>
                                     </div>
                                 </div>
@@ -887,12 +943,25 @@
                                     <label>跳过尾部图片数<input type="number" min="0" :value="siteSourceDraftValue(source.id, 'skip_tail_images')" @input="updateSiteSourceDraft(source.id, 'skip_tail_images', $event.target.value)"></label>
                                     <label>起始日期<input type="date" :value="siteSourceDraftValue(source.id, 'start_date')" @input="updateSiteSourceDraft(source.id, 'start_date', $event.target.value)"></label>
                                     <label class="toggle-row switch-row"><input type="checkbox" :checked="!!siteSourceDraftValue(source.id, 'enabled')" @change="updateSiteSourceDraft(source.id, 'enabled', $event.target.checked)"><span>启用来源</span></label>
+                                    <label class="toggle-row switch-row"><input type="checkbox" :checked="!!siteSourceDraftValue(source.id, 'use_proxy')" @change="updateSiteSourceDraft(source.id, 'use_proxy', $event.target.checked)"><span>应用站点网络代理</span></label>
                                 </div>
                                 <div class="panel-card-actions subscription-card-actions">
                                     <button class="primary-button" @click="saveSiteSource(source.id)" x-text="siteSourceSavingLabel(source.id)"></button>
                                     <button class="secondary-button" @click="testSiteSource(source.id)" x-text="siteSourceTestingLabel(source.id)"></button>
+                                    <button class="secondary-button" @click="refreshSiteSourceIcon(source)" :disabled="siteIconRefreshingById[String(source.id)]" x-text="siteIconRefreshingById[String(source.id)] ? '刷新中' : '刷新图标'"></button>
                                     <button class="secondary-button" @click="syncSiteSource(source)">同步</button>
-                                    <button class="secondary-button" @click="validateSiteSource(source)">全量校验</button>
+                                    <template x-if="siteValidateConfirmId !== source.id || siteValidateConfirmStep < 2">
+                                        <div class="button-row confirm-row">
+                                            <button class="secondary-button confirm-anchor" @click="askSiteValidate(source.id)" x-text="siteValidateLabel(source.id)"></button>
+                                            <button class="secondary-button" x-show="siteValidateConfirmId === source.id" @click="cancelSiteValidate()">取消</button>
+                                        </div>
+                                    </template>
+                                    <template x-if="siteValidateConfirmId === source.id && siteValidateConfirmStep >= 2">
+                                        <div class="button-row confirm-row">
+                                            <button class="primary-button danger-confirm confirm-anchor" @click="validateSiteSource(source)">确认全量校验</button>
+                                            <button class="secondary-button" @click="cancelSiteValidate()">取消</button>
+                                        </div>
+                                    </template>
                                     <button class="secondary-button" @click="resetSiteSourceDraft(source)">还原</button>
                                     <button class="secondary-button danger-button" @click="deleteSiteSource(source)">删除</button>
                                     <template x-if="siteClearDeleteConfirmId !== source.id || siteClearDeleteConfirmStep < 3">

@@ -974,6 +974,43 @@ def test_site_favorite_block_and_source_import_export(tmp_path: Path) -> None:
     assert db.get_site_source(source["id"])["name"] == "Updated Fixture"
 
 
+def test_site_sources_sort_by_created_time_and_keep_proxy_setting(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    older = create_fixture_source(db)
+    newer = db.create_site_source(
+        {
+            "name": "Newer Fixture",
+            "slug": "newer-fixture",
+            **html_source(),
+            "entry_url": fixture_url("skip_index.html"),
+            "enabled": True,
+        }
+    )
+
+    assert [item["id"] for item in db.list_site_sources()[:2]] == [newer["id"], older["id"]]
+    assert bool(older["use_proxy"]) is True
+
+    updated = db.update_site_source(older["id"], {"name": "Older Updated", "use_proxy": False})
+
+    assert updated and bool(updated["use_proxy"]) is False
+    assert [item["id"] for item in db.list_site_sources()[:2]] == [newer["id"], older["id"]]
+
+
+def test_site_proxy_can_be_disabled_per_source(tmp_path: Path) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    db.save_settings({"site_proxy_enabled": True, "site_proxy_host": "127.0.0.1", "site_proxy_port": 7890})
+    source = create_fixture_source(db)
+
+    enabled_settings = syncer._settings_for_source(db.get_settings(), source)
+    disabled_settings = syncer._settings_for_source(db.get_settings(), {**source, "use_proxy": 0})
+
+    assert syncer._site_proxies(enabled_settings) == {
+        "http": "http://127.0.0.1:7890",
+        "https": "http://127.0.0.1:7890",
+    }
+    assert syncer._site_proxies(disabled_settings) is None
+
+
 def test_site_sync_skips_head_and_tail_images_but_keeps_video(tmp_path: Path) -> None:
     db, _storage, syncer = make_app(tmp_path)
     source = create_skip_source(db, 1, 2)

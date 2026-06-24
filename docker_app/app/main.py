@@ -260,6 +260,15 @@ async def validate_site_source(source_id: int) -> dict[str, Any]:
     return site_syncer.start_full_validation(source_id)
 
 
+@app.post("/api/site-sources/{source_id}/refresh-icon")
+async def refresh_site_source_icon(source_id: int) -> dict[str, Any]:
+    try:
+        item = site_syncer.refresh_site_icon(source_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"ok": True, "message": "站点图标已刷新", "item": item}
+
+
 @app.post("/api/site-sources/test")
 async def test_site_source(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     try:
@@ -371,12 +380,41 @@ def _subscription_stats() -> list[dict[str, Any]]:
             {
                 **item,
                 "uname": item.get("uname") or stat.get("uname") or f"UID {item['uid']}",
+                "icon_url": item.get("avatar_url"),
                 "folder_count": stat.get("folder_count", 0),
                 "image_count": stat.get("image_count", 0),
                 "livephoto_count": stat.get("livephoto_count", 0),
+                "is_site": str(item["uid"]).startswith("site:"),
             }
         )
     existing_uids = {str(item["uid"]) for item in output}
+    for source in db.list_site_sources():
+        uid = db.site_subscription_uid(source["id"])
+        if uid in existing_uids:
+            continue
+        stat = stats_by_uid.get(uid, {})
+        output.append(
+            {
+                "uid": uid,
+                "uname": source.get("name") or stat.get("uname") or stat.get("name") or uid,
+                "status": "active",
+                "pull_images": 1,
+                "image_min_count": 1,
+                "pull_livephoto": 0,
+                "include_forwarded": 0,
+                "created_at": source.get("created_at"),
+                "updated_at": source.get("updated_at"),
+                "icon_url": source.get("icon_url"),
+                "source_id": source.get("id"),
+                "source_type": source.get("source_type"),
+                "entry_url": source.get("entry_url"),
+                "folder_count": stat.get("folder_count", 0),
+                "image_count": stat.get("image_count", 0),
+                "livephoto_count": stat.get("livephoto_count", 0),
+                "is_site": True,
+            }
+        )
+        existing_uids.add(uid)
     for uid, stat in sorted(stats_by_uid.items(), key=lambda item: str(item[1].get("uname") or item[0]).lower()):
         if not uid.startswith("site:") or uid in existing_uids:
             continue
@@ -389,10 +427,11 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "image_min_count": 1,
                 "pull_livephoto": 0,
                 "include_forwarded": 0,
+                "icon_url": None,
                 "folder_count": stat.get("folder_count", 0),
                 "image_count": stat.get("image_count", 0),
                 "livephoto_count": stat.get("livephoto_count", 0),
-                "is_site": uid.startswith("site:"),
+                "is_site": True,
             }
         )
     return output
@@ -417,6 +456,7 @@ async def add_subscription(payload: dict[str, Any] = Body(...)) -> dict[str, Any
     db.upsert_subscription(
         uid,
         profile.get("uname"),
+        avatar_url=profile.get("face"),
         status="active",
         pull_images=bool(current.get("pull_images", True)),
         image_min_count=int(current.get("image_min_count", 1) or 1),
@@ -457,6 +497,7 @@ async def refresh_subscription_profile(uid: str) -> dict[str, Any]:
     item = db.upsert_subscription(
         uid=uid,
         uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
+        avatar_url=profile.get("face") or current.get("avatar_url"),
         status=current.get("status", "active"),
         pull_images=bool(current.get("pull_images")),
         image_min_count=int(current.get("image_min_count", 1) or 1),
@@ -464,6 +505,32 @@ async def refresh_subscription_profile(uid: str) -> dict[str, Any]:
         include_forwarded=bool(current.get("include_forwarded")),
     )
     return {"ok": True, "message": "昵称已刷新", "item": item}
+
+
+@app.post("/api/subscriptions/{uid}/refresh-icon")
+async def refresh_subscription_icon(uid: str) -> dict[str, Any]:
+    current = db.get_subscription(uid)
+    if not current:
+        raise HTTPException(status_code=404, detail="订阅不存在")
+    cookie = auth.get_cookie_state().cookie
+    try:
+        profile = auth.fetch_up_profile(uid, cookie)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    avatar_url = profile.get("face")
+    if not avatar_url:
+        raise HTTPException(status_code=502, detail="未能获取 UP 主头像")
+    item = db.upsert_subscription(
+        uid=uid,
+        uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
+        avatar_url=avatar_url,
+        status=current.get("status", "active"),
+        pull_images=bool(current.get("pull_images")),
+        image_min_count=int(current.get("image_min_count", 1) or 1),
+        pull_livephoto=bool(current.get("pull_livephoto")),
+        include_forwarded=bool(current.get("include_forwarded")),
+    )
+    return {"ok": True, "message": "图标已刷新", "item": item}
 
 
 @app.post("/api/subscriptions/{uid}/toggle")
