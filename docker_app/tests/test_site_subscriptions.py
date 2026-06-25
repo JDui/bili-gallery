@@ -1099,6 +1099,156 @@ def test_bilibili_space_page_fallback_extracts_dynamic_avatar(tmp_path: Path) ->
     assert service._extract_space_face(text) == "https://i0.hdslb.com/bfs/garb/item/dynamic-avatar.webp"
 
 
+def test_bilibili_space_page_fallback_extracts_baselabs_avatar(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    service = BilibiliAuthService(db)
+    text = r"""
+    <!doctype html>
+    <html>
+      <head>
+        <link rel="preload" as="image" href="//i1.hdslb.com/bfs/baselabs/static-avatar.png">
+      </head>
+    </html>
+    """
+
+    assert service._extract_space_face(text) == "https://i1.hdslb.com/bfs/baselabs/static-avatar.png"
+
+
+def test_bilibili_dynamic_feed_extracts_animated_avatar(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    service = BilibiliAuthService(db)
+    profile = service._extract_dynamic_feed_profile(
+        {
+            "items": [
+                {
+                    "modules": {
+                        "module_author": {
+                            "mid": 848008,
+                            "name": "-MyMy麦麦-",
+                            "face": "https://i1.hdslb.com/bfs/baselabs/static-avatar.png",
+                            "avatar": {
+                                "layers": [
+                                    {
+                                        "layers": [
+                                            {
+                                                "resource": {
+                                                    "res_animation": {
+                                                        "webp_src": {
+                                                            "remote": {
+                                                                "url": "https://i0.hdslb.com/bfs/baselabs/animated-avatar.webp",
+                                                                "bfs_style": "widget-layer-avatar",
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ],
+                                "fallback_layers": {
+                                    "layers": [
+                                        {
+                                            "resource": {
+                                                "res_image": {
+                                                    "image_src": {
+                                                        "remote": {
+                                                            "url": "https://i1.hdslb.com/bfs/baselabs/static-avatar.png",
+                                                            "bfs_style": "widget-layer-avatar",
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    ]
+                                },
+                            },
+                        }
+                    }
+                }
+            ]
+        },
+        "848008",
+    )
+
+    assert profile == {
+        "uid": "848008",
+        "uname": "-MyMy麦麦-",
+        "face": "https://i0.hdslb.com/bfs/baselabs/animated-avatar.webp",
+    }
+
+
+def test_bilibili_dynamic_feed_retries_with_light_headers(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    service = BilibiliAuthService(db)
+    service._sleep_jitter = lambda *_args: None
+
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.payload
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.headers = {"Cookie": "SESSDATA=test", "Sec-CH-UA": '"Chromium"'}
+            self.calls: list[dict[str, str]] = []
+
+        def get(self, *_args, **_kwargs):
+            self.calls.append(dict(self.headers))
+            if len(self.calls) == 1:
+                return FakeResponse({"code": -352, "message": "-352"})
+            return FakeResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "items": [
+                            {
+                                "modules": {
+                                    "module_author": {
+                                        "mid": 848008,
+                                        "name": "-MyMy麦麦-",
+                                        "avatar": {
+                                            "fallback_layers": {
+                                                "layers": [
+                                                    {
+                                                        "resource": {
+                                                            "res_image": {
+                                                                "image_src": {
+                                                                    "remote": {
+                                                                        "url": "https://i1.hdslb.com/bfs/baselabs/static-avatar.png"
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                }
+            )
+
+    session = FakeSession()
+    profile = service._fetch_up_profile_from_dynamic_feed("848008", session)
+
+    assert profile == {
+        "uid": "848008",
+        "uname": "-MyMy麦麦-",
+        "face": "https://i1.hdslb.com/bfs/baselabs/static-avatar.png",
+    }
+    assert len(session.calls) == 2
+    assert "Sec-CH-UA" not in session.calls[1]
+    assert session.headers == {"Cookie": "SESSDATA=test", "Sec-CH-UA": '"Chromium"'}
+
+
 def test_site_icon_refresh_discovers_html_link_icon(tmp_path: Path) -> None:
     db, _storage, syncer = make_app(tmp_path)
     site_dir = tmp_path / "icon-site"
@@ -1306,6 +1456,35 @@ def test_subscription_avatar_cache_accepts_dynamic_avatar(tmp_path: Path, monkey
 
     assert cached_url == "/storage/data/avatars/up/123.webp"
     assert (storage.config.data_dir / "avatars" / "up" / "123.webp").read_bytes() == b"dynamic-avatar-bytes"
+
+
+def test_subscription_avatar_cache_accepts_activity_dynamic_avatar(tmp_path: Path, monkeypatch) -> None:
+    from app import main as app_main
+
+    _db, storage, _syncer = make_app(tmp_path)
+
+    class FakeResponse:
+        headers = {"content-type": "image/gif"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 65536):
+            yield b"activity-avatar-bytes"
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(app_main, "storage", storage)
+    monkeypatch.setattr(app_main.requests, "get", lambda *_args, **_kwargs: FakeResponse())
+
+    cached_url = app_main._cache_subscription_avatar(
+        "123",
+        "https://i0.hdslb.com/bfs/activity-plat/static/20220506/example/activity-avatar.gif",
+    )
+
+    assert cached_url == "/storage/data/avatars/up/123.gif"
+    assert (storage.config.data_dir / "avatars" / "up" / "123.gif").read_bytes() == b"activity-avatar-bytes"
 
 
 def test_subscription_avatar_cache_rejects_site_icon(tmp_path: Path, monkeypatch) -> None:

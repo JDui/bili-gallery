@@ -15,7 +15,7 @@ import qrcode
 import requests
 
 from app.db import Database
-from app.services.legacy_bridge import API_DETAIL, build_headers, detail_params
+from app.services.legacy_bridge import API_DETAIL, API_FEED, build_headers, detail_params, feed_params
 from app.services.utils import dumps_json, loads_json, now_iso
 
 API_QR_GENERATE = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
@@ -23,6 +23,10 @@ API_QR_POLL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
 API_NAV = "https://api.bilibili.com/x/web-interface/nav"
 API_SPACE_INFO = "https://api.bilibili.com/x/space/acc/info"
 SPACE_HOME = "https://space.bilibili.com/{uid}"
+AVATAR_FEED_FEATURES = (
+    "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,"
+    "decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard"
+)
 USER_AGENTS = [
     (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -234,14 +238,20 @@ class BilibiliAuthService:
                     if code == 0:
                         data = payload.get("data") or {}
                         self._maybe_refresh_cookie_state(cookie_value, session.cookies)
+                        face = data.get("face")
+                        if self._should_lookup_dynamic_avatar(data):
+                            dynamic_profile = self._fetch_up_profile_from_dynamic_feed(uid, session)
+                            face = dynamic_profile.get("face") if dynamic_profile and dynamic_profile.get("face") else face
                         profile = {
                             "uid": str(uid),
                             "uname": data.get("name") or f"UID {uid}",
-                            "face": data.get("face"),
+                            "face": face,
                         }
                         if profile["face"]:
                             return profile
-                        fallback = self._fetch_up_profile_from_space_page(uid, session)
+                        fallback = self._fetch_up_profile_from_dynamic_feed(uid, session)
+                        if not fallback or not fallback.get("face"):
+                            fallback = self._fetch_up_profile_from_space_page(uid, session) or fallback
                         if fallback:
                             return {
                                 "uid": str(uid),
@@ -265,7 +275,9 @@ class BilibiliAuthService:
                         continue
                     break
 
-            fallback = self._fetch_up_profile_from_space_page(uid, session)
+            fallback = self._fetch_up_profile_from_dynamic_feed(uid, session)
+            if not fallback or not fallback.get("face"):
+                fallback = self._fetch_up_profile_from_space_page(uid, session) or fallback
             if fallback:
                 return fallback
         finally:
@@ -399,6 +411,117 @@ class BilibiliAuthService:
             "face": face,
         }
 
+    def _fetch_up_profile_from_dynamic_feed(
+        self,
+        uid: str,
+        session: requests.Session,
+    ) -> dict[str, Any] | None:
+        original_headers = dict(session.headers)
+        header_variants = [original_headers, self._dynamic_feed_headers(uid, original_headers.get("Cookie"))]
+        try:
+            for index, headers in enumerate(header_variants):
+                try:
+                    session.headers.clear()
+                    session.headers.update(headers)
+                    if index:
+                        self._sleep_jitter(0.45, 0.85)
+                    else:
+                        self._sleep_jitter(0.35, 0.75)
+                    response = session.get(API_FEED, params=self._avatar_feed_params(uid), timeout=20)
+                    response.raise_for_status()
+                    payload = response.json()
+                except (ValueError, requests.RequestException):
+                    continue
+                if int(payload.get("code", 0)) != 0:
+                    continue
+                profile = self._extract_dynamic_feed_profile(payload.get("data") or {}, uid)
+                if profile:
+                    return profile
+        finally:
+            session.headers.clear()
+            session.headers.update(original_headers)
+        return None
+
+    def _dynamic_feed_headers(self, uid: str, cookie: str | None = None) -> dict[str, str]:
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": random.choice(ACCEPT_LANGUAGES),
+            "Referer": f"https://space.bilibili.com/{uid}/dynamic",
+            "Connection": "close",
+        }
+        if cookie:
+            headers["Cookie"] = cookie
+        return headers
+
+    def _avatar_feed_params(self, uid: str) -> dict[str, str]:
+        params = feed_params(int(uid), "")
+        params["features"] = AVATAR_FEED_FEATURES
+        return params
+
+    def _extract_dynamic_feed_profile(self, data: dict[str, Any], uid: str) -> dict[str, Any] | None:
+        uid_text = str(uid)
+        authors: list[dict[str, Any]] = []
+        for item in data.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            author = ((item.get("modules") or {}).get("module_author") or {})
+            if isinstance(author, dict):
+                authors.append(author)
+        authors.sort(key=lambda author: 0 if str(author.get("mid") or "") == uid_text else 1)
+        for author in authors:
+            face = self._extract_author_avatar_url(author)
+            uname = str(author.get("name") or "").strip()
+            if face or uname:
+                return {
+                    "uid": uid_text,
+                    "uname": uname or f"UID {uid}",
+                    "face": face,
+                }
+        return None
+
+    def _extract_author_avatar_url(self, author: dict[str, Any]) -> str | None:
+        avatar = author.get("avatar")
+        if isinstance(avatar, dict):
+            if url := self._extract_avatar_layers_url(avatar.get("layers"), prefer_animation=True):
+                return url
+            if url := self._extract_avatar_layers_url(avatar.get("fallback_layers"), prefer_animation=False):
+                return url
+        return self._clean_profile_image_url(author.get("face"), allow_dynamic=True)
+
+    def _extract_avatar_layers_url(self, value: Any, prefer_animation: bool) -> str | None:
+        groups = value if isinstance(value, list) else [value]
+        resource_order = ("res_animation", "res_image") if prefer_animation else ("res_image", "res_animation")
+        for group in groups:
+            layers = group.get("layers") if isinstance(group, dict) else None
+            for layer in (layers if isinstance(layers, list) else []):
+                if not isinstance(layer, dict):
+                    continue
+                for resource_key in resource_order:
+                    resource = (layer.get("resource") or {}).get(resource_key)
+                    if url := self._find_avatar_resource_url(resource):
+                        return url
+        return None
+
+    def _find_avatar_resource_url(self, value: Any) -> str | None:
+        if isinstance(value, dict):
+            if url := self._clean_profile_image_url(value.get("url"), allow_dynamic=True):
+                return url
+            for child in value.values():
+                if url := self._find_avatar_resource_url(child):
+                    return url
+        if isinstance(value, list):
+            for item in value:
+                if url := self._find_avatar_resource_url(item):
+                    return url
+        return None
+
+    def _should_lookup_dynamic_avatar(self, data: dict[str, Any]) -> bool:
+        face = self._clean_profile_image_url(data.get("face"), allow_dynamic=True) or str(data.get("face") or "")
+        parsed = urlparse(face)
+        path = parsed.path.lower()
+        return bool(data.get("face_nft") or data.get("face_nft_type") or "/bfs/baselabs/" in path)
+
     def _extract_space_uname(self, text: str) -> str | None:
         title_match = re.search(r"<title>(.*?)</title>", text, re.S | re.I)
         if not title_match:
@@ -420,8 +543,8 @@ class BilibiliAuthService:
             return url
         patterns = [
             r'"(?:face|avatar|avatar_url)"\s*:\s*"([^"]+)"',
-            r"https?:\\?/\\?/[^\"'<>\s]+/bfs/face/[^\"'<>\s]+",
-            r"//[^\"'<>\s]+/bfs/face/[^\"'<>\s]+",
+            r"https?:\\?/\\?/[^\"'<>\s]+/bfs/(?:face|baselabs)/[^\"'<>\s]+",
+            r"//[^\"'<>\s]+/bfs/(?:face|baselabs)/[^\"'<>\s]+",
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, text, flags=re.I):
@@ -486,7 +609,11 @@ class BilibiliAuthService:
             return False
         if "/bfs/face/" in path or "/images/member/noface" in path:
             return True
-        return allow_dynamic and ("/bfs/garb/item/" in path or "/bfs/baselabs/" in path)
+        return allow_dynamic and (
+            "/bfs/garb/item/" in path
+            or "/bfs/baselabs/" in path
+            or "/bfs/activity-plat/static/" in path
+        )
 
     def _html_attrs(self, tag: str) -> dict[str, str]:
         attrs: dict[str, str] = {}

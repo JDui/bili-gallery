@@ -559,6 +559,7 @@ def _looks_like_bilibili_avatar_url(url: str) -> bool:
             "/images/member/noface",
             "/bfs/garb/item/",
             "/bfs/baselabs/",
+            "/bfs/activity-plat/static/",
         )
     )
 
