@@ -483,11 +483,14 @@ class BilibiliAuthService:
     def _extract_author_avatar_url(self, author: dict[str, Any]) -> str | None:
         avatar = author.get("avatar")
         if isinstance(avatar, dict):
-            if url := self._extract_avatar_layers_url(avatar.get("layers"), prefer_animation=True):
-                return url
             if url := self._extract_avatar_layers_url(avatar.get("fallback_layers"), prefer_animation=False):
                 return url
-        return self._clean_profile_image_url(author.get("face"), allow_dynamic=True)
+        if url := self._clean_profile_image_url(author.get("face"), allow_dynamic=True):
+            return url
+        if isinstance(avatar, dict):
+            if url := self._extract_avatar_layers_url(avatar.get("layers"), prefer_animation=True):
+                return url
+        return None
 
     def _extract_avatar_layers_url(self, value: Any, prefer_animation: bool) -> str | None:
         groups = value if isinstance(value, list) else [value]
@@ -539,8 +542,6 @@ class BilibiliAuthService:
         return uname or None
 
     def _extract_space_face(self, text: str) -> str | None:
-        if url := self._extract_layered_avatar_url(text):
-            return url
         patterns = [
             r'"(?:face|avatar|avatar_url)"\s*:\s*"([^"]+)"',
             r"https?:\\?/\\?/[^\"'<>\s]+/bfs/(?:face|baselabs)/[^\"'<>\s]+",
@@ -563,6 +564,8 @@ class BilibiliAuthService:
             if key in {"og:image", "twitter:image", "twitter:image:src", "image"}:
                 if url := self._clean_profile_image_url(attrs.get("content"), allow_dynamic=True):
                     return url
+        if url := self._extract_layered_avatar_url(text):
+            return url
         return None
 
     def _extract_layered_avatar_url(self, text: str) -> str | None:

@@ -1114,7 +1114,7 @@ def test_bilibili_space_page_fallback_extracts_baselabs_avatar(tmp_path: Path) -
     assert service._extract_space_face(text) == "https://i1.hdslb.com/bfs/baselabs/static-avatar.png"
 
 
-def test_bilibili_dynamic_feed_extracts_animated_avatar(tmp_path: Path) -> None:
+def test_bilibili_dynamic_feed_prefers_complete_static_avatar(tmp_path: Path) -> None:
     db, _storage, _syncer = make_app(tmp_path)
     service = BilibiliAuthService(db)
     profile = service._extract_dynamic_feed_profile(
@@ -1173,7 +1173,7 @@ def test_bilibili_dynamic_feed_extracts_animated_avatar(tmp_path: Path) -> None:
     assert profile == {
         "uid": "848008",
         "uname": "-MyMy麦麦-",
-        "face": "https://i0.hdslb.com/bfs/baselabs/animated-avatar.webp",
+        "face": "https://i1.hdslb.com/bfs/baselabs/static-avatar.png",
     }
 
 
