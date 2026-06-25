@@ -2577,7 +2577,7 @@ function galleryApp() {
       this.sidebarCounts = { ...this.sidebarCounts, trash: this.trashItems.length };
       const previousExpanded = { ...(this.trashGroupExpanded || {}) };
       this.trashGroupExpanded = Object.fromEntries(
-        this.trashGroups().map((group) => [group.key, previousExpanded[group.key] ?? true]),
+        this.trashGroups().map((group) => [group.key, previousExpanded[group.key] ?? false]),
       );
     },
 
@@ -2617,7 +2617,7 @@ function galleryApp() {
     },
 
     isTrashGroupExpanded(key) {
-      return this.trashGroupExpanded[String(key)] !== false;
+      return this.trashGroupExpanded[String(key)] === true;
     },
 
     toggleTrashGroup(key) {
@@ -2927,19 +2927,20 @@ function galleryApp() {
         const refreshed = result.item || {};
         this.subscriptions = (this.subscriptions || []).map((item) =>
           String(item.uid) === normalized
-            ? {
+            ? this.normalizeSubscriptionItem({
                 ...item,
                 ...refreshed,
-                icon_url: refreshed.icon_url || refreshed.avatar_url || item.icon_url || "",
-                avatar_url: refreshed.avatar_url || item.avatar_url || "",
-                pull_images: !!refreshed.pull_images,
-                image_min_count: Number.isFinite(Number(refreshed.image_min_count)) ? Number(refreshed.image_min_count) : 6,
-                pull_livephoto: !!refreshed.pull_livephoto,
-                include_forwarded: !!refreshed.include_forwarded,
-              }
+                icon_url: Object.prototype.hasOwnProperty.call(refreshed, "avatar_url")
+                  ? (refreshed.icon_url || refreshed.avatar_url || "")
+                  : (refreshed.icon_url || item.icon_url || ""),
+                avatar_url: Object.prototype.hasOwnProperty.call(refreshed, "avatar_url")
+                  ? (refreshed.avatar_url || "")
+                  : (item.avatar_url || ""),
+                image_min_count: Number.isFinite(Number(refreshed.image_min_count)) ? Number(refreshed.image_min_count) : item.image_min_count,
+              })
             : item,
         );
-        this.notify("success", "图标已刷新", result.message || "已更新订阅图标。");
+        this.notify("success", "头像已刷新", result.message || "已更新订阅头像。");
       } finally {
         this.subscriptionIconRefreshingUid = null;
       }

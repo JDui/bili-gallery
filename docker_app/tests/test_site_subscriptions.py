@@ -1044,6 +1044,61 @@ def test_bilibili_space_page_fallback_extracts_avatar(tmp_path: Path, monkeypatc
     }
 
 
+def test_bilibili_space_page_fallback_ignores_site_icon(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    service = BilibiliAuthService(db)
+    text = """
+    <!doctype html>
+    <html>
+      <head>
+        <meta itemprop="image" content="https://www.bilibili.com/favicon.ico">
+        <meta property="og:image" content="//static.hdslb.com/images/base/logo.png">
+      </head>
+    </html>
+    """
+
+    assert service._extract_space_face(text) is None
+
+
+def test_bilibili_space_page_fallback_prefers_real_avatar_over_site_icon(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    service = BilibiliAuthService(db)
+    text = r"""
+    <!doctype html>
+    <html>
+      <head><meta itemprop="image" content="https://www.bilibili.com/favicon.ico"></head>
+      <body>
+        <script>
+          window.__INITIAL_STATE__ = {"face":"//i1.hdslb.com/bfs/face/real-avatar.jpg"};
+        </script>
+      </body>
+    </html>
+    """
+
+    assert service._extract_space_face(text) == "https://i1.hdslb.com/bfs/face/real-avatar.jpg"
+
+
+def test_bilibili_space_page_fallback_extracts_dynamic_avatar(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    service = BilibiliAuthService(db)
+    text = r"""
+    <!doctype html>
+    <html>
+      <body>
+        <script>
+          window.__INITIAL_STATE__ = {
+            "layers":[
+              {"bfs_style":"widget-layer-avatar","url":"//i0.hdslb.com/bfs/garb/item/dynamic-avatar.webp"}
+            ]
+          };
+        </script>
+      </body>
+    </html>
+    """
+
+    assert service._extract_space_face(text) == "https://i0.hdslb.com/bfs/garb/item/dynamic-avatar.webp"
+
+
 def test_site_icon_refresh_discovers_html_link_icon(tmp_path: Path) -> None:
     db, _storage, syncer = make_app(tmp_path)
     site_dir = tmp_path / "icon-site"
@@ -1144,6 +1199,7 @@ def test_reset_all_icons_refreshes_up_and_site_icons(tmp_path: Path, monkeypatch
     monkeypatch.setattr(app_main, "db", db)
     monkeypatch.setattr(app_main, "site_syncer", syncer)
     monkeypatch.setattr(app_main, "auth", FakeAuth())
+    monkeypatch.setattr(app_main, "_sleep_before_avatar_refresh", lambda _index, _previous_error=None: 0)
     client = TestClient(app_main.app)
 
     result = client.post("/api/settings/reset-icons").json()
@@ -1185,6 +1241,7 @@ def test_reset_all_icons_clears_stale_icons_when_missing(tmp_path: Path, monkeyp
     monkeypatch.setattr(app_main, "db", db)
     monkeypatch.setattr(app_main, "site_syncer", syncer)
     monkeypatch.setattr(app_main, "auth", FakeAuth())
+    monkeypatch.setattr(app_main, "_sleep_before_avatar_refresh", lambda _index, _previous_error=None: 0)
     client = TestClient(app_main.app)
 
     result = client.post("/api/settings/reset-icons").json()
@@ -1194,6 +1251,125 @@ def test_reset_all_icons_clears_stale_icons_when_missing(tmp_path: Path, monkeyp
     assert result["result"]["sites"]["fallback"] == 1
     assert db.get_subscription("123")["avatar_url"] is None
     assert db.get_site_source(source["id"])["icon_url"] is None
+
+
+def test_subscription_avatar_cache_uses_local_storage(tmp_path: Path, monkeypatch) -> None:
+    from app import main as app_main
+
+    _db, storage, _syncer = make_app(tmp_path)
+
+    class FakeResponse:
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 65536):
+            yield b"avatar-bytes"
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(app_main, "storage", storage)
+    monkeypatch.setattr(app_main.requests, "get", lambda *_args, **_kwargs: FakeResponse())
+
+    cached_url = app_main._cache_subscription_avatar("123", "https://i0.hdslb.com/bfs/face/avatar-test.jpg")
+
+    assert cached_url == "/storage/data/avatars/up/123.jpg"
+    assert (storage.config.data_dir / "avatars" / "up" / "123.jpg").read_bytes() == b"avatar-bytes"
+
+
+def test_subscription_avatar_cache_accepts_dynamic_avatar(tmp_path: Path, monkeypatch) -> None:
+    from app import main as app_main
+
+    _db, storage, _syncer = make_app(tmp_path)
+
+    class FakeResponse:
+        headers = {"content-type": "image/webp"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 65536):
+            yield b"dynamic-avatar-bytes"
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(app_main, "storage", storage)
+    monkeypatch.setattr(app_main.requests, "get", lambda *_args, **_kwargs: FakeResponse())
+
+    cached_url = app_main._cache_subscription_avatar(
+        "123",
+        "https://i0.hdslb.com/bfs/garb/item/dynamic-avatar.webp",
+    )
+
+    assert cached_url == "/storage/data/avatars/up/123.webp"
+    assert (storage.config.data_dir / "avatars" / "up" / "123.webp").read_bytes() == b"dynamic-avatar-bytes"
+
+
+def test_subscription_avatar_cache_rejects_site_icon(tmp_path: Path, monkeypatch) -> None:
+    from app import main as app_main
+
+    _db, storage, _syncer = make_app(tmp_path)
+    called = False
+
+    def fake_get(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("site icons should not be downloaded as avatars")
+
+    monkeypatch.setattr(app_main, "storage", storage)
+    monkeypatch.setattr(app_main.requests, "get", fake_get)
+
+    url = app_main._cache_subscription_avatar("123", "https://www.bilibili.com/favicon.ico")
+
+    assert url == "https://www.bilibili.com/favicon.ico"
+    assert called is False
+
+
+def test_reset_all_icons_throttles_subscription_avatar_refresh(tmp_path: Path, monkeypatch) -> None:
+    from app import main as app_main
+
+    db, _storage, syncer = make_app(tmp_path)
+    db.upsert_subscription("123", "First")
+    db.upsert_subscription("456", "Second")
+    sleep_calls = []
+
+    class FakeAuth:
+        def get_cookie_state(self):
+            return SimpleNamespace(cookie=None)
+
+        def fetch_up_profile(self, uid: str, _cookie: str | None = None) -> dict:
+            if uid == "123":
+                raise RuntimeError("验证码校验")
+            return {"uid": uid, "uname": f"UID {uid}", "face": f"https://i0.hdslb.com/bfs/face/{uid}.jpg"}
+
+    def fake_sleep(index: int, previous_error: str | None = None) -> float:
+        sleep_calls.append((index, previous_error))
+        return 1.25
+
+    monkeypatch.setattr(app_main, "db", db)
+    monkeypatch.setattr(app_main, "site_syncer", syncer)
+    monkeypatch.setattr(app_main, "auth", FakeAuth())
+    monkeypatch.setattr(app_main, "_sleep_before_avatar_refresh", fake_sleep)
+    client = TestClient(app_main.app)
+
+    result = client.post("/api/settings/reset-icons").json()
+
+    assert result["ok"] is True
+    assert len(sleep_calls) == len(db.list_subscriptions(include_paused=True))
+    assert sleep_calls[0] == (0, None)
+    assert any(error == "验证码校验" for _index, error in sleep_calls[1:])
+    assert result["result"]["subscriptions"]["wait_seconds"] == 1.25 * len(sleep_calls)
+
+
+def test_avatar_refresh_risk_detection() -> None:
+    from app import main as app_main
+
+    assert app_main._looks_like_avatar_refresh_risk("验证码校验") is True
+    assert app_main._looks_like_avatar_refresh_risk("HTTP 412") is True
+    assert app_main._looks_like_avatar_refresh_risk("普通网络错误") is False
 
 
 def test_site_sync_skips_head_and_tail_images_but_keeps_video(tmp_path: Path) -> None:

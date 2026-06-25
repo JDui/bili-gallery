@@ -226,7 +226,7 @@ class BilibiliAuthService:
                 try:
                     if attempt:
                         self._refresh_profile_session(session, uid, cookie_value)
-                    self._sleep_jitter(0.06 + attempt * 0.04, 0.14 + attempt * 0.05)
+                    self._sleep_jitter(0.35 + attempt * 0.25, 0.75 + attempt * 0.35)
                     response = session.get(API_SPACE_INFO, params={"mid": str(uid)}, timeout=20)
                     response.raise_for_status()
                     payload = response.json()
@@ -364,7 +364,7 @@ class BilibiliAuthService:
         for url in urls:
             try:
                 session.get(url, timeout=15)
-                self._sleep_jitter(0.05, 0.1)
+                self._sleep_jitter(0.25, 0.55)
             except requests.RequestException:
                 continue
 
@@ -384,7 +384,7 @@ class BilibiliAuthService:
         session: requests.Session,
     ) -> dict[str, Any] | None:
         try:
-            self._sleep_jitter(0.08, 0.18)
+            self._sleep_jitter(0.7, 1.2)
             response = session.get(SPACE_HOME.format(uid=uid), timeout=20)
             response.raise_for_status()
         except requests.RequestException:
@@ -416,31 +416,44 @@ class BilibiliAuthService:
         return uname or None
 
     def _extract_space_face(self, text: str) -> str | None:
-        for tag in re.findall(r"<meta\b[^>]*>", text, flags=re.I):
-            attrs = self._html_attrs(tag)
-            key = str(attrs.get("property") or attrs.get("name") or attrs.get("itemprop") or "").lower()
-            if key in {"og:image", "twitter:image", "twitter:image:src", "image"}:
-                if url := self._clean_profile_image_url(attrs.get("content")):
-                    return url
+        if url := self._extract_layered_avatar_url(text):
+            return url
         patterns = [
-            r'"(?:face|avatar|pendantImage|avatar_url)"\s*:\s*"([^"]+)"',
+            r'"(?:face|avatar|avatar_url)"\s*:\s*"([^"]+)"',
             r"https?:\\?/\\?/[^\"'<>\s]+/bfs/face/[^\"'<>\s]+",
             r"//[^\"'<>\s]+/bfs/face/[^\"'<>\s]+",
         ]
         for pattern in patterns:
             for match in re.finditer(pattern, text, flags=re.I):
                 raw_url = match.group(1) if match.groups() else match.group(0)
-                if url := self._clean_profile_image_url(raw_url):
+                if url := self._clean_profile_image_url(raw_url, allow_dynamic=True):
                     return url
         for tag in re.findall(r"<img\b[^>]*>", text, flags=re.I):
             attrs = self._html_attrs(tag)
             marker = " ".join(str(attrs.get(key) or "") for key in ("class", "id", "alt")).lower()
             if any(keyword in marker for keyword in ("avatar", "face", "头像")):
-                if url := self._clean_profile_image_url(attrs.get("src") or attrs.get("data-src")):
+                if url := self._clean_profile_image_url(attrs.get("src") or attrs.get("data-src"), allow_dynamic=True):
+                    return url
+        for tag in re.findall(r"<meta\b[^>]*>", text, flags=re.I):
+            attrs = self._html_attrs(tag)
+            key = str(attrs.get("property") or attrs.get("name") or attrs.get("itemprop") or "").lower()
+            if key in {"og:image", "twitter:image", "twitter:image:src", "image"}:
+                if url := self._clean_profile_image_url(attrs.get("content"), allow_dynamic=True):
                     return url
         return None
 
-    def _clean_profile_image_url(self, value: Any) -> str | None:
+    def _extract_layered_avatar_url(self, text: str) -> str | None:
+        patterns = [
+            r'"bfs_style"\s*:\s*"widget-layer-avatar".{0,700}?"url"\s*:\s*"([^"]+)"',
+            r'"url"\s*:\s*"([^"]+)".{0,700}?"bfs_style"\s*:\s*"widget-layer-avatar"',
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.I | re.S):
+                if url := self._clean_profile_image_url(match.group(1), allow_dynamic=True):
+                    return url
+        return None
+
+    def _clean_profile_image_url(self, value: Any, allow_dynamic: bool = False) -> str | None:
         raw = html.unescape(str(value or "")).strip()
         if not raw:
             return None
@@ -457,7 +470,23 @@ class BilibiliAuthService:
             raw = f"https://{raw[7:]}"
         if not re.match(r"^https://", raw, flags=re.I):
             return None
+        if not self._looks_like_profile_image_url(raw, allow_dynamic=allow_dynamic):
+            return None
         return raw
+
+    def _looks_like_profile_image_url(self, url: str, allow_dynamic: bool = False) -> bool:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
+        if not host.endswith(("hdslb.com", "bilivideo.com", "bilibili.com")):
+            return False
+        if path.endswith((".ico", ".svg")):
+            return False
+        if any(marker in path for marker in ("favicon", "logo", "webicon", "apple-touch-icon")):
+            return False
+        if "/bfs/face/" in path or "/images/member/noface" in path:
+            return True
+        return allow_dynamic and ("/bfs/garb/item/" in path or "/bfs/baselabs/" in path)
 
     def _html_attrs(self, tag: str) -> dict[str, str]:
         attrs: dict[str, str] = {}

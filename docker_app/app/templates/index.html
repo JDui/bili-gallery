@@ -776,7 +776,7 @@
                             </div>
                             <div class="panel-card-actions subscription-card-actions">
                                 <button class="secondary-button" @click="refreshSubscriptionProfile(item.uid)">刷新昵称</button>
-                                <button class="secondary-button" @click="refreshSubscriptionIcon(item.uid)" :disabled="subscriptionIconRefreshingUid === String(item.uid)" x-text="subscriptionIconRefreshingUid === String(item.uid) ? '刷新中' : '刷新图标'"></button>
+                                <button class="secondary-button" @click="refreshSubscriptionIcon(item.uid)" :disabled="subscriptionIconRefreshingUid === String(item.uid)" x-text="subscriptionIconRefreshingUid === String(item.uid) ? '刷新中' : '刷新头像'"></button>
                                 <button class="secondary-button" @click="jumpToSubscriptionSpace(item.uid)">传送</button>
                                 <button class="secondary-button" @click="toggleSubscriptionStatus(item.uid)" x-text="item.status === 'paused' ? '继续订阅' : '暂停订阅'"></button>
                                 <template x-if="subscriptionReloadConfirmUid !== item.uid || subscriptionReloadConfirmStep < 2">

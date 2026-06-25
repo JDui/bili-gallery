@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import random
+import re
+import time
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import requests
 
 from app.config import load_config
 from app.db import Database
@@ -38,6 +43,13 @@ pull_manager.attach_site_syncer(site_syncer)
 site_syncer.bind_task_queue(pull_manager)
 scheduler = SchedulerService(db, pull_manager, site_syncer)
 templates = Jinja2Templates(directory=str(config.app_root / "templates"))
+AVATAR_REFRESH_INITIAL_DELAY_RANGE = (2.0, 5.0)
+AVATAR_REFRESH_BETWEEN_DELAY_RANGE = (6.0, 14.0)
+AVATAR_REFRESH_LONG_PAUSE_EVERY = 8
+AVATAR_REFRESH_LONG_PAUSE_RANGE = (35.0, 75.0)
+AVATAR_REFRESH_RISK_BACKOFF_RANGE = (90.0, 180.0)
+AVATAR_REFRESH_RISK_KEYWORDS = ("验证码", "风控", "安全", "captcha", "-352", "412")
+AVATAR_CACHE_MAX_BYTES = 5 * 1024 * 1024
 
 
 @asynccontextmanager
@@ -448,6 +460,7 @@ def _refresh_subscription_icon_item(current: dict[str, Any], cookie: str | None)
 
     avatar_url = profile.get("face") or None
     if avatar_url:
+        avatar_url = _cache_subscription_avatar(uid, avatar_url, cookie) or avatar_url
         item = db.upsert_subscription(
             uid=uid,
             uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
@@ -475,6 +488,106 @@ def _refresh_subscription_icon_item(current: dict[str, Any], cookie: str | None)
     return item, False, "未能获取 UP 主头像"
 
 
+def _cache_subscription_avatar(uid: str, avatar_url: str | None, cookie: str | None = None) -> str | None:
+    if not avatar_url or not _looks_like_bilibili_avatar_url(avatar_url):
+        return avatar_url
+    parsed = urlparse(avatar_url)
+    extension = _avatar_extension(parsed.path)
+    target_dir = storage.config.data_dir / "avatars" / "up"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{uid}{extension}"
+    tmp_target = target.with_suffix(f"{target.suffix}.tmp")
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/136.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": f"https://space.bilibili.com/{uid}/",
+        "Connection": "close",
+    }
+    if cookie:
+        headers["Cookie"] = cookie
+    response = None
+    try:
+        response = requests.get(avatar_url, headers=headers, timeout=(8, 30), stream=True)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type and not content_type.startswith("image/"):
+            return avatar_url
+        total = 0
+        with tmp_target.open("wb") as file:
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > AVATAR_CACHE_MAX_BYTES:
+                    tmp_target.unlink(missing_ok=True)
+                    return avatar_url
+                file.write(chunk)
+        if total <= 0:
+            tmp_target.unlink(missing_ok=True)
+            return avatar_url
+        tmp_target.replace(target)
+        return storage.storage_url(storage.relative_to_storage(target))
+    except Exception:
+        tmp_target.unlink(missing_ok=True)
+        return avatar_url
+    finally:
+        if response is not None:
+            response.close()
+
+
+def _looks_like_bilibili_avatar_url(url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    if not parsed.scheme.startswith("http"):
+        return str(url).startswith("/storage/")
+    if not host.endswith(("hdslb.com", "bilivideo.com", "bilibili.com")):
+        return False
+    if path.endswith((".ico", ".svg")):
+        return False
+    if any(marker in path for marker in ("favicon", "logo", "webicon", "apple-touch-icon")):
+        return False
+    return any(
+        marker in path
+        for marker in (
+            "/bfs/face/",
+            "/images/member/noface",
+            "/bfs/garb/item/",
+            "/bfs/baselabs/",
+        )
+    )
+
+
+def _avatar_extension(path: str) -> str:
+    clean_path = str(path or "").split("@", 1)[0].lower()
+    match = re.search(r"\.(jpg|jpeg|png|webp|gif|avif)$", clean_path)
+    if not match:
+        return ".jpg"
+    ext = match.group(1)
+    return ".jpg" if ext == "jpeg" else f".{ext}"
+
+
+def _sleep_before_avatar_refresh(index: int, previous_error: str | None = None) -> float:
+    delay_range = AVATAR_REFRESH_INITIAL_DELAY_RANGE if index <= 0 else AVATAR_REFRESH_BETWEEN_DELAY_RANGE
+    delay = random.uniform(*delay_range)
+    if index > 0 and index % AVATAR_REFRESH_LONG_PAUSE_EVERY == 0:
+        delay += random.uniform(*AVATAR_REFRESH_LONG_PAUSE_RANGE)
+    if previous_error and _looks_like_avatar_refresh_risk(previous_error):
+        delay += random.uniform(*AVATAR_REFRESH_RISK_BACKOFF_RANGE)
+    time.sleep(delay)
+    return delay
+
+
+def _looks_like_avatar_refresh_risk(message: str | None) -> bool:
+    text = str(message or "").lower()
+    return any(keyword.lower() in text for keyword in AVATAR_REFRESH_RISK_KEYWORDS)
+
+
 @app.get("/api/subscriptions")
 async def get_subscriptions() -> dict[str, Any]:
     return {"items": _subscription_stats()}
@@ -494,7 +607,7 @@ async def add_subscription(payload: dict[str, Any] = Body(...)) -> dict[str, Any
     db.upsert_subscription(
         uid,
         profile.get("uname"),
-        avatar_url=profile.get("face"),
+        avatar_url=_cache_subscription_avatar(uid, profile.get("face"), cookie),
         status="active",
         pull_images=bool(current.get("pull_images", True)),
         image_min_count=int(current.get("image_min_count", 1) or 1),
@@ -535,7 +648,7 @@ async def refresh_subscription_profile(uid: str) -> dict[str, Any]:
     item = db.upsert_subscription(
         uid=uid,
         uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
-        avatar_url=profile.get("face") or current.get("avatar_url"),
+        avatar_url=_cache_subscription_avatar(uid, profile.get("face"), cookie) or current.get("avatar_url"),
         status=current.get("status", "active"),
         pull_images=bool(current.get("pull_images")),
         image_min_count=int(current.get("image_min_count", 1) or 1),
@@ -552,7 +665,7 @@ async def refresh_subscription_icon(uid: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="订阅不存在")
     cookie = auth.get_cookie_state().cookie
     item, found, _error = _refresh_subscription_icon_item(current, cookie)
-    message = "图标已刷新" if found else "未能获取 UP 主头像，已回退默认样式"
+    message = "头像已刷新" if found else "未能获取 UP 主头像，已回退默认样式"
     return {"ok": True, "message": message, "item": item}
 
 
@@ -838,9 +951,13 @@ async def reset_all_icons() -> dict[str, Any]:
         "errors": [],
     }
 
-    for subscription in db.list_subscriptions(include_paused=True):
+    previous_avatar_error: str | None = None
+    for index, subscription in enumerate(db.list_subscriptions(include_paused=True)):
         summary["subscriptions"]["total"] += 1
+        waited = _sleep_before_avatar_refresh(index, previous_avatar_error)
+        summary["subscriptions"]["wait_seconds"] = round(float(summary["subscriptions"].get("wait_seconds", 0)) + waited, 2)
         item, found, error = _refresh_subscription_icon_item(subscription, cookie)
+        previous_avatar_error = error
         if found and item.get("avatar_url"):
             summary["subscriptions"]["updated"] += 1
         else:
