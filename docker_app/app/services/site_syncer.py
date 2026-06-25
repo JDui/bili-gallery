@@ -8,6 +8,7 @@ from datetime import date, datetime, time as datetime_time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
+from xml.etree import ElementTree
 
 from PIL import Image, ImageOps
 import requests
@@ -427,8 +428,6 @@ class SiteSyncManager:
         if not source:
             raise RuntimeError("站点来源不存在")
         icon_url = self.discover_site_icon(source)
-        if not icon_url:
-            raise RuntimeError("未能获取站点图标")
         item = self.db.set_site_source_icon(source_id, icon_url)
         if not item:
             raise RuntimeError("站点来源不存在")
@@ -440,50 +439,122 @@ class SiteSyncManager:
             return None
         settings = self._settings_for_source(self.db.get_settings(), source)
         candidates: list[str] = []
+        homepage_candidates: list[str] = []
         try:
             fetcher = PageFetcher(
                 timeout=self._page_request_timeout(settings),
                 user_agent=str(settings.get("site_user_agent")),
                 proxies=self._site_proxies(settings),
             )
-            html = fetcher.get_text(entry_url)
-            candidates.extend(self._icon_candidates_from_html(entry_url, html))
+            text = fetcher.get_text(entry_url)
+            candidates.extend(self._icon_candidates_from_xml(entry_url, text))
+            candidates.extend(self._icon_candidates_from_html(entry_url, text))
+            homepage_candidates.extend(self._homepage_candidates_from_markup(entry_url, text))
+            for homepage in homepage_candidates[:2]:
+                if homepage == entry_url:
+                    continue
+                try:
+                    homepage_text = fetcher.get_text(homepage)
+                except Exception:
+                    continue
+                candidates.extend(self._icon_candidates_from_html(homepage, homepage_text))
         except Exception:
             pass
-        parsed = urlparse(entry_url)
-        if parsed.scheme in {"http", "https"} and parsed.netloc:
-            candidates.append(f"{parsed.scheme}://{parsed.netloc}/favicon.ico")
-        return self._first_reachable_icon(candidates, settings)
+        candidates.extend(self._fallback_icon_candidates(entry_url))
+        for homepage in homepage_candidates:
+            candidates.extend(self._fallback_icon_candidates(homepage))
+        return self._first_reachable_icon(self._dedupe_urls(candidates), settings)
 
     def _icon_candidates_from_html(self, base_url: str, html: str) -> list[str]:
         soup = parse_html(html)
         candidates: list[str] = []
-        for node in soup.select("link[rel]"):
-            rel_value = node.get("rel") or ""
+        for node in self._iter_markup_nodes(soup, "link"):
+            rel_value = self._node_attr(node, "rel") or ""
             if isinstance(rel_value, (list, tuple)):
                 rel_text = " ".join(str(item) for item in rel_value)
             else:
                 rel_text = str(rel_value)
             rel_text = rel_text.lower()
-            if "icon" not in rel_text:
+            if "icon" not in rel_text and "image_src" not in rel_text:
                 continue
-            href = node.get("href")
+            href = self._node_attr(node, "href")
             if href:
                 candidates.append(urljoin(base_url, str(href)))
-        for node in soup.select("meta[property], meta[name]"):
-            key = str(node.get("property") or node.get("name") or "").lower()
-            if key not in {"og:image", "twitter:image", "twitter:image:src"}:
+        for node in self._iter_markup_nodes(soup, "meta"):
+            key = str(self._node_attr(node, "property") or self._node_attr(node, "name") or self._node_attr(node, "itemprop") or "").lower()
+            if key not in {"og:image", "og:logo", "twitter:image", "twitter:image:src", "image", "thumbnail", "msapplication-tileimage"}:
                 continue
-            content = node.get("content")
+            content = self._node_attr(node, "content")
             if content:
                 candidates.append(urljoin(base_url, str(content)))
-        seen: set[str] = set()
-        output = []
-        for url in candidates:
-            if url and url not in seen:
-                seen.add(url)
-                output.append(url)
-        return output
+        for node in self._iter_markup_nodes(soup, "img"):
+            marker = " ".join(
+                str(self._node_attr(node, key) or "")
+                for key in ("class", "id", "alt", "aria-label", "title")
+            ).lower()
+            src = self._node_attr(node, "src") or self._node_attr(node, "data-src") or self._node_attr(node, "data-original")
+            if src and any(keyword in marker for keyword in ("logo", "icon", "brand", "site-logo", "avatar", "站点", "图标")):
+                candidates.append(urljoin(base_url, str(src)))
+            srcset = self._node_attr(node, "srcset") or self._node_attr(node, "data-srcset")
+            if srcset and any(keyword in marker for keyword in ("logo", "icon", "brand", "site-logo")):
+                if first_src := self._first_srcset_url(str(srcset)):
+                    candidates.append(urljoin(base_url, first_src))
+        return self._dedupe_urls(candidates)
+
+    def _icon_candidates_from_xml(self, base_url: str, text: str) -> list[str]:
+        stripped = text.lstrip()
+        if not stripped.startswith("<"):
+            return []
+        try:
+            root = ElementTree.fromstring(stripped.encode("utf-8"))
+        except ElementTree.ParseError:
+            return []
+        candidates: list[str] = []
+        for node in root.iter():
+            name = self._xml_name(node.tag)
+            if name in {"image", "logo", "icon"}:
+                for attr in ("href", "url", "src"):
+                    if node.get(attr):
+                        candidates.append(urljoin(base_url, str(node.get(attr))))
+                if node.text and node.text.strip():
+                    candidates.append(urljoin(base_url, node.text.strip()))
+            if name == "url" and node.text and self._looks_like_image_url(node.text):
+                candidates.append(urljoin(base_url, node.text.strip()))
+            for attr in ("href", "url", "src"):
+                value = node.get(attr)
+                if value and self._looks_like_image_url(value):
+                    candidates.append(urljoin(base_url, str(value)))
+        return self._dedupe_urls(candidates)
+
+    def _homepage_candidates_from_markup(self, base_url: str, text: str) -> list[str]:
+        candidates: list[str] = []
+        soup = parse_html(text)
+        for node in self._iter_markup_nodes(soup, "link"):
+            rel_text = str(self._node_attr(node, "rel") or "").lower()
+            href = self._node_attr(node, "href")
+            if href and any(keyword in rel_text for keyword in ("home", "canonical", "alternate")):
+                candidates.append(urljoin(base_url, str(href)))
+        try:
+            root = ElementTree.fromstring(text.encode("utf-8"))
+            for node in root.iter():
+                if self._xml_name(node.tag) == "link" and node.text and node.text.strip():
+                    candidates.append(urljoin(base_url, node.text.strip()))
+                    break
+        except ElementTree.ParseError:
+            pass
+        return self._dedupe_urls([url for url in candidates if urlparse(url).scheme in {"http", "https", "file"}])
+
+    def _fallback_icon_candidates(self, url: str) -> list[str]:
+        parsed = urlparse(url)
+        names = ("favicon.ico", "favicon.png", "favicon.svg", "apple-touch-icon.png", "apple-touch-icon-precomposed.png")
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            root = f"{parsed.scheme}://{parsed.netloc}/"
+            return [urljoin(root, name) for name in names]
+        if parsed.scheme == "file" and parsed.path:
+            base = Path(parsed.path)
+            directory = base if base.is_dir() else base.parent
+            return [(directory / name).resolve().as_uri() for name in names]
+        return []
 
     def _first_reachable_icon(self, candidates: list[str], settings: dict[str, Any]) -> str | None:
         session = requests.Session()
@@ -496,7 +567,7 @@ class SiteSyncManager:
             for url in candidates:
                 parsed = urlparse(str(url))
                 if parsed.scheme == "file":
-                    if parsed.path and Path(parsed.path).exists():
+                    if parsed.path and Path(parsed.path).exists() and self._looks_like_image_url(parsed.path):
                         return str(url)
                     continue
                 if parsed.scheme not in {"http", "https"}:
@@ -506,7 +577,7 @@ class SiteSyncManager:
                     response = session.get(str(url), stream=True, timeout=(5, min(20, self._page_request_timeout(settings))))
                     response.raise_for_status()
                     content_type = response.headers.get("content-type", "").lower()
-                    if content_type.startswith("image/") or parsed.path.lower().endswith((".ico", ".png", ".jpg", ".jpeg", ".webp", ".svg")):
+                    if content_type.startswith("image/") or self._looks_like_image_url(parsed.path):
                         return str(url)
                 except requests.RequestException:
                     continue
@@ -519,6 +590,51 @@ class SiteSyncManager:
         finally:
             session.close()
         return None
+
+    def _iter_markup_nodes(self, root: Any, name: str | None = None) -> list[Any]:
+        if hasattr(root, "find_all"):
+            return list(root.find_all(name or True))
+        output: list[Any] = []
+
+        def visit(node: Any) -> None:
+            for child in getattr(node, "children", []) or []:
+                if name is None or getattr(child, "name", None) == name:
+                    output.append(child)
+                visit(child)
+
+        visit(root)
+        return output
+
+    def _node_attr(self, node: Any, key: str) -> Any:
+        try:
+            return node.get(key)
+        except Exception:
+            return None
+
+    def _first_srcset_url(self, srcset: str) -> str | None:
+        for part in srcset.split(","):
+            url = part.strip().split(" ", 1)[0].strip()
+            if url:
+                return url
+        return None
+
+    def _looks_like_image_url(self, value: str) -> bool:
+        path = urlparse(str(value)).path.lower()
+        return path.endswith((".ico", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif", ".avif"))
+
+    def _dedupe_urls(self, urls: list[str]) -> list[str]:
+        seen: set[str] = set()
+        output = []
+        for url in urls:
+            normalized = str(url or "").strip()
+            if not normalized or normalized.startswith("data:") or normalized in seen:
+                continue
+            seen.add(normalized)
+            output.append(normalized)
+        return output
+
+    def _xml_name(self, tag: str) -> str:
+        return tag.rsplit("}", 1)[-1].lower()
 
     def _settings_for_source(self, settings: dict[str, Any], source: dict[str, Any] | None) -> dict[str, Any]:
         use_proxy = True if source is None else bool(source.get("use_proxy", True))

@@ -158,6 +158,8 @@ function galleryApp() {
     clearDataConfirmStep: 0,
     validateConfirmStep: 0,
     rebuildIndexConfirmStep: 0,
+    resetIconsConfirmStep: 0,
+    resetIconsRunning: false,
     fullReloadConfirmStep: 0,
     clearTaskLogsConfirmStep: 0,
     clearFilterLogsConfirmStep: 0,
@@ -540,7 +542,15 @@ function galleryApp() {
     async loadSubscriptions() {
       const payload = await this.api("/api/subscriptions");
       const previousExpanded = { ...(this.subscriptionExpanded || {}) };
-      this.subscriptions = (payload.items || []).map((item) => ({
+      this.subscriptions = (payload.items || []).map((item) => this.normalizeSubscriptionItem(item));
+      this.sidebarCounts = { ...this.sidebarCounts, subscriptions: this.subscriptions.length };
+      this.subscriptionExpanded = Object.fromEntries(
+        this.subscriptions.map((item) => [String(item.uid), !!previousExpanded[String(item.uid)]]),
+      );
+    },
+
+    normalizeSubscriptionItem(item) {
+      return {
         ...item,
         is_site: !!item.is_site || String(item.uid || "").startsWith("site:"),
         avatar_url: item.avatar_url || "",
@@ -548,11 +558,7 @@ function galleryApp() {
         pull_images: !!item.pull_images,
         pull_livephoto: !!item.pull_livephoto,
         include_forwarded: !!item.include_forwarded,
-      }));
-      this.sidebarCounts = { ...this.sidebarCounts, subscriptions: this.subscriptions.length };
-      this.subscriptionExpanded = Object.fromEntries(
-        this.subscriptions.map((item) => [String(item.uid), !!previousExpanded[String(item.uid)]]),
-      );
+      };
     },
 
     upSubscriptions() {
@@ -3282,6 +3288,54 @@ function galleryApp() {
       this.rebuildIndexConfirmStep = 0;
       await Promise.all([this.refreshStatus(), this.refreshTasks(), this.loadSettings()]);
       this.notify("info", "索引任务已提交", result.message);
+    },
+
+    resetIconsButtonLabel() {
+      if (this.resetIconsRunning) {
+        return "重置中";
+      }
+      return this.resetIconsConfirmStep === 0 ? "重置所有图标" : "再次确认重置";
+    },
+
+    askResetAllIcons() {
+      if (this.resetIconsRunning) {
+        return;
+      }
+      this.resetIconsConfirmStep = 1;
+    },
+
+    cancelResetAllIcons() {
+      if (this.resetIconsRunning) {
+        return;
+      }
+      this.resetIconsConfirmStep = 0;
+    },
+
+    async confirmResetAllIcons() {
+      if (this.resetIconsConfirmStep < 1 || this.resetIconsRunning) {
+        return;
+      }
+      this.resetIconsRunning = true;
+      this.resetIconsConfirmStep = 0;
+      this.notify("info", "正在重置图标", "正在重新拉取每个 UP 主头像和站点图标。");
+      try {
+        const result = await this.api("/api/settings/reset-icons", { method: "POST" });
+        if (Array.isArray(result.items)) {
+          this.subscriptions = result.items.map((item) => this.normalizeSubscriptionItem(item));
+        }
+        await Promise.all([
+          this.loadSubscriptions(),
+          this.loadSiteSources(),
+          this.refreshMeta(),
+          this.refreshSidebarCounts(["subscriptions", "sites"]),
+        ]);
+        this.iconLoadFailures = {};
+        this.notify("success", "图标重置完成", result.message || "订阅图标已重新拉取。");
+      } catch (error) {
+        this.notify("error", "图标重置失败", error.message || "请稍后重试。");
+      } finally {
+        this.resetIconsRunning = false;
+      }
     },
 
     fullReloadButtonLabel() {

@@ -7,6 +7,7 @@ from app.config import AppConfig
 from app.db import Database
 from app.services.cleanup import CleanupService
 from app.services.gallery import GalleryService
+from app.services.bilibili import BilibiliAuthService
 from app.services.media_indexer import MediaIndexer
 from app.services.puller import PullManager
 from app.services.site_downloader import MediaDownloader
@@ -1009,6 +1010,190 @@ def test_site_proxy_can_be_disabled_per_source(tmp_path: Path) -> None:
         "https": "http://127.0.0.1:7890",
     }
     assert syncer._site_proxies(disabled_settings) is None
+
+
+def test_bilibili_space_page_fallback_extracts_avatar(tmp_path: Path, monkeypatch) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    service = BilibiliAuthService(db)
+    monkeypatch.setattr(service, "_sleep_jitter", lambda *_args: None)
+
+    class FakeResponse:
+        text = """
+        <!doctype html>
+        <html>
+          <head>
+            <title>测试UP的个人空间-哔哩哔哩</title>
+            <meta itemprop="image" content="//i0.hdslb.com/bfs/face/avatar-test.jpg">
+          </head>
+        </html>
+        """
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeSession:
+        def get(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    profile = service._fetch_up_profile_from_space_page("123", FakeSession())
+
+    assert profile == {
+        "uid": "123",
+        "uname": "测试UP",
+        "face": "https://i0.hdslb.com/bfs/face/avatar-test.jpg",
+    }
+
+
+def test_site_icon_refresh_discovers_html_link_icon(tmp_path: Path) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    site_dir = tmp_path / "icon-site"
+    site_dir.mkdir()
+    (site_dir / "logo.png").write_bytes(b"fake png")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><link rel="icon" href="logo.png"></head>
+          <body><article class="post-card"><a class="detail-link" href="post.html">Post</a></article></body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    source = db.create_site_source(
+        {
+            "name": "Icon Fixture",
+            "slug": "icon-fixture",
+            **html_source(),
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "enabled": True,
+        }
+    )
+
+    item = syncer.refresh_site_icon(source["id"])
+
+    assert item["icon_url"] == (site_dir / "logo.png").resolve().as_uri()
+
+
+def test_site_icon_refresh_discovers_rss_image(tmp_path: Path) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    site_dir = tmp_path / "rss-icon-site"
+    site_dir.mkdir()
+    (site_dir / "feed-logo.png").write_bytes(b"fake png")
+    (site_dir / "feed.xml").write_text(
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>RSS Icon Fixture</title>
+            <link>https://example.test/</link>
+            <image><url>feed-logo.png</url></image>
+          </channel>
+        </rss>
+        """,
+        encoding="utf-8",
+    )
+    source = db.create_site_source(
+        {
+            "name": "RSS Icon Fixture",
+            "slug": "rss-icon-fixture",
+            "source_type": "rss",
+            "entry_url": (site_dir / "feed.xml").resolve().as_uri(),
+            "enabled": True,
+        }
+    )
+
+    item = syncer.refresh_site_icon(source["id"])
+
+    assert item["icon_url"] == (site_dir / "feed-logo.png").resolve().as_uri()
+
+
+def test_reset_all_icons_refreshes_up_and_site_icons(tmp_path: Path, monkeypatch) -> None:
+    from app import main as app_main
+
+    db, _storage, syncer = make_app(tmp_path)
+    db.upsert_subscription("123", "旧名称", avatar_url="https://example.test/old.jpg")
+    subscription_total = len(db.list_subscriptions(include_paused=True))
+    site_dir = tmp_path / "reset-icon-site"
+    site_dir.mkdir()
+    (site_dir / "site-logo.png").write_bytes(b"fake png")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html><head><link rel="icon" href="site-logo.png"></head><body></body></html>
+        """,
+        encoding="utf-8",
+    )
+    source = db.create_site_source(
+        {
+            "name": "Reset Icon Fixture",
+            "slug": "reset-icon-fixture",
+            **html_source(),
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "icon_url": "https://example.test/old-site.png",
+            "enabled": True,
+        }
+    )
+
+    class FakeAuth:
+        def get_cookie_state(self):
+            return SimpleNamespace(cookie=None)
+
+        def fetch_up_profile(self, uid: str, _cookie: str | None = None) -> dict:
+            return {"uid": uid, "uname": "新名称", "face": "https://example.test/new.jpg"}
+
+    monkeypatch.setattr(app_main, "db", db)
+    monkeypatch.setattr(app_main, "site_syncer", syncer)
+    monkeypatch.setattr(app_main, "auth", FakeAuth())
+    client = TestClient(app_main.app)
+
+    result = client.post("/api/settings/reset-icons").json()
+
+    assert result["ok"] is True
+    assert result["result"]["subscriptions"]["updated"] == subscription_total
+    assert result["result"]["sites"]["updated"] == 1
+    assert db.get_subscription("123")["avatar_url"] == "https://example.test/new.jpg"
+    assert db.get_subscription("123")["uname"] == "新名称"
+    assert db.get_site_source(source["id"])["icon_url"] == (site_dir / "site-logo.png").resolve().as_uri()
+
+
+def test_reset_all_icons_clears_stale_icons_when_missing(tmp_path: Path, monkeypatch) -> None:
+    from app import main as app_main
+
+    db, _storage, syncer = make_app(tmp_path)
+    db.upsert_subscription("123", "旧名称", avatar_url="https://example.test/old.jpg")
+    site_dir = tmp_path / "missing-icon-site"
+    site_dir.mkdir()
+    (site_dir / "index.html").write_text("<!doctype html><html><body>No icon</body></html>", encoding="utf-8")
+    source = db.create_site_source(
+        {
+            "name": "Missing Icon Fixture",
+            "slug": "missing-icon-fixture",
+            **html_source(),
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "icon_url": "https://example.test/old-site.png",
+            "enabled": True,
+        }
+    )
+
+    class FakeAuth:
+        def get_cookie_state(self):
+            return SimpleNamespace(cookie=None)
+
+        def fetch_up_profile(self, uid: str, _cookie: str | None = None) -> dict:
+            return {"uid": uid, "uname": f"UID {uid}", "face": None}
+
+    monkeypatch.setattr(app_main, "db", db)
+    monkeypatch.setattr(app_main, "site_syncer", syncer)
+    monkeypatch.setattr(app_main, "auth", FakeAuth())
+    client = TestClient(app_main.app)
+
+    result = client.post("/api/settings/reset-icons").json()
+
+    assert result["ok"] is True
+    assert result["result"]["subscriptions"]["fallback"] >= 1
+    assert result["result"]["sites"]["fallback"] == 1
+    assert db.get_subscription("123")["avatar_url"] is None
+    assert db.get_site_source(source["id"])["icon_url"] is None
 
 
 def test_site_sync_skips_head_and_tail_images_but_keeps_video(tmp_path: Path) -> None:

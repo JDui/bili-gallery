@@ -266,7 +266,8 @@ async def refresh_site_source_icon(source_id: int) -> dict[str, Any]:
         item = site_syncer.refresh_site_icon(source_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"ok": True, "message": "站点图标已刷新", "item": item}
+    message = "站点图标已刷新" if item.get("icon_url") else "未能获取站点图标，已回退默认样式"
+    return {"ok": True, "message": message, "item": item}
 
 
 @app.post("/api/site-sources/test")
@@ -437,6 +438,43 @@ def _subscription_stats() -> list[dict[str, Any]]:
     return output
 
 
+def _refresh_subscription_icon_item(current: dict[str, Any], cookie: str | None) -> tuple[dict[str, Any], bool, str | None]:
+    uid = str(current["uid"])
+    try:
+        profile = auth.fetch_up_profile(uid, cookie)
+    except RuntimeError as exc:
+        item = db.set_subscription_icon(uid, None) or current
+        return item, False, str(exc)
+
+    avatar_url = profile.get("face") or None
+    if avatar_url:
+        item = db.upsert_subscription(
+            uid=uid,
+            uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
+            avatar_url=avatar_url,
+            status=current.get("status", "active"),
+            pull_images=bool(current.get("pull_images")),
+            image_min_count=int(current.get("image_min_count", 1) or 1),
+            pull_livephoto=bool(current.get("pull_livephoto")),
+            include_forwarded=bool(current.get("include_forwarded")),
+        )
+        return item, True, None
+
+    if profile.get("uname"):
+        db.upsert_subscription(
+            uid=uid,
+            uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
+            avatar_url=current.get("avatar_url"),
+            status=current.get("status", "active"),
+            pull_images=bool(current.get("pull_images")),
+            image_min_count=int(current.get("image_min_count", 1) or 1),
+            pull_livephoto=bool(current.get("pull_livephoto")),
+            include_forwarded=bool(current.get("include_forwarded")),
+        )
+    item = db.set_subscription_icon(uid, None) or db.get_subscription(uid) or current
+    return item, False, "未能获取 UP 主头像"
+
+
 @app.get("/api/subscriptions")
 async def get_subscriptions() -> dict[str, Any]:
     return {"items": _subscription_stats()}
@@ -513,24 +551,9 @@ async def refresh_subscription_icon(uid: str) -> dict[str, Any]:
     if not current:
         raise HTTPException(status_code=404, detail="订阅不存在")
     cookie = auth.get_cookie_state().cookie
-    try:
-        profile = auth.fetch_up_profile(uid, cookie)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    avatar_url = profile.get("face")
-    if not avatar_url:
-        raise HTTPException(status_code=502, detail="未能获取 UP 主头像")
-    item = db.upsert_subscription(
-        uid=uid,
-        uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
-        avatar_url=avatar_url,
-        status=current.get("status", "active"),
-        pull_images=bool(current.get("pull_images")),
-        image_min_count=int(current.get("image_min_count", 1) or 1),
-        pull_livephoto=bool(current.get("pull_livephoto")),
-        include_forwarded=bool(current.get("include_forwarded")),
-    )
-    return {"ok": True, "message": "图标已刷新", "item": item}
+    item, found, _error = _refresh_subscription_icon_item(current, cookie)
+    message = "图标已刷新" if found else "未能获取 UP 主头像，已回退默认样式"
+    return {"ok": True, "message": message, "item": item}
 
 
 @app.post("/api/subscriptions/{uid}/toggle")
@@ -804,6 +827,51 @@ async def rebuild_gallery_index() -> dict[str, Any]:
         return pull_manager.start_gallery_index_rebuild()
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/settings/reset-icons")
+async def reset_all_icons() -> dict[str, Any]:
+    cookie = auth.get_cookie_state().cookie
+    summary = {
+        "subscriptions": {"total": 0, "updated": 0, "fallback": 0, "failed": 0},
+        "sites": {"total": 0, "updated": 0, "fallback": 0, "failed": 0},
+        "errors": [],
+    }
+
+    for subscription in db.list_subscriptions(include_paused=True):
+        summary["subscriptions"]["total"] += 1
+        item, found, error = _refresh_subscription_icon_item(subscription, cookie)
+        if found and item.get("avatar_url"):
+            summary["subscriptions"]["updated"] += 1
+        else:
+            summary["subscriptions"]["fallback"] += 1
+        if error and error != "未能获取 UP 主头像":
+            summary["subscriptions"]["failed"] += 1
+            summary["errors"].append({"kind": "subscription", "uid": subscription.get("uid"), "message": error})
+
+    for source in db.list_site_sources():
+        summary["sites"]["total"] += 1
+        try:
+            item = site_syncer.refresh_site_icon(int(source["id"]))
+        except RuntimeError as exc:
+            summary["sites"]["failed"] += 1
+            summary["errors"].append({"kind": "site", "id": source.get("id"), "message": str(exc)})
+            continue
+        if item.get("icon_url"):
+            summary["sites"]["updated"] += 1
+        else:
+            summary["sites"]["fallback"] += 1
+
+    db.refresh_sidebar_count_cache(["subscriptions", "sites"])
+    message = (
+        f"图标重置完成：UP {summary['subscriptions']['updated']}/{summary['subscriptions']['total']}，"
+        f"站点 {summary['sites']['updated']}/{summary['sites']['total']}。"
+    )
+    if summary["subscriptions"]["fallback"] or summary["sites"]["fallback"]:
+        message += " 无法获取图像的项目已回退默认样式。"
+    if summary["subscriptions"]["failed"] or summary["sites"]["failed"]:
+        message += " 部分项目请求失败，详情已记录。"
+    return {"ok": True, "message": message, "result": summary, "items": _subscription_stats()}
 
 
 @app.post("/api/auth/qr/start")

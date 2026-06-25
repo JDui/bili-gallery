@@ -643,6 +643,18 @@
                         <p class="field-copy">慢站点或海外站点可把页面请求超时调高；代理只影响站点解析和站点媒体下载，不影响哔哩哔哩登录与动态拉取。</p>
                     </article>
 
+                    <article class="settings-card">
+                        <h4>订阅图标</h4>
+                        <p class="field-copy">重新拉取每个 UP 主头像和每个站点来源的 logo/icon。无法获得图像的项目会回退为默认文字徽标。</p>
+                        <div class="button-row confirm-row" x-show="resetIconsConfirmStep === 0">
+                            <button class="secondary-button confirm-anchor" @click="askResetAllIcons()" :disabled="resetIconsRunning" x-text="resetIconsButtonLabel()"></button>
+                        </div>
+                        <div class="button-row confirm-row" x-show="resetIconsConfirmStep === 1" x-cloak>
+                            <button class="primary-button confirm-anchor" @click="confirmResetAllIcons()" :disabled="resetIconsRunning" x-text="resetIconsRunning ? '重置中' : '确认重置所有图标'"></button>
+                            <button class="secondary-button" @click="cancelResetAllIcons()" :disabled="resetIconsRunning">取消</button>
+                        </div>
+                    </article>
+
                     <article class="settings-card auth-card">
                         <h4>哔哩哔哩权限</h4>
                         <p class="field-copy" x-text="settings.auth?.message || '未检查 Cookie'"></p>

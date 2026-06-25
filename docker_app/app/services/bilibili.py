@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import html
 import io
+import json
 import random
 import re
 import time
@@ -232,11 +234,21 @@ class BilibiliAuthService:
                     if code == 0:
                         data = payload.get("data") or {}
                         self._maybe_refresh_cookie_state(cookie_value, session.cookies)
-                        return {
+                        profile = {
                             "uid": str(uid),
                             "uname": data.get("name") or f"UID {uid}",
                             "face": data.get("face"),
                         }
+                        if profile["face"]:
+                            return profile
+                        fallback = self._fetch_up_profile_from_space_page(uid, session)
+                        if fallback:
+                            return {
+                                "uid": str(uid),
+                                "uname": profile["uname"] or fallback.get("uname") or f"UID {uid}",
+                                "face": fallback.get("face") or profile["face"],
+                            }
+                        return profile
                     last_error = RuntimeError(payload.get("message") or "UP 主信息获取失败")
                     if code in (-352, -401) and attempt < 3:
                         continue
@@ -377,13 +389,23 @@ class BilibiliAuthService:
             response.raise_for_status()
         except requests.RequestException:
             return None
-        title_match = re.search(r"<title>(.*?)</title>", response.text, re.S | re.I)
+        uname = self._extract_space_uname(response.text)
+        face = self._extract_space_face(response.text)
+        if not uname and not face:
+            return None
+        return {
+            "uid": str(uid),
+            "uname": uname or f"UID {uid}",
+            "face": face,
+        }
+
+    def _extract_space_uname(self, text: str) -> str | None:
+        title_match = re.search(r"<title>(.*?)</title>", text, re.S | re.I)
         if not title_match:
             return None
-        raw_title = re.sub(r"\s+", " ", title_match.group(1)).strip()
-        if not raw_title:
+        uname = re.sub(r"\s+", " ", html.unescape(title_match.group(1))).strip()
+        if not uname:
             return None
-        uname = raw_title
         if "的个人空间" in uname:
             uname = uname.split("的个人空间", 1)[0].strip()
         else:
@@ -391,13 +413,61 @@ class BilibiliAuthService:
         for marker in ("个人主页", "哔哩哔哩视频", "_哔哩哔哩"):
             uname = uname.replace(marker, "")
         uname = re.sub(r"\s+", " ", uname).strip()
-        if not uname:
+        return uname or None
+
+    def _extract_space_face(self, text: str) -> str | None:
+        for tag in re.findall(r"<meta\b[^>]*>", text, flags=re.I):
+            attrs = self._html_attrs(tag)
+            key = str(attrs.get("property") or attrs.get("name") or attrs.get("itemprop") or "").lower()
+            if key in {"og:image", "twitter:image", "twitter:image:src", "image"}:
+                if url := self._clean_profile_image_url(attrs.get("content")):
+                    return url
+        patterns = [
+            r'"(?:face|avatar|pendantImage|avatar_url)"\s*:\s*"([^"]+)"',
+            r"https?:\\?/\\?/[^\"'<>\s]+/bfs/face/[^\"'<>\s]+",
+            r"//[^\"'<>\s]+/bfs/face/[^\"'<>\s]+",
+        ]
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.I):
+                raw_url = match.group(1) if match.groups() else match.group(0)
+                if url := self._clean_profile_image_url(raw_url):
+                    return url
+        for tag in re.findall(r"<img\b[^>]*>", text, flags=re.I):
+            attrs = self._html_attrs(tag)
+            marker = " ".join(str(attrs.get(key) or "") for key in ("class", "id", "alt")).lower()
+            if any(keyword in marker for keyword in ("avatar", "face", "头像")):
+                if url := self._clean_profile_image_url(attrs.get("src") or attrs.get("data-src")):
+                    return url
+        return None
+
+    def _clean_profile_image_url(self, value: Any) -> str | None:
+        raw = html.unescape(str(value or "")).strip()
+        if not raw:
             return None
-        return {
-            "uid": str(uid),
-            "uname": uname,
-            "face": None,
-        }
+        raw = raw.replace("\\/", "/")
+        if "\\u" in raw or "\\x" in raw:
+            try:
+                raw = json.loads(f'"{raw}"')
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
+        raw = raw.strip()
+        if raw.startswith("//"):
+            raw = f"https:{raw}"
+        if raw.startswith("http://"):
+            raw = f"https://{raw[7:]}"
+        if not re.match(r"^https://", raw, flags=re.I):
+            return None
+        return raw
+
+    def _html_attrs(self, tag: str) -> dict[str, str]:
+        attrs: dict[str, str] = {}
+        for match in re.finditer(r"([:\w-]+)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", tag):
+            key = match.group(1).lower()
+            value = match.group(2).strip()
+            if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            attrs[key] = html.unescape(value)
+        return attrs
 
     def _prime_web_session(self, session: requests.Session, host_mid: int) -> None:
         urls = [
