@@ -687,6 +687,266 @@ def test_site_parser_fallback_handles_entry_meta_json_ld_and_self_closing_images
     assert posts[0].assets[0].url.endswith("/image.jpg")
 
 
+def test_site_parser_handles_misskon_style_lazy_images_and_schema_dates(tmp_path: Path) -> None:
+    site_dir = tmp_path / "misskon-style-site"
+    site_dir.mkdir(parents=True)
+    Image.new("RGB", (32, 32), (30, 90, 150)).save(site_dir / "cover.webp")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>MissKon Style - Archive</title></head>
+          <body>
+            <article class="post hentry">
+              <a href="post.html"><img class="lazy" data-src="cover.webp" src="data:image/svg+xml,placeholder"></a>
+              <h2><a href="post.html">Lazy Gallery Post</a></h2>
+              <span>Comments 0 Views 1 2 3</span>
+            </article>
+            <article class="post hentry">
+              <a href="post2.html"><img class="lazy" data-src="cover.webp" src="data:image/svg+xml,placeholder"></a>
+              <h2><a href="post2.html">Second Lazy Gallery Post</a></h2>
+            </article>
+            <a href="page/2">2</a>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head>
+            <script type="application/ld+json">
+              {"@type":"Article","datePublished":"2026-07-03T12:00:26+08:00"}
+            </script>
+          </head>
+          <body>
+            <article class="post hentry">
+              <h1>Lazy Gallery Post</h1>
+              <div class="content">
+                <img class="aligncenter lazy" data-src="cover.webp" src="data:image/svg+xml,placeholder">
+              </div>
+            </article>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post2.html").write_text(
+        """
+        <!doctype html>
+        <article class="post hentry"><h1>Second Lazy Gallery Post</h1></article>
+        """,
+        encoding="utf-8",
+    )
+
+    parser = SourceParser(PageFetcher())
+    suggestion = parser.suggest((site_dir / "index.html").resolve().as_uri())
+    posts = parser.discover(suggestion, limit=1)
+
+    assert suggestion["list_item_selector"] in {"article", ".hentry", ".post"}
+    assert suggestion["page_url_template"].endswith("/page/{page}")
+    assert posts[0].title == "Lazy Gallery Post"
+    assert posts[0].pub_date == "2026-07-03"
+    assert posts[0].assets[0].url.endswith("/cover.webp")
+
+
+def test_site_parser_handles_cosheji_style_post_items_and_update_dates(tmp_path: Path) -> None:
+    site_dir = tmp_path / "cosheji-style-site"
+    site_dir.mkdir(parents=True)
+    Image.new("RGB", (32, 32), (150, 90, 30)).save(site_dir / "cover.jpg")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>COS合集社-高质量COSPLAY写真图集分享 -</title></head>
+          <body>
+            <article class="post-item">
+              <a href="collection.html">柒柒要乖哦COS写真合集 [80套][持续更新]</a>
+              <time datetime="2026-07-03T08:00:00+08:00">16 小时前</time>
+              <span>2 1 4.7K</span>
+            </article>
+            <article class="post-item">
+              <a href="collection2.html">星澜是澜澜COS写真合集 [60套][持续更新]</a>
+              <time datetime="2026-07-02T12:00:00+08:00">2 天前</time>
+            </article>
+            <a href="page/2">2</a>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "collection.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <body>
+            <article>
+              <h1>柒柒要乖哦COS写真合集 [80套][持续更新]</h1>
+              <div class="entry-content">
+                <p>资源目录 2026.07.03更新 No.080-雨天邂逅 [178P1V-2.25GB]</p>
+                <img src="cover.jpg">
+              </div>
+            </article>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "collection2.html").write_text(
+        """
+        <!doctype html>
+        <article><h1>星澜是澜澜COS写真合集 [60套][持续更新]</h1></article>
+        """,
+        encoding="utf-8",
+    )
+
+    parser = SourceParser(PageFetcher())
+    suggestion = parser.suggest((site_dir / "index.html").resolve().as_uri())
+    posts = parser.discover(suggestion, limit=1)
+
+    assert suggestion["name"] == "COS合集社"
+    assert suggestion["list_item_selector"] == ".post-item"
+    assert suggestion["preview"][0]["pub_date"] == "2026-07-03"
+    assert suggestion["page_url_template"].endswith("/page/{page}")
+    assert posts[0].title == "柒柒要乖哦COS写真合集 [80套][持续更新]"
+    assert posts[0].pub_date == "2026-07-03"
+    assert posts[0].assets[0].url.endswith("/cover.jpg")
+
+
+def test_site_parser_handles_foamgirl_style_cards_external_ads_and_asset_dates(tmp_path: Path) -> None:
+    site_dir = tmp_path / "foamgirl-style-site"
+    site_dir.mkdir(parents=True)
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>FoamGirl-Share sexy asian girl photos</title></head>
+          <body>
+            <nav>
+              <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="chinese.html">Chinese</a></li>
+                <li><a href="korea.html">Korea</a></li>
+                <li><a href="japan.html">Japan</a></li>
+              </ul>
+            </nav>
+            <div class="item">
+              <a href="post.html"><img src="thumb.jpg" alt="Bomi (보미): Oil Play at Hotel"></a>
+            </div>
+            <div class="item">
+              <a href="https://u36.net/shorts"><img src="ad.gif" alt="External video ad"></a>
+            </div>
+            <div class="item">
+              <a href="post2.html"><img src="thumb2.jpg" alt="[LE] LERB-112B: Lenti"></a>
+            </div>
+            <a href="page/2">2</a>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <article>
+          <h1>Bomi (보미): Oil Play at Hotel (89 photos)</h1>
+          <div class="content">
+            <img src="wp-content/uploads/2025/09/11/001.jpg">
+            <img src="wp-content/uploads/2025/09/11/002.jpg">
+          </div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post2.html").write_text(
+        """
+        <!doctype html>
+        <article>
+          <h1>[LE] LERB-112B: Lenti (49 photos)</h1>
+          <div class="content"><img src="wp-content/uploads/2025/09/11/101.jpg"></div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+
+    parser = SourceParser(PageFetcher())
+    suggestion = parser.suggest((site_dir / "index.html").resolve().as_uri())
+    posts = parser.discover(suggestion, limit=3)
+
+    assert suggestion["name"] == "FoamGirl"
+    assert suggestion["list_item_selector"] == ".item"
+    assert suggestion["preview"][0]["title"] == "Bomi (보미): Oil Play at Hotel"
+    assert suggestion["page_url_template"].endswith("/page/{page}")
+    assert [post.title for post in posts] == [
+        "Bomi (보미): Oil Play at Hotel (89 photos)",
+        "[LE] LERB-112B: Lenti (49 photos)",
+    ]
+    assert posts[0].pub_date == "2025-09-11"
+    assert len(posts[0].assets) == 2
+
+
+def test_site_parser_handles_hotgirlpix_style_articles(tmp_path: Path) -> None:
+    site_dir = tmp_path / "hotgirlpix-style-site"
+    site_dir.mkdir(parents=True)
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>Hot Girl Pix - Sexy models, hot girls, Asian girls, Western girls</title></head>
+          <body>
+            <article>
+              <h2><a href="post.html">Roxy Model</a></h2>
+              <span class="post-date">Date: 2026-07-02</span>
+              <img class="postFeaturedImage" src="cover.jpg" alt="Roxy Model Cover Photo">
+            </article>
+            <article>
+              <h2><a href="post2.html">Mizuki Takanashi</a></h2>
+              <span class="post-date">Date: 2026-07-01</span>
+              <img class="postFeaturedImage" src="cover2.jpg" alt="Mizuki Cover Photo">
+            </article>
+            <a href="page/2">2</a>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <article>
+          <h1>Roxy Model</h1>
+          <span class="post-date">Date: 2026-07-02</span>
+          <div class="content">
+            <img src="files/2026/04/04/17/001.jpg">
+            <img src="files/2026/04/04/17/002.jpg">
+          </div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post2.html").write_text(
+        """
+        <!doctype html>
+        <article><h1>Mizuki Takanashi</h1><span class="post-date">Date: 2026-07-01</span></article>
+        """,
+        encoding="utf-8",
+    )
+
+    parser = SourceParser(PageFetcher())
+    suggestion = parser.suggest((site_dir / "index.html").resolve().as_uri())
+    posts = parser.discover(suggestion, limit=1)
+
+    assert suggestion["name"] == "Hot Girl Pix"
+    assert suggestion["list_item_selector"] == "article"
+    assert suggestion["preview"][0]["pub_date"] == "2026-07-02"
+    assert suggestion["page_url_template"].endswith("/page/{page}")
+    assert posts[0].title == "Roxy Model"
+    assert posts[0].pub_date == "2026-07-02"
+    assert len(posts[0].assets) == 2
+
+
 def test_site_parser_stops_when_later_paged_html_is_missing(tmp_path: Path) -> None:
     site_dir = tmp_path / "paged-missing"
     site_dir.mkdir(parents=True)

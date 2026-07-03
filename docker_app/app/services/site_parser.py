@@ -402,6 +402,8 @@ class SourceParser:
             tags = self._selector_texts(fallback_node, source.get("tag_selector"))
         excerpt = self._selector_text(soup, source.get("body_selector")) or ""
         assets = self._media_assets(soup, source.get("media_selector"), url) if parse_assets else []
+        if not pub_date and assets:
+            pub_date = self._asset_date_fallback(assets)
         return ParsedPost(url=url, title=title.strip(), pub_date=pub_date, tags=tags, excerpt=excerpt.strip(), assets=assets)
 
     def _xml_source_hint(self, text: str) -> tuple[str | None, str | None]:
@@ -420,7 +422,8 @@ class SourceParser:
         title = self._selector_text(soup, "title") or self._selector_text(soup, "h1")
         title = re.sub(r"\s+", " ", title).strip()
         if title:
-            return title.split("|", 1)[0].split(" - ", 1)[0].strip() or title
+            name = re.split(r"\s*[|｜]\s*|\s+[-–—]\s+|(?<=[\u4e00-\u9fff])[-–—]\s*|(?<=[A-Za-z0-9.)])[-–—](?=[A-Z\u4e00-\u9fff])", title, maxsplit=1)[0].strip()
+            return name or title
         return self._url_site_name(entry_url)
 
     def _url_site_name(self, url: str) -> str:
@@ -436,6 +439,10 @@ class SourceParser:
             ".content-post",
             ".post-list",
             ".post-card",
+            ".post-item",
+            ".posts-item",
+            ".grid-item",
+            ".ajax-item",
             "article",
             ".hentry",
             ".entry",
@@ -512,7 +519,9 @@ class SourceParser:
         score += dated * 4
         score += titled * 2
         score += media
-        if selector in {".content-post", ".post-list", ".post-card", "article", ".hentry", ".post"}:
+        if selector == "li" and dated == 0 and media < max(2, valid_links // 3):
+            return 0, []
+        if selector in {".content-post", ".post-list", ".post-card", ".post-item", ".posts-item", ".grid-item", ".ajax-item", "article", ".hentry", ".post", ".item"}:
             score += 18
         elif "." in selector or "[" in selector:
             score += 8
@@ -543,6 +552,14 @@ class SourceParser:
         for selector in [".entry-title", ".post-title", ".title", "h1", "h2", "h3", "a"]:
             title = self._selector_text(node, selector)
             title = re.sub(r"\s+", " ", title).strip()
+            if title and not parse_date(title):
+                return title[:160]
+        try:
+            images = node.select("img[alt]")
+        except Exception:
+            images = []
+        for image in images:
+            title = re.sub(r"\s+", " ", str(image.get("alt") or "")).strip()
             if title and not parse_date(title):
                 return title[:160]
         return ""
@@ -593,7 +610,11 @@ class SourceParser:
         if not href:
             nested = link.select_one("a[href]") if hasattr(link, "select_one") else None
             href = nested.get("href") if nested else None
-        return urljoin(base_url, href) if href else None
+        if not href:
+            return None
+        detail_url = urljoin(base_url, href).split("#", 1)[0]
+        link_text = link.get_text(" ", strip=True)
+        return detail_url if self._detail_url_score(base_url, detail_url, link_text) > 0 else None
 
     def _sniff_detail_urls(self, soup: Any, base_url: str) -> list[str]:
         candidates: list[tuple[int, str]] = []
@@ -620,6 +641,8 @@ class SourceParser:
         parsed_base = urlparse(base_url)
         parsed_candidate = urlparse(candidate_url)
         if parsed_candidate.scheme not in {"http", "https", "file"}:
+            return 0
+        if parsed_base.scheme == "file" and parsed_candidate.scheme != "file":
             return 0
         if parsed_base.scheme in {"http", "https"} and parsed_base.netloc != parsed_candidate.netloc:
             return 0
@@ -749,6 +772,16 @@ class SourceParser:
             parsed = parse_date(match.group(0))
             if parsed:
                 return parsed.isoformat()
+        return None
+
+    def _asset_date_fallback(self, assets: list[ParsedAsset]) -> str | None:
+        for asset in assets:
+            path = urlparse(asset.url).path
+            match = re.search(r"/(20\d{2})/(\d{1,2})/(\d{1,2})(?:/|$)", path)
+            if match:
+                parsed = parse_date(f"{match.group(1)}-{match.group(2)}-{match.group(3)}")
+                if parsed:
+                    return parsed.isoformat()
         return None
 
     def _iter_nodes(self, root: Any, name: str | None = None) -> list[Any]:

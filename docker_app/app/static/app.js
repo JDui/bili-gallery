@@ -598,7 +598,7 @@ function galleryApp() {
       if (!key || this.iconLoadFailures[key]) {
         return "";
       }
-      return item?.icon_url || item?.avatar_url || item?.site_icon_url || "";
+      return this.versionedIconUrl(item?.icon_url || item?.avatar_url || item?.site_icon_url || "", item?.updated_at);
     },
 
     handleSubscriptionIconError(item) {
@@ -614,7 +614,16 @@ function galleryApp() {
       if (!source?.icon_url || this.iconLoadFailures[key]) {
         return "";
       }
-      return source.icon_url;
+      return this.versionedIconUrl(source.icon_url, source.updated_at);
+    },
+
+    versionedIconUrl(url, version) {
+      const value = String(url || "").trim();
+      if (!value || !value.startsWith("/storage/") || !version) {
+        return value;
+      }
+      const separator = value.includes("?") ? "&" : "?";
+      return `${value}${separator}v=${encodeURIComponent(String(version))}`;
     },
 
     isSubscriptionExpanded(uid) {
@@ -4005,8 +4014,11 @@ function galleryApp() {
             [key]: this.siteSourceDraftFromSource(result.item),
           };
           this.subscriptions = (this.subscriptions || []).map((item) =>
-            String(item.uid) === `site:${sourceId}` ? { ...item, icon_url: result.item.icon_url || "" } : item,
+            String(item.uid) === `site:${sourceId}`
+              ? { ...item, icon_url: result.item.icon_url || "", updated_at: result.item.updated_at || item.updated_at }
+              : item,
           );
+          this.iconLoadFailures = { ...this.iconLoadFailures, [`site:${sourceId}`]: false };
         }
         this.notify("success", "站点图标已刷新", result.message || "已更新站点图标。");
       } finally {
