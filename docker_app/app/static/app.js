@@ -1142,29 +1142,36 @@ function galleryApp() {
     },
 
     openGalleryPair(item) {
-      const pair = {
-        item_key: item.item_key || `${item.folder_name}::${item.pair_index}`,
-        pair_index: item.pair_index,
-        image: item.image,
-        livephoto: item.livephoto,
-        preview_url: item.preview_url,
-        preview_kind: item.preview_kind,
-        complete: !!(item.image && item.livephoto),
-      };
       const sequence = this.buildGalleryViewerSequence();
       const itemKey = item.item_key || `${item.folder_name}::${item.pair_index}`;
       const index = sequence.findIndex((entry) => this.viewerEntryKey(entry) === itemKey);
       this.viewerSource = "gallery";
-      this.viewerSequence = sequence;
-      this.viewerIndex = Math.max(index, 0);
-      this.openViewerEntry({
-        pair,
-        folder: {
-          folder_name: item.folder_name,
-          title: item.title,
-          pub_time: item.pub_time,
+      if (index >= 0) {
+        this.viewerSequence = sequence;
+        this.viewerIndex = index;
+        this.openViewerEntry(sequence[index]);
+        return;
+      }
+      this.viewerSequence = [
+        {
+          pair: {
+            item_key: itemKey,
+            pair_index: item.pair_index,
+            image: item.image,
+            livephoto: item.livephoto,
+            preview_url: item.preview_url,
+            preview_kind: item.preview_kind,
+            complete: !!(item.image && item.livephoto),
+          },
+          folder: {
+            folder_name: item.folder_name,
+            title: item.title,
+            pub_time: item.pub_time,
+          },
         },
-      });
+      ];
+      this.viewerIndex = 0;
+      this.openViewerEntry(this.viewerSequence[0]);
     },
 
     buildDetailViewerSequence() {
@@ -1214,12 +1221,6 @@ function galleryApp() {
     },
 
     resolvedViewerSequence() {
-      if (this.viewerSource === "gallery") {
-        return this.buildGalleryViewerSequence();
-      }
-      if (this.viewerSource === "detail") {
-        return this.buildDetailViewerSequence();
-      }
       return this.viewerSequence || [];
     },
 
@@ -1967,18 +1968,31 @@ function galleryApp() {
       this.$nextTick(() => this.applyPlaybackMode(video, true));
     },
 
+    currentViewerSequenceIndex(sequence = this.resolvedViewerSequence()) {
+      const currentKey = this.currentViewerEntryKey();
+      const currentIndex = (sequence || []).findIndex((entry) => this.viewerEntryKey(entry) === currentKey);
+      if (currentIndex >= 0) {
+        return currentIndex;
+      }
+      const fallbackIndex = Number(this.viewerIndex);
+      return Number.isInteger(fallbackIndex) && fallbackIndex >= 0 && fallbackIndex < (sequence || []).length
+        ? fallbackIndex
+        : -1;
+    },
+
     canShowPreviousPair() {
-      return this.viewerIndex > 0;
+      return this.currentViewerSequenceIndex() > 0;
     },
 
     canShowNextPair() {
-      return this.viewerIndex < this.viewerSequence.length - 1;
+      const sequence = this.resolvedViewerSequence();
+      const currentIndex = this.currentViewerSequenceIndex(sequence);
+      return currentIndex >= 0 && currentIndex < sequence.length - 1;
     },
 
     showPreviousPair() {
       const sequence = this.resolvedViewerSequence();
-      const currentKey = this.currentViewerEntryKey();
-      const currentIndex = sequence.findIndex((entry) => this.viewerEntryKey(entry) === currentKey);
+      const currentIndex = this.currentViewerSequenceIndex(sequence);
       if (currentIndex <= 0) {
         return;
       }
@@ -1990,8 +2004,7 @@ function galleryApp() {
 
     showNextPair() {
       const sequence = this.resolvedViewerSequence();
-      const currentKey = this.currentViewerEntryKey();
-      const currentIndex = sequence.findIndex((entry) => this.viewerEntryKey(entry) === currentKey);
+      const currentIndex = this.currentViewerSequenceIndex(sequence);
       if (currentIndex < 0 || currentIndex >= sequence.length - 1) {
         return;
       }

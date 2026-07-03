@@ -26,6 +26,8 @@ SITE_PAGE_REQUEST_TIMEOUT = 300
 SITE_MEDIA_DOWNLOAD_TIMEOUT = 300
 SITE_MEDIA_DOWNLOAD_CONCURRENCY = 3
 SITE_MEDIA_DOWNLOAD_RETRIES = 5
+SITE_ICON_CACHE_MAX_BYTES = 2 * 1024 * 1024
+SITE_ICON_EXTENSIONS = (".ico", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif", ".avif")
 
 
 class SiteSyncManager:
@@ -424,11 +426,75 @@ class SiteSyncManager:
         source = self.db.get_site_source(source_id)
         if not source:
             raise RuntimeError("站点来源不存在")
+        settings = self._settings_for_source(self.db.get_settings(), source)
         icon_url = self.discover_site_icon(source)
+        cached_url = self._cache_site_icon(source_id, icon_url, settings, str(source.get("entry_url") or ""))
+        icon_url = cached_url or icon_url
         item = self.db.set_site_source_icon(source_id, icon_url)
         if not item:
             raise RuntimeError("站点来源不存在")
         return item
+
+    def _cache_site_icon(self, source_id: int, icon_url: str | None, settings: dict[str, Any], referer_url: str = "") -> str | None:
+        if not icon_url:
+            return None
+        parsed = urlparse(str(icon_url))
+        if parsed.scheme not in {"http", "https"}:
+            return icon_url
+
+        target_dir = self.storage.config.data_dir / "avatars" / "sites"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        session = requests.Session()
+        session.headers.update(browser_like_site_headers(str(settings.get("site_user_agent"))))
+        session.headers["Accept"] = "image/avif,image/webp,image/png,image/svg+xml,image/*,*/*;q=0.7"
+        if referer_url:
+            session.headers["Referer"] = referer_url
+        else:
+            session.headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+        proxies = self._site_proxies(settings)
+        if proxies:
+            session.proxies.update(proxies)
+
+        response = None
+        tmp_target: Path | None = None
+        try:
+            response = session.get(str(icon_url), stream=True, timeout=(5, min(30, self._page_request_timeout(settings))))
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type and not content_type.startswith("image/") and not self._looks_like_image_url(parsed.path):
+                return None
+            extension = self._site_icon_extension(parsed.path, content_type)
+            target = target_dir / f"{int(source_id)}{extension}"
+            tmp_target = target.with_suffix(f"{target.suffix}.tmp")
+            total = 0
+            with tmp_target.open("wb") as file:
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > SITE_ICON_CACHE_MAX_BYTES:
+                        tmp_target.unlink(missing_ok=True)
+                        return None
+                    file.write(chunk)
+            if total <= 0:
+                tmp_target.unlink(missing_ok=True)
+                return None
+            tmp_target.replace(target)
+            for stale in target_dir.glob(f"{int(source_id)}.*"):
+                if stale != target:
+                    stale.unlink(missing_ok=True)
+            return self.storage.storage_url(self.storage.relative_to_storage(target))
+        except Exception:
+            if tmp_target is not None:
+                tmp_target.unlink(missing_ok=True)
+            return None
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+            session.close()
 
     def discover_site_icon(self, source: dict[str, Any]) -> str | None:
         entry_url = str(source.get("entry_url") or "").strip()
@@ -617,7 +683,25 @@ class SiteSyncManager:
 
     def _looks_like_image_url(self, value: str) -> bool:
         path = urlparse(str(value)).path.lower()
-        return path.endswith((".ico", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif", ".avif"))
+        return path.endswith(SITE_ICON_EXTENSIONS)
+
+    def _site_icon_extension(self, path: str, content_type: str = "") -> str:
+        suffix = Path(urlparse(path).path).suffix.lower()
+        if suffix in SITE_ICON_EXTENSIONS:
+            return ".jpg" if suffix == ".jpeg" else suffix
+        content_type = content_type.split(";", 1)[0].strip().lower()
+        return {
+            "image/x-icon": ".ico",
+            "image/vnd.microsoft.icon": ".ico",
+            "image/icon": ".ico",
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/webp": ".webp",
+            "image/svg+xml": ".svg",
+            "image/gif": ".gif",
+            "image/avif": ".avif",
+        }.get(content_type, ".ico")
 
     def _dedupe_urls(self, urls: list[str]) -> list[str]:
         seen: set[str] = set()

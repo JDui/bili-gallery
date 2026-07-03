@@ -1472,6 +1472,57 @@ def test_site_icon_refresh_discovers_rss_image(tmp_path: Path) -> None:
     assert item["icon_url"] == (site_dir / "feed-logo.png").resolve().as_uri()
 
 
+def test_site_icon_refresh_caches_remote_icon_in_local_storage(tmp_path: Path, monkeypatch) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    source = create_fixture_source(db)
+    remote_icon_url = "https://img.example.test/favicon"
+    sessions = []
+
+    class FakeResponse:
+        headers = {"content-type": "image/png"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 65536):
+            yield b"remote-site-icon"
+
+        def close(self) -> None:
+            return None
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.headers = {}
+            self.proxies = {}
+            self.calls = []
+            sessions.append(self)
+
+        def get(self, url: str, **kwargs):
+            self.calls.append({"url": url, **kwargs})
+            return FakeResponse()
+
+        def close(self) -> None:
+            return None
+
+    icon_dir = storage.config.data_dir / "avatars" / "sites"
+    icon_dir.mkdir(parents=True)
+    stale_icon = icon_dir / f"{source['id']}.ico"
+    stale_icon.write_bytes(b"stale-icon")
+
+    monkeypatch.setattr(syncer, "discover_site_icon", lambda _source: remote_icon_url)
+    monkeypatch.setattr("app.services.site_syncer.requests.Session", FakeSession)
+
+    item = syncer.refresh_site_icon(source["id"])
+
+    cached_icon = icon_dir / f"{source['id']}.png"
+    assert item["icon_url"] == f"/storage/data/avatars/sites/{source['id']}.png"
+    assert cached_icon.read_bytes() == b"remote-site-icon"
+    assert not stale_icon.exists()
+    assert sessions[0].calls[0]["url"] == remote_icon_url
+    assert sessions[0].calls[0]["stream"] is True
+    assert sessions[0].headers["Referer"] == source["entry_url"]
+
+
 def test_reset_all_icons_refreshes_up_and_site_icons(tmp_path: Path, monkeypatch) -> None:
     from app import main as app_main
 
