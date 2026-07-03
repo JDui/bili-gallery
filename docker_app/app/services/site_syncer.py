@@ -267,12 +267,9 @@ class SiteSyncManager:
                 "progress": int(((index - 1) / len(posts)) * 100) if posts else 0,
                 "counters": dict(counters),
             }
-            pub_date = parse_date(parsed.pub_date)
-            if not pub_date:
-                counters["skipped"] += 1
-                self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "无有效发布日期")
-                mark_processed(index)
-                continue
+            pub_date, date_fallback_reason = self._resolve_post_date(source, parsed, start_date)
+            if date_fallback_reason:
+                self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "date-fallback", date_fallback_reason)
             if pub_date and pub_date < start_date:
                 counters["skipped"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "skipped", "早于起始日期")
@@ -673,6 +670,25 @@ class SiteSyncManager:
         except (TypeError, ValueError):
             timeout = SITE_PAGE_REQUEST_TIMEOUT
         return max(30, min(timeout, 900))
+
+    def _resolve_post_date(self, source: dict[str, Any], parsed: ParsedPost, start_date: date) -> tuple[date, str]:
+        pub_date = parse_date(parsed.pub_date)
+        if pub_date:
+            parsed.pub_date = pub_date.isoformat()
+            return pub_date, ""
+        existing = self.db.get_site_post_by_source_url(int(source["id"]), parsed.url)
+        existing_date = parse_date(existing.get("pub_date") if existing else None)
+        if existing_date:
+            parsed.pub_date = existing_date.isoformat()
+            return existing_date, ""
+        for value in (parsed.url, parsed.title, parsed.excerpt):
+            inferred = parse_date(value)
+            if inferred:
+                parsed.pub_date = inferred.isoformat()
+                return inferred, "未发现发布日期，已从链接或标题推断"
+        fallback = max(datetime.now(TIMEZONE).date(), start_date)
+        parsed.pub_date = fallback.isoformat()
+        return fallback, "未发现发布日期，已使用同步日期"
 
     def _latest_site_sync_date(self, source: dict[str, Any]) -> date | None:
         source_id = int(source["id"])

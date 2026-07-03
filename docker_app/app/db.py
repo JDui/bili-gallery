@@ -21,6 +21,8 @@ DEFAULT_SETTINGS = {
     "download_sleep": 0.2,
     "scheduler_enabled": False,
     "scheduler_interval_hours": 12,
+    "site_scheduler_enabled": False,
+    "site_scheduler_interval_hours": 12,
     "ad_filter_enabled": True,
     "ad_filter_keywords": [
         "推广",
@@ -407,10 +409,38 @@ class Database:
             self._backfill_folder_subscriptions(conn)
 
     def _ensure_default_settings(self, conn: sqlite3.Connection) -> None:
+        existing_rows = conn.execute("select key, value from settings").fetchall()
+        existing_settings = {row["key"]: row["value"] for row in existing_rows}
+        missing_site_scheduler_enabled = "site_scheduler_enabled" not in existing_settings
+        missing_site_scheduler_interval = "site_scheduler_interval_hours" not in existing_settings
+        legacy_scheduler_enabled = bool(
+            loads_json(
+                existing_settings.get("scheduler_enabled"),
+                DEFAULT_SETTINGS["scheduler_enabled"],
+            )
+        )
+        legacy_scheduler_interval = loads_json(
+            existing_settings.get("scheduler_interval_hours"),
+            DEFAULT_SETTINGS["scheduler_interval_hours"],
+        )
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute(
                 "insert or ignore into settings(key, value) values (?, ?)",
                 (key, dumps_json(value)),
+            )
+        if missing_site_scheduler_enabled and legacy_scheduler_enabled:
+            conn.execute(
+                "update settings set value = ? where key = 'site_scheduler_enabled'",
+                (dumps_json(True),),
+            )
+        if missing_site_scheduler_interval:
+            try:
+                interval_hours = max(int(legacy_scheduler_interval or DEFAULT_SETTINGS["site_scheduler_interval_hours"]), 1)
+            except (TypeError, ValueError):
+                interval_hours = DEFAULT_SETTINGS["site_scheduler_interval_hours"]
+            conn.execute(
+                "update settings set value = ? where key = 'site_scheduler_interval_hours'",
+                (dumps_json(interval_hours),),
             )
         row = conn.execute("select value from settings where key = 'site_user_agent'").fetchone()
         current = loads_json(row["value"], "") if row else ""

@@ -51,7 +51,20 @@ def parse_date(value: str | None) -> date | None:
     match = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", text)
     if match:
         extracted = f"{int(match.group(1)):04d}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
-    candidates = [extracted, normalized, normalized[:19], normalized[:10], normalized[:7]]
+    compact_match = re.search(r"\b(\d{4})(\d{2})(\d{2})\b", text)
+    compact = ""
+    if compact_match:
+        compact = f"{int(compact_match.group(1)):04d}-{int(compact_match.group(2)):02d}-{int(compact_match.group(3)):02d}"
+    reverse_match = re.search(r"\b(\d{1,2})\D+(\d{1,2})\D+(\d{4})\b", text)
+    reverse = ""
+    if reverse_match:
+        first = int(reverse_match.group(1))
+        second = int(reverse_match.group(2))
+        if first > 12:
+            reverse = f"{int(reverse_match.group(3)):04d}-{second:02d}-{first:02d}"
+        elif second > 12:
+            reverse = f"{int(reverse_match.group(3)):04d}-{first:02d}-{second:02d}"
+    candidates = [extracted, compact, reverse, normalized, normalized[:19], normalized[:10], normalized[:7]]
     for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m"):
         for candidate in candidates:
             try:

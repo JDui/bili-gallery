@@ -23,19 +23,38 @@ class SchedulerService:
     def reload(self) -> None:
         settings = self.db.get_settings()
         self.scheduler.remove_all_jobs()
-        if not settings.get("scheduler_enabled"):
-            return
-        interval_hours = max(int(settings.get("scheduler_interval_hours", 12)), 1)
-        self.scheduler.add_job(
-            self.start_scheduled_sync,
-            IntervalTrigger(hours=interval_hours),
-            id="scheduled-sync",
-            replace_existing=True,
-        )
+        if settings.get("scheduler_enabled"):
+            interval_hours = self._interval_hours(settings.get("scheduler_interval_hours", 12))
+            self.scheduler.add_job(
+                self.start_scheduled_pull,
+                IntervalTrigger(hours=interval_hours),
+                id="scheduled-pull",
+                replace_existing=True,
+            )
+        if settings.get("site_scheduler_enabled"):
+            site_interval_hours = self._interval_hours(settings.get("site_scheduler_interval_hours", 12))
+            self.scheduler.add_job(
+                self.start_scheduled_site_sync,
+                IntervalTrigger(hours=site_interval_hours),
+                id="scheduled-site-sync",
+                replace_existing=True,
+            )
+
+    def start_scheduled_pull(self) -> None:
+        self.pull_manager.start_pull()
+
+    def start_scheduled_site_sync(self) -> None:
+        self.site_syncer.start_sync()
 
     def start_scheduled_sync(self) -> None:
-        self.pull_manager.start_pull()
-        self.site_syncer.start_sync()
+        self.start_scheduled_pull()
+        self.start_scheduled_site_sync()
+
+    def _interval_hours(self, value: object) -> int:
+        try:
+            return max(int(value), 1)
+        except (TypeError, ValueError):
+            return 12
 
     def shutdown(self) -> None:
         if self.scheduler.running:

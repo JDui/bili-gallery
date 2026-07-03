@@ -3222,6 +3222,10 @@ function galleryApp() {
       const { auth, ...settingsPayload } = this.settings || {};
       const payload = {
         ...settingsPayload,
+        scheduler_enabled: Boolean(settingsPayload.scheduler_enabled),
+        scheduler_interval_hours: Math.max(1, Number(settingsPayload.scheduler_interval_hours) || 12),
+        site_scheduler_enabled: Boolean(settingsPayload.site_scheduler_enabled),
+        site_scheduler_interval_hours: Math.max(1, Number(settingsPayload.site_scheduler_interval_hours) || 12),
         site_request_timeout: Math.max(30, Math.min(900, Number(settingsPayload.site_request_timeout) || 300)),
         site_request_sleep: Math.max(0, Number(settingsPayload.site_request_sleep) || 0),
         site_max_media_per_post: Math.max(1, Math.min(500, Number(settingsPayload.site_max_media_per_post) || 100)),

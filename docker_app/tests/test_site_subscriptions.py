@@ -1,10 +1,11 @@
 import threading
 import time
+import sqlite3
 from types import SimpleNamespace
 from pathlib import Path
 
 from app.config import AppConfig
-from app.db import Database
+from app.db import Database, DEFAULT_SETTINGS
 from app.services.cleanup import CleanupService
 from app.services.gallery import GalleryService
 from app.services.bilibili import BilibiliAuthService
@@ -13,10 +14,11 @@ from app.services.puller import PullManager
 from app.services.site_downloader import MediaDownloader
 from app.services.site_parser import PageFetcher, SourceParser, site_request_timeout
 from app.services.site_filtering import RuleEngine
+from app.services.scheduler import SchedulerService
 from app.services.site_syncer import SiteSyncManager
 from app.services.storage import StorageService
 from app.services.thumbnailer import ThumbnailService
-from app.services.utils import clean_filename, parse_date
+from app.services.utils import clean_filename, dumps_json, parse_date
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
@@ -310,6 +312,67 @@ def test_site_requests_use_browser_like_headers() -> None:
     assert proxied_downloader.session.proxies["https"] == "http://127.0.0.1:7890"
 
 
+def test_site_scheduler_settings_migrate_from_legacy_global_scheduler(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("create table settings (key text primary key, value text not null)")
+        conn.execute("insert into settings(key, value) values (?, ?)", ("scheduler_enabled", dumps_json(True)))
+        conn.execute("insert into settings(key, value) values (?, ?)", ("scheduler_interval_hours", dumps_json(5)))
+
+    db = Database(db_path)
+    db.init()
+    settings = db.get_settings()
+
+    assert settings["site_scheduler_enabled"] is True
+    assert settings["site_scheduler_interval_hours"] == 5
+
+
+def test_scheduler_registers_up_and_site_jobs_independently(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    db.save_settings(
+        {
+            "scheduler_enabled": True,
+            "scheduler_interval_hours": 2,
+            "site_scheduler_enabled": True,
+            "site_scheduler_interval_hours": 7,
+        }
+    )
+    pull_calls = {"count": 0}
+    site_calls = {"count": 0}
+
+    class PullStub:
+        def start_pull(self) -> None:
+            pull_calls["count"] += 1
+
+    class SiteStub:
+        def start_sync(self) -> None:
+            site_calls["count"] += 1
+
+    service = SchedulerService(db, PullStub(), SiteStub())
+    service.reload()
+    jobs = {job.id: job for job in service.scheduler.get_jobs()}
+
+    assert set(jobs) == {"scheduled-pull", "scheduled-site-sync"}
+    assert int(jobs["scheduled-pull"].trigger.interval.total_seconds()) == 2 * 3600
+    assert int(jobs["scheduled-site-sync"].trigger.interval.total_seconds()) == 7 * 3600
+
+    service.start_scheduled_pull()
+    assert pull_calls["count"] == 1
+    assert site_calls["count"] == 0
+
+    service.start_scheduled_site_sync()
+    assert pull_calls["count"] == 1
+    assert site_calls["count"] == 1
+
+
+def test_new_databases_keep_site_scheduler_disabled_by_default(tmp_path: Path) -> None:
+    db, _storage, _syncer = make_app(tmp_path)
+    settings = db.get_settings()
+
+    assert settings["site_scheduler_enabled"] == DEFAULT_SETTINGS["site_scheduler_enabled"]
+    assert settings["site_scheduler_interval_hours"] == DEFAULT_SETTINGS["site_scheduler_interval_hours"]
+
+
 def test_gallery_thumbnails_use_576_and_258_short_edge_and_rebuild_cleans_old_derivatives(tmp_path: Path) -> None:
     db, storage, _syncer = make_app(tmp_path)
     image_folder = storage.image_folder("thumb-demo")
@@ -561,6 +624,69 @@ def test_site_source_suggestion_detects_content_post_structure(tmp_path: Path) -
     assert posts[0].assets[0].url.endswith("/image.jpg")
 
 
+def test_site_parser_fallback_handles_entry_meta_json_ld_and_self_closing_images(tmp_path: Path, monkeypatch) -> None:
+    from app.services import site_parser
+
+    site_dir = tmp_path / "wordpress-style-site"
+    site_dir.mkdir(parents=True)
+    Image.new("RGB", (32, 32), (90, 120, 160)).save(site_dir / "image.jpg")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>WordPress Style</title></head>
+          <body>
+            <article class="hentry">
+              <h1 class="entry-title"><a href="post.html">List Title</a></h1>
+              <div class="entry-meta">2026-05-22｜この記事のカテゴリ</div>
+            </article>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head>
+            <title>Detail Title - Site</title>
+            <script type="application/ld+json">{"datePublished":"2026-05-22T07:15:00+00:00"}</script>
+          </head>
+          <body>
+            <h1 class="site-title"></h1>
+            <article class="hentry">
+              <h1 class="entry-title">Detail Title</h1>
+              <div class="entry-content"><img src="image.jpg" /></div>
+            </article>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(site_parser, "BeautifulSoup", None)
+
+    parser = SourceParser(PageFetcher())
+    posts = parser.discover(
+        {
+            "source_type": "html",
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "max_pages": 1,
+            "list_item_selector": ".hentry",
+            "detail_link_selector": "a",
+            "title_selector": "h1",
+            "date_selector": site_parser.DEFAULT_DATE_SELECTOR,
+            "body_selector": "article",
+            "media_selector": ".entry-content img",
+        }
+    )
+
+    assert len(posts) == 1
+    assert posts[0].title == "Detail Title"
+    assert posts[0].pub_date == "2026-05-22"
+    assert posts[0].assets[0].url.endswith("/image.jpg")
+
+
 def test_site_parser_stops_when_later_paged_html_is_missing(tmp_path: Path) -> None:
     site_dir = tmp_path / "paged-missing"
     site_dir.mkdir(parents=True)
@@ -632,22 +758,26 @@ def test_site_sync_downloads_allowed_posts_and_is_idempotent(tmp_path: Path) -> 
     assert any(log["reason"] == "早于起始日期" for log in logs)
 
 
-def test_site_sync_does_not_store_new_posts_without_date_or_rule_match(tmp_path: Path) -> None:
+def test_site_sync_stores_rule_matched_posts_with_date_fallback(tmp_path: Path) -> None:
     db, _storage, syncer = make_app(tmp_path)
     db.save_site_rules({"mode": "whitelist", "allow_keywords": ["spring"], "use_regex": False})
     source = create_rule_guard_source(db, tmp_path)
 
     result = syncer._sync_source(source)
     logs = db.list_site_filter_logs()
+    posts = db.list_site_posts(source_id=source["id"])
 
     assert result["discovered"] == 2
-    assert result["posts"] == 0
+    assert result["posts"] == 1
     assert result["blocked"] == 1
-    assert result["skipped"] == 1
-    assert db.list_site_posts(source_id=source["id"]) == []
+    assert result["skipped"] == 0
+    assert result["no_media"] == 1
+    assert len(posts) == 1
+    assert posts[0]["title"] == "Allowed Without Date"
+    assert parse_date(posts[0]["pub_date"]) is not None
     assert db.list_site_posts(category="blocked", source_id=source["id"]) == []
     assert any(log["reason"] == "未命中站点白名单" for log in logs)
-    assert any(log["reason"] == "无有效发布日期" for log in logs)
+    assert any(log["decision"] == "date-fallback" and "同步日期" in log["reason"] for log in logs)
 
 
 def test_site_sync_skips_posts_that_are_still_in_trash(tmp_path: Path) -> None:
@@ -1279,6 +1409,36 @@ def test_site_icon_refresh_discovers_html_link_icon(tmp_path: Path) -> None:
     assert item["icon_url"] == (site_dir / "logo.png").resolve().as_uri()
 
 
+def test_site_icon_refresh_fallback_parser_discovers_shortcut_icon(tmp_path: Path, monkeypatch) -> None:
+    from app.services import site_parser
+
+    db, _storage, syncer = make_app(tmp_path)
+    site_dir = tmp_path / "shortcut-icon-site"
+    site_dir.mkdir()
+    (site_dir / "site.ico").write_bytes(b"fake ico")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html><head><link rel="shortcut icon" href="site.ico" /></head><body></body></html>
+        """,
+        encoding="utf-8",
+    )
+    source = db.create_site_source(
+        {
+            "name": "Shortcut Icon Fixture",
+            "slug": "shortcut-icon-fixture",
+            **html_source(),
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "enabled": True,
+        }
+    )
+    monkeypatch.setattr(site_parser, "BeautifulSoup", None)
+
+    item = syncer.refresh_site_icon(source["id"])
+
+    assert item["icon_url"] == (site_dir / "site.ico").resolve().as_uri()
+
+
 def test_site_icon_refresh_discovers_rss_image(tmp_path: Path) -> None:
     db, _storage, syncer = make_app(tmp_path)
     site_dir = tmp_path / "rss-icon-site"
@@ -1597,6 +1757,8 @@ def test_site_sync_downloads_media_with_three_workers(tmp_path: Path, monkeypatc
 def test_site_helpers_parse_date_and_filename() -> None:
     assert parse_date("2026.04.01").isoformat() == "2026-04-01"
     assert parse_date("2026年6月23日(火) 21:39").isoformat() == "2026-06-23"
+    assert parse_date("20260522").isoformat() == "2026-05-22"
+    assert parse_date("22/05/2026").isoformat() == "2026-05-22"
     assert clean_filename("https://example.test/a/b/photo.webp?x=1", "Hello / 世界", 2, "image") == "002-hello-世界.webp"
 
 

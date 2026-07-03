@@ -598,9 +598,9 @@
                             <button class="secondary-button" @click="openSubscriptions()">打开订阅管理</button>
                         </div>
                         <label>下载间隔(秒) <input type="number" step="0.1" x-model="settings.download_sleep"></label>
-                        <label>定时任务间隔(小时) <input type="number" min="1" x-model="settings.scheduler_interval_hours"></label>
+                        <label>UP 主定时拉取间隔(小时) <input type="number" min="1" x-model.number="settings.scheduler_interval_hours"></label>
                         <label class="toggle-row"><input type="checkbox" x-model="settings.auto_load_enabled"> 图片视图滑到底部自动继续加载</label>
-                        <label class="toggle-row"><input type="checkbox" x-model="settings.scheduler_enabled"> 启用定时拉取</label>
+                        <label class="toggle-row"><input type="checkbox" x-model="settings.scheduler_enabled"> 启用 UP 主定时拉取</label>
                         <p class="field-copy">抓取九图、Live Photo 和转发动态已迁移到订阅中心，可按每个 UP 单独设置。拉取时会自动加入访问抖动、下载间隔抖动和浏览器化请求头。</p>
                         <p class="field-copy">全量拉取会重新扫描当前账号可见的所有动态，用于补齐旧动态和漏拉内容。</p>
                         <div class="button-row confirm-row" x-show="fullReloadConfirmStep === 0">
@@ -633,6 +633,8 @@
 
                     <article class="settings-card">
                         <h4>站点同步</h4>
+                        <label class="toggle-row"><input type="checkbox" x-model="settings.site_scheduler_enabled"> 启用站点订阅定时同步</label>
+                        <label>站点定时同步间隔(小时) <input type="number" min="1" x-model.number="settings.site_scheduler_interval_hours"></label>
                         <label>页面请求超时(秒) <input type="number" min="30" max="900" step="10" x-model.number="settings.site_request_timeout"></label>
                         <label>请求间隔(秒) <input type="number" min="0" step="0.1" x-model.number="settings.site_request_sleep"></label>
                         <label>单贴文最大媒体数 <input type="number" min="1" max="500" x-model.number="settings.site_max_media_per_post"></label>

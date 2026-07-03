@@ -39,7 +39,10 @@ DEFAULT_SITE_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/146.0.0.0 Safari/537.36"
 )
-DEFAULT_DATE_SELECTOR = "time, .entry-date, .date, .updated, .post-date, [datetime]"
+DEFAULT_DATE_SELECTOR = (
+    "time, .entry-date, .date, .updated, .published, .posted-on, .post-date, "
+    ".entry-meta, .post-meta, .meta-date, [datetime]"
+)
 DEFAULT_TAG_SELECTOR = ".tag, .tags a, .cat-name, .category a, .post-categories a"
 DEFAULT_BODY_SELECTOR = "article, .entry-content, .post-content, .post-page-content, .content, main"
 DEFAULT_MEDIA_SELECTOR = (
@@ -148,6 +151,10 @@ class SimpleHtmlParser(HTMLParser):
         self.stack[-1].children.append(node)
         if tag.lower() not in self.VOID_TAGS:
             self.stack.append(node)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        node = HtmlNode(tag.lower(), {key.lower(): value or "" for key, value in attrs})
+        self.stack[-1].children.append(node)
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -378,7 +385,8 @@ class SourceParser:
         return self._dedupe_posts(posts)
 
     def parse_detail(self, url: str, source: dict[str, Any], parse_assets: bool = True, fallback_node: Any | None = None) -> ParsedPost:
-        soup = parse_html(self.fetcher.get_text(url))
+        text = self.fetcher.get_text(url)
+        soup = parse_html(text)
         title = self._selector_text(soup, source.get("title_selector"))
         if not title and fallback_node:
             title = self._selector_text(fallback_node, source.get("title_selector"))
@@ -387,6 +395,8 @@ class SourceParser:
         pub_date = self._selector_date(soup, source.get("date_selector"))
         if not pub_date and fallback_node:
             pub_date = self._selector_date(fallback_node, source.get("date_selector"))
+        if not pub_date:
+            pub_date = self._html_date_fallback(soup, text)
         tags = self._selector_texts(soup, source.get("tag_selector"))
         if not tags and fallback_node:
             tags = self._selector_texts(fallback_node, source.get("tag_selector"))
@@ -637,10 +647,15 @@ class SourceParser:
     def _selector_text(self, soup: Any | None, selector: str | None) -> str:
         if not soup or not selector:
             return ""
-        node = soup.select_one(selector)
-        if not node:
+        try:
+            nodes = soup.select(selector)
+        except Exception:
             return ""
-        return node.get("content") or node.get("datetime") or node.get_text(" ", strip=True)
+        for node in nodes:
+            text = self._node_text(node)
+            if text:
+                return text
+        return ""
 
     def _selector_texts(self, soup: Any | None, selector: str | None) -> list[str]:
         if not soup or not selector:
@@ -648,9 +663,107 @@ class SourceParser:
         return [node.get_text(" ", strip=True) for node in soup.select(selector) if node.get_text(" ", strip=True)]
 
     def _selector_date(self, soup: Any | None, selector: str | None) -> str | None:
-        text = self._selector_text(soup, selector)
-        parsed = parse_date(text)
-        return parsed.isoformat() if parsed else None
+        if not soup or not selector:
+            return None
+        try:
+            nodes = soup.select(selector)
+        except Exception:
+            return None
+        for node in nodes:
+            for value in self._node_date_values(node):
+                parsed = parse_date(value)
+                if parsed:
+                    return parsed.isoformat()
+        return None
+
+    def _node_text(self, node: Any) -> str:
+        for key in ("content", "datetime", "title", "aria-label"):
+            value = node.get(key)
+            if value:
+                return str(value).strip()
+        return node.get_text(" ", strip=True)
+
+    def _node_date_values(self, node: Any) -> list[str]:
+        values = []
+        for key in ("datetime", "content", "title", "aria-label", "data-date", "data-time", "data-published"):
+            value = node.get(key)
+            if value:
+                values.append(str(value))
+        text = node.get_text(" ", strip=True)
+        if text:
+            values.append(text)
+        return values
+
+    def _html_date_fallback(self, soup: Any, text: str) -> str | None:
+        for node in self._iter_nodes(soup, "meta"):
+            key = str(node.get("property") or node.get("name") or node.get("itemprop") or "").lower()
+            if key not in {
+                "article:published_time",
+                "article:modified_time",
+                "date",
+                "datepublished",
+                "datemodified",
+                "pubdate",
+                "publishdate",
+                "dc.date",
+                "dc.date.issued",
+                "og:updated_time",
+            }:
+                continue
+            parsed = parse_date(str(node.get("content") or ""))
+            if parsed:
+                return parsed.isoformat()
+        for selector in (
+            "time",
+            ".entry-meta",
+            ".post-meta",
+            ".posted-on",
+            ".published",
+            ".updated",
+            ".post-date",
+            ".date",
+            ".meta-date",
+        ):
+            pub_date = self._selector_date(soup, selector)
+            if pub_date:
+                return pub_date
+        for key in ("datePublished", "dateModified", "uploadDate"):
+            match = re.search(rf'"{key}"\s*:\s*"([^"]+)"', text)
+            if match:
+                parsed = parse_date(match.group(1))
+                if parsed:
+                    return parsed.isoformat()
+        for selector in ("article", "main", ".post", ".entry-content", ".post-content", ".content"):
+            try:
+                nodes = soup.select(selector)
+            except Exception:
+                continue
+            for node in nodes[:3]:
+                pub_date = self._first_date_in_text(node.get_text(" ", strip=True))
+                if pub_date:
+                    return pub_date
+        return None
+
+    def _first_date_in_text(self, text: str) -> str | None:
+        for match in re.finditer(r"\b(20\d{2})[./年-](\d{1,2})[./月-](\d{1,2})", text):
+            parsed = parse_date(match.group(0))
+            if parsed:
+                return parsed.isoformat()
+        return None
+
+    def _iter_nodes(self, root: Any, name: str | None = None) -> list[Any]:
+        if hasattr(root, "find_all"):
+            return list(root.find_all(name or True))
+        output: list[Any] = []
+
+        def visit(node: Any) -> None:
+            for child in getattr(node, "children", []) or []:
+                if name is None or getattr(child, "name", None) == name:
+                    output.append(child)
+                visit(child)
+
+        visit(root)
+        return output
 
     def _media_assets(self, soup: Any, selector: str | None, base_url: str) -> list[ParsedAsset]:
         if not selector:
@@ -687,7 +800,17 @@ class SourceParser:
             if not url or url.startswith("data:") or url.startswith("about:"):
                 continue
             return url
+        for key in ("data-srcset", "srcset"):
+            if first_src := self._first_srcset_url(str(node.get(key) or "")):
+                return first_src
         return ""
+
+    def _first_srcset_url(self, srcset: str) -> str | None:
+        for part in srcset.split(","):
+            url = part.strip().split(" ", 1)[0].strip()
+            if url and not url.startswith("data:"):
+                return url
+        return None
 
     def _rss_link(self, item: Any) -> str:
         for child in item.iter():
