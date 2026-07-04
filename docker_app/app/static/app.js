@@ -27,6 +27,8 @@ function galleryApp() {
     galleryPages: {},
     galleryLoadedPages: [],
     galleryPageWindowSize: 2,
+    galleryPageHeights: {},
+    galleryAveragePageHeight: 900,
     galleryLoading: false,
     galleryViewMode: localStorage.getItem("gallery_view_mode") || "folder",
     sortOrder: localStorage.getItem("gallery_time_sort_mode") === "random"
@@ -733,16 +735,28 @@ function galleryApp() {
       } else if (this.sourceKind !== "all") {
         params.set("source_kind", this.sourceKind);
       }
+      const localCacheKey = this.galleryLocalCacheKey(params);
+      if (reset && page === 1) {
+        const cached = this.readLocalGalleryCache(localCacheKey);
+        if (cached) {
+          this.applyGalleryPagePayload({ ...cached, cache_pending_refresh: true }, page, "replace");
+          this.galleryLoading = false;
+        }
+      }
       try {
         const payload = await this.api(`/api/gallery/items?${params.toString()}`);
         if (requestId !== this.galleryRequestId) {
           return;
         }
+        this.writeLocalGalleryCache(localCacheKey, payload);
         this.applyGalleryPagePayload(payload, page, reset ? "replace" : direction);
-        this.restoreGalleryAnchor(anchor);
-        if (this.autoLoadEnabled()) {
-          this.$nextTick(() => this.handleScroll());
-        }
+        this.$nextTick(() => {
+          this.measureGalleryPageHeights();
+          this.restoreGalleryAnchor(anchor);
+          if (this.autoLoadEnabled()) {
+            this.handleScroll();
+          }
+        });
       } finally {
         if (requestId === this.galleryRequestId) {
           this.galleryLoading = false;
@@ -802,6 +816,10 @@ function galleryApp() {
       return pageNumbers.flatMap((page) => this.galleryPages[String(page)] || []);
     },
 
+    galleryPageItems(page) {
+      return this.galleryPages[String(page)] || [];
+    },
+
     keepGalleryPageNumbers(pageNumbers, targetPage, direction) {
       if (pageNumbers.length <= this.galleryPageWindowSize) {
         return pageNumbers;
@@ -819,7 +837,9 @@ function galleryApp() {
 
     applyGalleryPagePayload(payload, page, direction) {
       const pageKey = String(page);
-      const nextPages = { ...(this.galleryPages || {}), [pageKey]: payload.items || [] };
+      this.measureGalleryPageHeights();
+      const pageItems = (payload.items || []).map((item) => ({ ...item, __gallery_page: page }));
+      const nextPages = { ...(this.galleryPages || {}), [pageKey]: pageItems };
       const allPages = Object.keys(nextPages)
         .map((value) => Number(value))
         .filter((value) => Number.isFinite(value) && value > 0)
@@ -837,6 +857,114 @@ function galleryApp() {
         total_pages: payload.total_pages || this.gallery.total_pages || 1,
         items: this.flattenGalleryPages(keepPages),
       };
+    },
+
+    galleryLocalCacheKey(params) {
+      if (this.randomModeActive()) {
+        return "";
+      }
+      return `gallery-page:${params.toString()}`;
+    },
+
+    readLocalGalleryCache(key) {
+      if (!key) {
+        return null;
+      }
+      try {
+        const cached = JSON.parse(localStorage.getItem(key) || "null");
+        return cached?.payload?.items ? cached.payload : null;
+      } catch (_error) {
+        return null;
+      }
+    },
+
+    writeLocalGalleryCache(key, payload) {
+      if (!key || this.randomModeActive() || !payload?.items) {
+        return;
+      }
+      try {
+        localStorage.setItem(key, JSON.stringify({ payload, saved_at: Date.now() }));
+      } catch (_error) {
+        return;
+      }
+    },
+
+    galleryPageHeight(page) {
+      const measured = Number(this.galleryPageHeights[String(page)]);
+      if (Number.isFinite(measured) && measured > 0) {
+        return measured;
+      }
+      return Math.max(480, Number(this.galleryAveragePageHeight) || 900);
+    },
+
+    galleryPageGap() {
+      const virtualList = this.$refs.galleryStage?.querySelector?.(".gallery-virtual-list") || document.querySelector(".gallery-virtual-list");
+      if (virtualList && window.getComputedStyle) {
+        const style = window.getComputedStyle(virtualList);
+        const gap = Number.parseFloat(style.rowGap || style.gap || "");
+        if (Number.isFinite(gap) && gap >= 0) {
+          return gap;
+        }
+      }
+      return 16;
+    },
+
+    galleryVirtualHeightBefore(page) {
+      const firstPage = Math.max(1, Number(page || 1));
+      const hiddenPages = Math.max(0, firstPage - 1);
+      let height = 0;
+      for (let current = 1; current < firstPage; current += 1) {
+        height += this.galleryPageHeight(current);
+      }
+      if (hiddenPages > 1) {
+        height += this.galleryPageGap() * (hiddenPages - 1);
+      }
+      return Math.max(0, Math.round(height));
+    },
+
+    galleryVirtualHeightAfter(page) {
+      const lastPage = Math.max(1, Number(page || 1));
+      const totalPages = this.galleryTotalPages();
+      const hiddenPages = Math.max(0, totalPages - lastPage);
+      let height = 0;
+      for (let current = lastPage + 1; current <= totalPages; current += 1) {
+        height += this.galleryPageHeight(current);
+      }
+      if (hiddenPages > 1) {
+        height += this.galleryPageGap() * (hiddenPages - 1);
+      }
+      return Math.max(0, Math.round(height));
+    },
+
+    galleryVirtualTopStyle() {
+      return `height: ${this.galleryVirtualHeightBefore(this.firstLoadedGalleryPage())}px;`;
+    },
+
+    galleryVirtualBottomStyle() {
+      return `height: ${this.galleryVirtualHeightAfter(this.lastLoadedGalleryPage())}px;`;
+    },
+
+    measureGalleryPageHeights() {
+      if (typeof document === "undefined" || !document.querySelectorAll) {
+        return;
+      }
+      const nextHeights = { ...(this.galleryPageHeights || {}) };
+      let totalHeight = 0;
+      let measuredCount = 0;
+      document.querySelectorAll(".gallery-page[data-gallery-page]").forEach((element) => {
+        const page = String(element.getAttribute("data-gallery-page") || "");
+        const height = Math.round(Number(element.getBoundingClientRect?.().height || element.offsetHeight || 0));
+        if (!page || height <= 0) {
+          return;
+        }
+        nextHeights[page] = height;
+        totalHeight += height;
+        measuredCount += 1;
+      });
+      this.galleryPageHeights = nextHeights;
+      if (measuredCount > 0) {
+        this.galleryAveragePageHeight = Math.max(480, Math.round(totalHeight / measuredCount));
+      }
     },
 
     cssEscape(value) {
@@ -881,6 +1009,7 @@ function galleryApp() {
       if (this.loadingMore || !this.hasMoreItems()) {
         return;
       }
+      this.measureGalleryPageHeights();
       const targetPage = this.lastLoadedGalleryPage() + 1;
       const anchor = this.captureGalleryAnchorForPage(this.lastLoadedGalleryPage());
       this.loadingMore = true;
@@ -895,6 +1024,7 @@ function galleryApp() {
       if (this.loadingPrevious || !this.hasPreviousItems()) {
         return;
       }
+      this.measureGalleryPageHeights();
       const currentFirstPage = this.firstLoadedGalleryPage();
       const targetPage = currentFirstPage - 1;
       const anchor = this.captureGalleryAnchorForPage(currentFirstPage);

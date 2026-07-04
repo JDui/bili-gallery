@@ -399,6 +399,16 @@ def test_gallery_indexes_rebuild_and_query_are_stable(tmp_path: Path) -> None:
 
     folders = gallery.get_gallery_items(view_mode="folder", sort_order="desc", page_size=10)
     assert [item["folder_name"] for item in folders["items"]] == ["20250102_第二条", "20250101_第一条"]
+    assert folders["cache_hit"] is False
+
+    cached_folders = gallery.get_gallery_items(view_mode="folder", sort_order="desc", page_size=10)
+    assert cached_folders["cache_hit"] is True
+    assert [item["folder_name"] for item in cached_folders["items"]] == ["20250102_第二条", "20250101_第一条"]
+
+    db.set_folder_favorite("20250102_第二条", True)
+    refreshed_folders = gallery.get_gallery_items(view_mode="folder", sort_order="desc", page_size=10)
+    assert refreshed_folders["cache_hit"] is False
+    assert refreshed_folders["items"][0]["is_favorite"] is True
 
     pairs = gallery.get_gallery_items(view_mode="pair", sort_order="desc", page_size=10)
     assert [item["item_key"] for item in pairs["items"]] == [

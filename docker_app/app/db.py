@@ -369,10 +369,19 @@ class Database:
                     unique(folder_name, pair_index)
                 );
 
+                create table if not exists gallery_page_cache (
+                    cache_key text primary key,
+                    signature text not null,
+                    payload_json text not null,
+                    updated_at text not null
+                );
+
                 create index if not exists idx_folders_pub_ts on folders(pub_ts desc);
                 create index if not exists idx_folders_review_pub_ts on folders(review_status, pub_ts desc);
+                create index if not exists idx_folders_updated on folders(updated_at desc);
                 create index if not exists idx_assets_folder on assets(folder_name, media_type, pair_index);
                 create index if not exists idx_assets_folder_pair_media on assets(folder_name, pair_index, media_type);
+                create index if not exists idx_assets_updated on assets(updated_at desc);
                 create index if not exists idx_review_status on review_items(status, updated_at desc);
                 create index if not exists idx_filter_logs_created on filter_logs(created_at desc);
                 create index if not exists idx_blacklist_items_dynamic on blacklist_items(top_dynamic_id, source_dynamic_id);
@@ -387,9 +396,12 @@ class Database:
                 create index if not exists idx_folder_index_subscription_pub_ts on folder_index(subscription_uid, pub_ts desc, folder_name desc);
                 create index if not exists idx_folder_index_review_pub_ts on folder_index(review_status, pub_ts desc, folder_name desc);
                 create index if not exists idx_folder_index_favorite_pub_ts on folder_index(is_favorite, pub_ts desc, folder_name desc);
+                create index if not exists idx_folder_index_updated on folder_index(updated_at desc);
                 create index if not exists idx_pair_index_pub_ts on pair_index(pub_ts desc, folder_name desc, pair_index asc);
                 create index if not exists idx_pair_index_subscription_pub_ts on pair_index(subscription_uid, pub_ts desc, folder_name desc, pair_index asc);
                 create index if not exists idx_pair_index_folder_pair on pair_index(folder_name, pair_index asc);
+                create index if not exists idx_pair_index_updated on pair_index(updated_at desc);
+                create index if not exists idx_gallery_page_cache_updated on gallery_page_cache(updated_at desc);
                 """
             )
             self._ensure_column(conn, "folders", "subscription_uid", "text")
@@ -2029,6 +2041,66 @@ class Database:
         with self.connect() as conn:
             conn.execute("delete from pair_index")
             conn.execute("delete from folder_index")
+
+    def gallery_page_cache_signature(self) -> str:
+        settings = self.get_settings()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select
+                    (select count(*) from folders) as folder_rows,
+                    (select coalesce(max(updated_at), '') from folders) as folders_updated,
+                    (select count(*) from assets) as asset_rows,
+                    (select coalesce(max(updated_at), '') from assets) as assets_updated,
+                    (select count(*) from folder_index) as folder_index_rows,
+                    (select coalesce(sum(is_favorite), 0) from folder_index) as folder_index_favorites,
+                    (select coalesce(max(updated_at), '') from folder_index) as folder_index_updated,
+                    (select count(*) from pair_index) as pair_index_rows,
+                    (select coalesce(max(updated_at), '') from pair_index) as pair_index_updated
+                """
+            ).fetchone()
+        return dumps_json(
+            {
+                "version": int(settings.get("gallery_index_version") or 0),
+                "rebuilt_at": settings.get("gallery_index_rebuilt_at"),
+                "folder_rows": int(row["folder_rows"] or 0),
+                "folders_updated": row["folders_updated"] or "",
+                "asset_rows": int(row["asset_rows"] or 0),
+                "assets_updated": row["assets_updated"] or "",
+                "folder_index_rows": int(row["folder_index_rows"] or 0),
+                "folder_index_favorites": int(row["folder_index_favorites"] or 0),
+                "folder_index_updated": row["folder_index_updated"] or "",
+                "pair_index_rows": int(row["pair_index_rows"] or 0),
+                "pair_index_updated": row["pair_index_updated"] or "",
+            }
+        )
+
+    def get_gallery_page_cache(self, cache_key: str, signature: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select * from gallery_page_cache where cache_key = ? limit 1",
+                (str(cache_key),),
+            ).fetchone()
+            if not row:
+                return None
+            if str(row["signature"]) != str(signature):
+                conn.execute("delete from gallery_page_cache where cache_key = ?", (str(cache_key),))
+                return None
+        return dict(row)
+
+    def set_gallery_page_cache(self, cache_key: str, signature: str, payload: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into gallery_page_cache(cache_key, signature, payload_json, updated_at)
+                values (?, ?, ?, ?)
+                on conflict(cache_key) do update set
+                    signature = excluded.signature,
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (str(cache_key), str(signature), dumps_json(payload), now_iso()),
+            )
 
     def replace_gallery_index(
         self,

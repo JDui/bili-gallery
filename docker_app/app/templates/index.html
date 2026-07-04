@@ -226,116 +226,130 @@
                 <div class="gallery-layout">
                     <div class="gallery-main" :class="{ 'is-loading': galleryLoading }" :key="galleryRenderKey">
                         <template x-if="galleryViewMode === 'folder'">
-                            <div class="masonry" :style="galleryMasonryStyle()">
-                                <template x-for="item in gallery.items" :key="item.folder_name">
-                                    <article
-                                        class="photo-card gallery-item-card"
-                                        data-testid="photo-card"
-                                        :data-gallery-key="galleryItemKey(item)"
-                                        :data-year-key="item.year_key"
-                                        :data-month-key="item.month_key"
-                                        :class="{ live: item.has_livephoto }"
-                                        @click="openFolder(item.folder_name)"
-                                        >
-                                            <div class="photo-visual" x-show="item.preview_tiles?.length">
-                                            <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
-                                                <template x-for="tile in item.preview_tiles" :key="tile.id">
-                                                    <div class="photo-collage-tile">
-                                                        <img loading="lazy" decoding="async" :src="tile.small_thumb_url || tile.thumb_url || tile.cover_url || tile.url" :alt="item.title" :width="tile.width || null" :height="tile.height || null">
+                            <div class="gallery-virtual-list">
+                                <div class="gallery-virtual-spacer" :style="galleryVirtualTopStyle()" x-show="galleryVirtualHeightBefore(firstLoadedGalleryPage()) > 0" aria-hidden="true"></div>
+                                <template x-for="pageNumber in galleryLoadedPages" :key="`folder-page-${pageNumber}`">
+                                    <div class="masonry gallery-page" :style="galleryMasonryStyle()" :data-gallery-page="pageNumber">
+                                        <template x-for="item in galleryPageItems(pageNumber)" :key="item.folder_name">
+                                            <article
+                                                class="photo-card gallery-item-card"
+                                                data-testid="photo-card"
+                                                :data-gallery-key="galleryItemKey(item)"
+                                                :data-gallery-page="pageNumber"
+                                                :data-year-key="item.year_key"
+                                                :data-month-key="item.month_key"
+                                                :class="{ live: item.has_livephoto }"
+                                                @click="openFolder(item.folder_name)"
+                                                >
+                                                    <div class="photo-visual" x-show="item.preview_tiles?.length">
+                                                    <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
+                                                        <template x-for="tile in item.preview_tiles" :key="tile.id">
+                                                            <div class="photo-collage-tile">
+                                                                <img loading="lazy" decoding="async" :src="tile.small_thumb_url || tile.thumb_url || tile.cover_url || tile.url" :alt="item.title" :width="tile.width || null" :height="tile.height || null">
+                                                            </div>
+                                                        </template>
                                                     </div>
-                                                </template>
-                                            </div>
-                                            <div class="photo-badges">
-                                                <span class="photo-badge" x-text="item.pub_time"></span>
-                                            </div>
-                                            <span class="photo-badge live photo-badge-corner" x-show="item.has_livephoto">Live Photo</span>
-                                            <div class="photo-count-badge" x-text="`${item.asset_count} 项`"></div>
-                                            </div>
-                                            <button class="favorite-button" :class="{ active: item.is_favorite }" @click.stop="toggleFavorite(item, $event)" aria-label="收藏">
-                                                <span>❤</span>
-                                            </button>
-                                            <div class="card-trash-zone" @click.stop>
-                                                <template x-if="pendingTrashFolder !== item.folder_name">
-                                                    <button class="mini-trash-button" @click="askTrashFolder(item.folder_name)" aria-label="删除动态">
-                                                        <span class="trash-icon" aria-hidden="true"></span>
+                                                    <div class="photo-badges">
+                                                        <span class="photo-badge" x-text="item.pub_time"></span>
+                                                    </div>
+                                                    <span class="photo-badge live photo-badge-corner" x-show="item.has_livephoto">Live Photo</span>
+                                                    <div class="photo-count-badge" x-text="`${item.asset_count} 项`"></div>
+                                                    </div>
+                                                    <button class="favorite-button" :class="{ active: item.is_favorite }" @click.stop="toggleFavorite(item, $event)" aria-label="收藏">
+                                                        <span>❤</span>
                                                     </button>
-                                                </template>
-                                                <template x-if="pendingTrashFolder === item.folder_name">
-                                                    <div class="mini-confirm-row">
-                                                        <button class="mini-confirm-button" @click="cancelTrashCurrentFolder()">取消</button>
-                                                        <button class="mini-confirm-button danger" @click="trashFolderCard(item.folder_name)">确认</button>
+                                                    <div class="card-trash-zone" @click.stop>
+                                                        <template x-if="pendingTrashFolder !== item.folder_name">
+                                                            <button class="mini-trash-button" @click="askTrashFolder(item.folder_name)" aria-label="删除动态">
+                                                                <span class="trash-icon" aria-hidden="true"></span>
+                                                            </button>
+                                                        </template>
+                                                        <template x-if="pendingTrashFolder === item.folder_name">
+                                                            <div class="mini-confirm-row">
+                                                                <button class="mini-confirm-button" @click="cancelTrashCurrentFolder()">取消</button>
+                                                                <button class="mini-confirm-button danger" @click="trashFolderCard(item.folder_name)">确认</button>
+                                                            </div>
+                                                        </template>
                                                     </div>
-                                                </template>
-                                            </div>
-                                            <div class="photo-meta">
-                                            <h4 x-text="cardPrimaryText(item)"></h4>
-                                            <p x-text="cardSecondaryText(item)"></p>
-                                            <div class="photo-stats">
-                                                <span x-text="item.subscription_name || '默认订阅'"></span>
-                                                <span x-text="`${item.image_count} 张照片`"></span>
-                                                <span x-text="`${item.livephoto_count} 条 Live Photo`"></span>
-                                            </div>
-                                        </div>
-                                    </article>
+                                                    <div class="photo-meta">
+                                                    <h4 x-text="cardPrimaryText(item)"></h4>
+                                                    <p x-text="cardSecondaryText(item)"></p>
+                                                    <div class="photo-stats">
+                                                        <span x-text="item.subscription_name || '默认订阅'"></span>
+                                                        <span x-text="`${item.image_count} 张照片`"></span>
+                                                        <span x-text="`${item.livephoto_count} 条 Live Photo`"></span>
+                                                    </div>
+                                                </div>
+                                            </article>
+                                        </template>
+                                    </div>
                                 </template>
+                                <div class="gallery-virtual-spacer" :style="galleryVirtualBottomStyle()" x-show="galleryVirtualHeightAfter(lastLoadedGalleryPage()) > 0" aria-hidden="true"></div>
                             </div>
                         </template>
                         <template x-if="galleryViewMode === 'pair'">
-                            <div class="masonry asset-masonry" :style="galleryMasonryStyle()">
-                                <template x-for="item in gallery.items" :key="item.item_key">
-                                    <article
-                                        class="photo-card asset-card gallery-item-card"
-                                        :data-gallery-key="galleryItemKey(item)"
-                                        :data-year-key="item.year_key"
-                                        :data-month-key="item.month_key"
-                                        :class="{ live: item.has_livephoto }"
-                                        @click="openGalleryPair(item)"
-                                        @mouseenter="item.has_livephoto ? startHoverPreview($event) : null"
-                                        @mouseleave="item.has_livephoto ? stopHoverPreview($event) : null"
-                                        @touchstart.passive="item.has_livephoto ? scheduleHoverPreview($event) : null"
-                                        @touchend="item.has_livephoto ? cancelScheduledHoverPreview($event) : null"
-                                        @touchcancel="item.has_livephoto ? cancelScheduledHoverPreview($event) : null"
-                                    >
-                                        <div class="photo-visual asset-visual" :style="assetVisualStyle(item)">
-                                            <img class="hover-preview-image" loading="lazy" decoding="async" :src="item.small_thumb_url || item.thumb_url || item.preview_url" :alt="item.title" :width="item.width || null" :height="item.height || null">
-                                            <template x-if="item.has_livephoto">
-                                                <video
-                                                    class="hover-preview-video hidden"
-                                                    playsinline
-                                                    muted
-                                                    preload="none"
-                                                    :poster="item.small_thumb_url || item.thumb_url || item.preview_url"
-                                                    :data-src="item.livephoto?.url"
-                                                ></video>
-                                            </template>
-                                            <div class="photo-badges">
-                                                <span class="photo-badge" x-text="item.pub_time"></span>
-                                                <span class="photo-badge live" x-show="item.has_livephoto">Live Photo</span>
-                                            </div>
-                                        </div>
-                                        <div class="card-trash-zone" @click.stop>
-                                            <template x-if="!pairDeletePending(item.folder_name, item.pair_index)">
-                                                <button class="mini-trash-button" @click="askDeletePair(item.folder_name, item.pair_index)" aria-label="删除图片">
-                                                    <span class="trash-icon" aria-hidden="true"></span>
-                                                </button>
-                                            </template>
-                                            <template x-if="pairDeletePending(item.folder_name, item.pair_index)">
-                                                <div class="mini-confirm-row">
-                                                    <button class="mini-confirm-button" @click="cancelDeleteViewerPair()">取消</button>
-                                                    <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(item.folder_name, item.pair_index)" @click="confirmDeletePair(item.folder_name, item.pair_index)">确认</button>
+                            <div class="gallery-virtual-list">
+                                <div class="gallery-virtual-spacer" :style="galleryVirtualTopStyle()" x-show="galleryVirtualHeightBefore(firstLoadedGalleryPage()) > 0" aria-hidden="true"></div>
+                                <template x-for="pageNumber in galleryLoadedPages" :key="`asset-page-${pageNumber}`">
+                                    <div class="masonry asset-masonry gallery-page" :style="galleryMasonryStyle()" :data-gallery-page="pageNumber">
+                                        <template x-for="item in galleryPageItems(pageNumber)" :key="item.item_key">
+                                            <article
+                                                class="photo-card asset-card gallery-item-card"
+                                                :data-gallery-key="galleryItemKey(item)"
+                                                :data-gallery-page="pageNumber"
+                                                :data-year-key="item.year_key"
+                                                :data-month-key="item.month_key"
+                                                :class="{ live: item.has_livephoto }"
+                                                @click="openGalleryPair(item)"
+                                                @mouseenter="item.has_livephoto ? startHoverPreview($event) : null"
+                                                @mouseleave="item.has_livephoto ? stopHoverPreview($event) : null"
+                                                @touchstart.passive="item.has_livephoto ? scheduleHoverPreview($event) : null"
+                                                @touchend="item.has_livephoto ? cancelScheduledHoverPreview($event) : null"
+                                                @touchcancel="item.has_livephoto ? cancelScheduledHoverPreview($event) : null"
+                                            >
+                                                <div class="photo-visual asset-visual" :style="assetVisualStyle(item)">
+                                                    <img class="hover-preview-image" loading="lazy" decoding="async" :src="item.small_thumb_url || item.thumb_url || item.preview_url" :alt="item.title" :width="item.width || null" :height="item.height || null">
+                                                    <template x-if="item.has_livephoto">
+                                                        <video
+                                                            class="hover-preview-video hidden"
+                                                            playsinline
+                                                            muted
+                                                            preload="none"
+                                                            :poster="item.small_thumb_url || item.thumb_url || item.preview_url"
+                                                            :data-src="item.livephoto?.url"
+                                                        ></video>
+                                                    </template>
+                                                    <div class="photo-badges">
+                                                        <span class="photo-badge" x-text="item.pub_time"></span>
+                                                        <span class="photo-badge live" x-show="item.has_livephoto">Live Photo</span>
+                                                    </div>
                                                 </div>
-                                            </template>
-                                        </div>
-                                        <div class="photo-meta asset-meta">
-                                            <h4 x-text="item.title"></h4>
-                                            <p x-text="`${item.folder_name} · 第 ${item.pair_index} 组`"></p>
-                                            <div class="photo-stats">
-                                                <span x-text="item.has_images ? '原图可查看' : '仅动态视频'"></span>
-                                                <span x-show="item.has_livephoto">支持播放</span>
-                                            </div>
-                                        </div>
-                                    </article>
+                                                <div class="card-trash-zone" @click.stop>
+                                                    <template x-if="!pairDeletePending(item.folder_name, item.pair_index)">
+                                                        <button class="mini-trash-button" @click="askDeletePair(item.folder_name, item.pair_index)" aria-label="删除图片">
+                                                            <span class="trash-icon" aria-hidden="true"></span>
+                                                        </button>
+                                                    </template>
+                                                    <template x-if="pairDeletePending(item.folder_name, item.pair_index)">
+                                                        <div class="mini-confirm-row">
+                                                            <button class="mini-confirm-button" @click="cancelDeleteViewerPair()">取消</button>
+                                                            <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(item.folder_name, item.pair_index)" @click="confirmDeletePair(item.folder_name, item.pair_index)">确认</button>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                                <div class="photo-meta asset-meta">
+                                                    <h4 x-text="item.title"></h4>
+                                                    <p x-text="`${item.folder_name} · 第 ${item.pair_index} 组`"></p>
+                                                    <div class="photo-stats">
+                                                        <span x-text="item.has_images ? '原图可查看' : '仅动态视频'"></span>
+                                                        <span x-show="item.has_livephoto">支持播放</span>
+                                                    </div>
+                                                </div>
+                                            </article>
+                                        </template>
+                                    </div>
                                 </template>
+                                <div class="gallery-virtual-spacer" :style="galleryVirtualBottomStyle()" x-show="galleryVirtualHeightAfter(lastLoadedGalleryPage()) > 0" aria-hidden="true"></div>
                             </div>
                         </template>
                         <div class="empty-state" x-show="gallery.items.length === 0" x-cloak>

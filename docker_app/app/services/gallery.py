@@ -5,7 +5,7 @@ from math import ceil
 
 from app.db import Database
 from app.services.storage import StorageService
-from app.services.utils import loads_json
+from app.services.utils import dumps_json, loads_json
 
 
 class GalleryService:
@@ -28,8 +28,31 @@ class GalleryService:
         sort_order: str = "desc",
     ) -> dict:
         source_kind = self._normalize_source_kind(source_kind)
+        cacheable = sort_order != "random"
+        cache_signature = self.db.gallery_page_cache_signature() if cacheable else ""
+        cache_key = self._gallery_cache_key(
+            category=category,
+            year=year,
+            month=month,
+            start_month=start_month,
+            end_month=end_month,
+            subscription_uids=subscription_uids,
+            source_kind=source_kind,
+            page=page,
+            page_size=page_size,
+            view_mode=view_mode,
+            sort_order=sort_order,
+        )
+        if cacheable:
+            cached = self.db.get_gallery_page_cache(cache_key, cache_signature)
+            if cached:
+                payload = loads_json(cached.get("payload_json"), {})
+                if payload.get("items") is not None:
+                    payload["cache_hit"] = True
+                    payload["cache_updated_at"] = cached.get("updated_at")
+                    return payload
         if not self.db.gallery_index_ready():
-            return self._fallback_gallery_items(
+            payload = self._fallback_gallery_items(
                 category=category,
                 year=year,
                 month=month,
@@ -42,6 +65,7 @@ class GalleryService:
                 view_mode=view_mode,
                 sort_order=sort_order,
             )
+            return self._cache_gallery_payload(cacheable, cache_key, cache_signature, payload)
         if view_mode == "pair":
             result = self.db.query_pair_index(
                 category=category,
@@ -71,7 +95,7 @@ class GalleryService:
             )
             items = [self._folder_card_from_index(item) for item in result["items"]]
         total = int(result["total"])
-        return {
+        payload = {
             "items": items,
             "page": page,
             "page_size": page_size,
@@ -80,6 +104,54 @@ class GalleryService:
             "view_mode": view_mode,
             "sort_order": sort_order,
         }
+        return self._cache_gallery_payload(cacheable, cache_key, cache_signature, payload)
+
+    def _gallery_cache_key(
+        self,
+        *,
+        category: str,
+        year: str | None,
+        month: str | None,
+        start_month: str | None,
+        end_month: str | None,
+        subscription_uids: list[str] | None,
+        source_kind: str,
+        page: int,
+        page_size: int,
+        view_mode: str,
+        sort_order: str,
+    ) -> str:
+        return dumps_json(
+            {
+                "category": category or "all",
+                "year": year or "",
+                "month": month or "",
+                "start_month": start_month or "",
+                "end_month": end_month or "",
+                "subscription_uids": sorted(str(uid) for uid in (subscription_uids or []) if str(uid).strip()),
+                "source_kind": source_kind,
+                "page": int(page),
+                "page_size": int(page_size),
+                "view_mode": view_mode,
+                "sort_order": sort_order,
+            }
+        )
+
+    def _cache_gallery_payload(
+        self,
+        cacheable: bool,
+        cache_key: str,
+        cache_signature: str,
+        payload: dict,
+    ) -> dict:
+        payload = {
+            **payload,
+            "cache_hit": False,
+            "cache_signature": cache_signature,
+        }
+        if cacheable:
+            self.db.set_gallery_page_cache(cache_key, cache_signature, payload)
+        return payload
 
     def get_gallery_meta(self) -> dict:
         if not self.db.gallery_index_ready():

@@ -891,6 +891,7 @@ video {
     min-width: 0;
     transition: opacity var(--duration-fast) var(--ease-soft);
     contain: layout paint;
+    overflow-anchor: none;
 }
 
 .gallery-main.is-loading {
@@ -899,6 +900,24 @@ video {
 
 .gallery-item-card {
     scroll-margin-top: 118px;
+}
+
+.gallery-virtual-list {
+    display: grid;
+    gap: 16px;
+    overflow-anchor: none;
+}
+
+.gallery-page {
+    overflow-anchor: none;
+}
+
+.gallery-virtual-spacer {
+    min-height: 0;
+    pointer-events: none;
+    overflow: hidden;
+    contain: strict;
+    opacity: 0;
 }
 
 .time-filter-panel {
