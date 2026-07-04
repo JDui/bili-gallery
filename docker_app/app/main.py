@@ -160,7 +160,8 @@ async def toggle_favorite(folder_name: str, payload: dict[str, Any] = Body(defau
         raise HTTPException(status_code=404, detail="动态不存在")
     favorite = bool(payload.get("favorite", not bool(folder.get("is_favorite"))))
     db.set_folder_favorite(folder_name, favorite)
-    return {"ok": True, "favorite": favorite, "message": "已加入收藏" if favorite else "已取消收藏"}
+    sidebar_counts = db.refresh_sidebar_count_cache(["all", "favorites", "livephoto"])
+    return {"ok": True, "favorite": favorite, "message": "已加入收藏" if favorite else "已取消收藏", "sidebar_counts": sidebar_counts}
 
 
 @app.get("/api/site-sources")

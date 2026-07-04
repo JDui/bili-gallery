@@ -187,6 +187,12 @@ class PullManager:
     def attach_site_syncer(self, site_syncer: Any) -> None:
         self.site_syncer = site_syncer
 
+    def _refresh_content_sidebar_counts(self) -> dict[str, Any]:
+        return self.db.refresh_sidebar_count_cache(["all", "favorites", "livephoto", "review", "logs", "tasks", "subscriptions", "sites"])
+
+    def _refresh_delete_sidebar_counts(self) -> dict[str, Any]:
+        return self.db.refresh_sidebar_count_cache(["all", "favorites", "livephoto", "trash", "tasks"])
+
     def start_startup_sync(self) -> bool:
         if not self._acquire(mode="startup", message="正在整理图库"):
             return False
@@ -200,7 +206,7 @@ class PullManager:
         label = "全量重载当前动态" if force_reload else "拉取动态"
         queued = self._queue_or_start("pull", label, self._run_pull)
         message = "已加入任务队列" if queued else ("已开始全量重载当前动态" if force_reload else "已开始拉取")
-        return {"ok": True, "message": message, "queued": queued}
+        return {"ok": True, "message": message, "queued": queued, "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"])}
 
     def start_reload_all(self) -> dict[str, Any]:
         self.db.save_settings({"reload_all_once": True})
@@ -212,7 +218,7 @@ class PullManager:
             raise RuntimeError("订阅不存在")
         label = f"全量校验拉取 {subscription.get('uname') or uid}"
         queued = self._queue_or_start("subscription-reload", label, self._run_subscription_reload, str(uid))
-        return {"ok": True, "message": "已加入任务队列" if queued else "已开始全量校验拉取", "queued": queued}
+        return {"ok": True, "message": "已加入任务队列" if queued else "已开始全量校验拉取", "queued": queued, "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"])}
 
     def start_subscription_pull(self, uid: str) -> dict[str, Any]:
         subscription = self.db.get_subscription(uid)
@@ -220,7 +226,7 @@ class PullManager:
             raise RuntimeError("订阅不存在")
         label = f"拉取 {subscription.get('uname') or uid}"
         queued = self._queue_or_start("subscription-pull", label, self._run_subscription_pull, str(uid))
-        return {"ok": True, "message": "已加入任务队列" if queued else "已开始拉取当前订阅", "queued": queued}
+        return {"ok": True, "message": "已加入任务队列" if queued else "已开始拉取当前订阅", "queued": queued, "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"])}
 
     def toggle_subscription(self, uid: str) -> dict[str, Any]:
         subscription = self.db.get_subscription(uid)
@@ -274,7 +280,7 @@ class PullManager:
         source = self.db.get_site_source(source_id) if source_id else None
         label = f"同步站点 {source.get('name') or source_id}" if source else "同步全部站点"
         queued = self._queue_or_start("site-sync", label, self._run_site_sync, source_id)
-        return {"ok": True, "message": "已加入任务队列" if queued else "已开始站点同步", "queued": queued}
+        return {"ok": True, "message": "已加入任务队列" if queued else "已开始站点同步", "queued": queued, "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"])}
 
     def start_site_validation(self, source_id: int, max_pages: int | None = None) -> dict[str, Any]:
         if self.site_syncer is None:
@@ -289,7 +295,7 @@ class PullManager:
         page_suffix = f" · 临时 {max_pages} 页" if max_pages else ""
         label = f"全量校验站点 {source.get('name') or source_id}{page_suffix}"
         queued = self._queue_or_start("site-validate", label, self._run_site_validation, int(source_id), max_pages)
-        return {"ok": True, "message": "已加入任务队列" if queued else "已开始站点全量校验", "queued": queued}
+        return {"ok": True, "message": "已加入任务队列" if queued else "已开始站点全量校验", "queued": queued, "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"])}
 
     def start_storage_cleanup(self) -> dict[str, Any]:
         queued = self._queue_or_start("storage-cleanup", "清理垃圾文件", self._run_storage_cleanup)
@@ -417,7 +423,12 @@ class PullManager:
         self.db.clear_deleted_pair_marks(folder["top_dynamic_id"], folder["source_dynamic_id"])
         self.db.delete_folder(folder_name)
         self._run_background_cleanup(self._remove_folder_files, folder_name)
-        return {"ok": True, "message": "已加入黑名单并移入垃圾桶，文件会在后台继续清理", "cleanup_queued": True}
+        return {
+            "ok": True,
+            "message": "已加入黑名单并移入垃圾桶，文件会在后台继续清理",
+            "cleanup_queued": True,
+            "sidebar_counts": self._refresh_delete_sidebar_counts(),
+        }
 
     def restore_from_trash(self, item_id: int, repull_now: bool = False) -> dict[str, Any]:
         trash_item = self.db.get_trash_item(item_id)
@@ -506,7 +517,13 @@ class PullManager:
             self.db.delete_folder_if_empty(folder_name)
             remove_empty_folder = True
         self._run_background_cleanup(self._remove_pair_files, [dict(asset) for asset in assets], folder_name, remove_empty_folder)
-        return {"ok": True, "message": "当前图片组已永久删除，文件会在后台继续清理", "cleanup_queued": True}
+        return {
+            "ok": True,
+            "message": "当前图片组已永久删除，文件会在后台继续清理",
+            "cleanup_queued": True,
+            "remove_empty_folder": remove_empty_folder,
+            "sidebar_counts": self._refresh_delete_sidebar_counts(),
+        }
 
     def _run_background_cleanup(self, target, *args: Any) -> None:
         thread = threading.Thread(target=self._background_cleanup_entry, args=(target, args), daemon=True)
@@ -597,6 +614,7 @@ class PullManager:
             stats["gallery_index_check"] = gallery_index_check
             stats["events"] = self._runtime_events()
             self.db.finish_task_run(task_id, "success", "拉取完成", stats)
+            stats["sidebar_counts"] = self._refresh_content_sidebar_counts()
             self._status = {"running": False, "message": "拉取完成", "mode": "idle", "stats": stats}
         except Exception as exc:
             self.db.finish_task_run(
@@ -605,6 +623,7 @@ class PullManager:
                 str(exc),
                 {"error": str(exc), "retry_action": {"kind": "pull"}, "events": self._runtime_events()},
             )
+            self.db.refresh_sidebar_count_cache(["tasks"])
             self._status = {"running": False, "message": f"拉取失败: {exc}", "mode": "idle"}
         finally:
             self._release()
@@ -631,6 +650,7 @@ class PullManager:
             stats["gallery_index_check"] = gallery_index_check
             stats["events"] = self._runtime_events()
             self.db.finish_task_run(task_id, "success", "全量校验拉取完成", stats)
+            stats["sidebar_counts"] = self._refresh_content_sidebar_counts()
             self._status = {"running": False, "message": "全量校验拉取完成", "mode": "idle", "stats": stats}
         except Exception as exc:
             self.db.finish_task_run(
@@ -643,6 +663,7 @@ class PullManager:
                     "events": self._runtime_events(),
                 },
             )
+            self.db.refresh_sidebar_count_cache(["tasks"])
             self._status = {"running": False, "message": f"全量校验拉取失败: {exc}", "mode": "idle"}
         finally:
             self._release()
@@ -667,6 +688,7 @@ class PullManager:
             stats["gallery_index_check"] = gallery_index_check
             stats["events"] = self._runtime_events()
             self.db.finish_task_run(task_id, "success", "订阅拉取完成", stats)
+            stats["sidebar_counts"] = self._refresh_content_sidebar_counts()
             self._status = {"running": False, "message": "订阅拉取完成", "mode": "idle", "stats": stats}
         except Exception as exc:
             self.db.finish_task_run(
@@ -679,6 +701,7 @@ class PullManager:
                     "events": self._runtime_events(),
                 },
             )
+            self.db.refresh_sidebar_count_cache(["tasks"])
             self._status = {"running": False, "message": f"订阅拉取失败: {exc}", "mode": "idle"}
         finally:
             self._release()
@@ -699,6 +722,7 @@ class PullManager:
             stats["storage_stats"] = self._refresh_storage_stats_cache()
             stats["events"] = self._runtime_events()
             self.db.finish_task_run(task_id, "success", "站点同步完成", stats)
+            stats["sidebar_counts"] = self._refresh_content_sidebar_counts()
             self._status = {"running": False, "message": "站点同步完成", "mode": "idle", "stats": stats}
         except Exception as exc:
             self.db.finish_task_run(
@@ -707,6 +731,7 @@ class PullManager:
                 str(exc),
                 {"error": str(exc), "retry_action": retry_action, "events": self._runtime_events()},
             )
+            self.db.refresh_sidebar_count_cache(["tasks"])
             self._status = {"running": False, "message": f"站点同步失败: {exc}", "mode": "idle"}
             if self.site_syncer is not None:
                 self.site_syncer._status = {"running": False, "message": f"站点同步失败: {exc}"}
@@ -727,6 +752,7 @@ class PullManager:
             stats["storage_stats"] = self._refresh_storage_stats_cache()
             stats["events"] = self._runtime_events()
             self.db.finish_task_run(task_id, "success", "站点全量校验完成", stats)
+            stats["sidebar_counts"] = self._refresh_content_sidebar_counts()
             self._status = {"running": False, "message": "站点全量校验完成", "mode": "idle", "stats": stats}
         except Exception as exc:
             self.db.finish_task_run(
@@ -735,6 +761,7 @@ class PullManager:
                 str(exc),
                 {"error": str(exc), "retry_action": retry_action, "events": self._runtime_events()},
             )
+            self.db.refresh_sidebar_count_cache(["tasks"])
             self._status = {"running": False, "message": f"站点全量校验失败: {exc}", "mode": "idle"}
             if self.site_syncer is not None:
                 self.site_syncer._status = {"running": False, "message": f"站点全量校验失败: {exc}"}

@@ -59,7 +59,7 @@ class SiteSyncManager:
             return {"ok": True, "queued": False, "message": "已有站点同步任务正在运行"}
         thread = threading.Thread(target=self._run_sync_thread, args=(source_id,), daemon=True)
         thread.start()
-        return {"ok": True, "queued": False, "message": "已开始站点同步"}
+        return {"ok": True, "queued": False, "message": "已开始站点同步", "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"])}
 
     def start_full_validation(self, source_id: int, max_pages: int | None = None) -> dict[str, Any]:
         if self._task_queue is not None:
@@ -68,7 +68,7 @@ class SiteSyncManager:
             return {"ok": True, "queued": False, "message": "已有站点同步任务正在运行"}
         thread = threading.Thread(target=self._run_full_validation_thread, args=(source_id, max_pages), daemon=True)
         thread.start()
-        return {"ok": True, "queued": False, "message": "已开始站点全量校验"}
+        return {"ok": True, "queued": False, "message": "已开始站点全量校验", "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"])}
 
     def test_source(self, source: dict[str, Any]) -> list[dict[str, Any]]:
         settings = self.db.get_settings()
@@ -101,11 +101,13 @@ class SiteSyncManager:
         try:
             details = self.execute_sync(source_id)
             self.db.finish_task_run(task_id, "success", "站点同步完成", details)
+            details["sidebar_counts"] = self.db.refresh_sidebar_count_cache(["all", "favorites", "livephoto", "review", "logs", "tasks", "subscriptions", "sites"])
             self._status = {"running": False, "message": "站点同步完成"}
         except Exception as exc:
             details = {"sources": 0, "posts": 0, "downloaded": 0, "blocked": 0, "errors": 0}
             details["errors"] += 1
             self.db.finish_task_run(task_id, "failed", str(exc), details)
+            self.db.refresh_sidebar_count_cache(["tasks"])
             self._status = {"running": False, "message": f"站点同步失败: {exc}"}
         finally:
             self._lock.release()
@@ -115,10 +117,12 @@ class SiteSyncManager:
         try:
             details = self.execute_full_validation(source_id, max_pages=max_pages)
             self.db.finish_task_run(task_id, "success", "站点全量校验完成", details)
+            details["sidebar_counts"] = self.db.refresh_sidebar_count_cache(["all", "favorites", "livephoto", "review", "logs", "tasks", "subscriptions", "sites"])
             self._status = {"running": False, "message": "站点全量校验完成"}
         except Exception as exc:
             details = {"sources": 0, "posts": 0, "downloaded": 0, "blocked": 0, "errors": 1}
             self.db.finish_task_run(task_id, "failed", str(exc), details)
+            self.db.refresh_sidebar_count_cache(["tasks"])
             self._status = {"running": False, "message": f"站点全量校验失败: {exc}"}
         finally:
             self._lock.release()

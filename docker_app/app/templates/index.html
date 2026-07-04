@@ -153,7 +153,7 @@
                     <div class="section-heading-spacer"></div>
                     <div class="button-row gallery-toolbar">
                         <label class="range-chip density-chip">
-                            <span class="range-label" x-text="galleryViewMode === 'pair' ? '每行图片' : '每行动态'"></span>
+                            <span class="range-label">网格密度 / 每行数量</span>
                             <input type="range" min="1" max="8" step="1" :value="galleryColumnCount" @input="setGalleryColumnCount($event.target.value)">
                             <small class="range-caption" x-text="galleryDensityCaption()"></small>
                         </label>
@@ -226,21 +226,25 @@
                 <div class="gallery-layout">
                     <div class="gallery-main" :class="{ 'is-loading': galleryLoading }" :key="galleryRenderKey">
                         <template x-if="galleryViewMode === 'folder'">
-                            <div class="gallery-virtual-list">
-                                <div class="gallery-virtual-spacer" :style="galleryVirtualTopStyle()" x-show="galleryVirtualHeightBefore(firstLoadedGalleryPage()) > 0" aria-hidden="true"></div>
-                                <template x-for="pageNumber in galleryLoadedPages" :key="`folder-page-${pageNumber}`">
-                                    <div class="masonry gallery-page" :style="galleryMasonryStyle()" :data-gallery-page="pageNumber">
-                                        <template x-for="item in galleryPageItems(pageNumber)" :key="item.folder_name">
+                            <div class="masonry gallery-page" :style="galleryMasonryStyle()">
+                                <template x-for="item in gallery.items" :key="galleryItemKey(item)">
                                             <article
                                                 class="photo-card gallery-item-card"
                                                 data-testid="photo-card"
                                                 :data-gallery-key="galleryItemKey(item)"
-                                                :data-gallery-page="pageNumber"
                                                 :data-year-key="item.year_key"
                                                 :data-month-key="item.month_key"
-                                                :class="{ live: item.has_livephoto }"
-                                                @click="openFolder(item.folder_name)"
+                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder }"
+                                                @click="item.__deleted_placeholder ? null : openFolder(item.folder_name)"
                                                 >
+                                                    <template x-if="item.__deleted_placeholder">
+                                                        <div class="deleted-placeholder-content">
+                                                            <span></span>
+                                                            <strong>已删除</strong>
+                                                        </div>
+                                                    </template>
+                                                    <template x-if="!item.__deleted_placeholder">
+                                                        <div>
                                                     <div class="photo-visual" x-show="item.preview_tiles?.length" :style="galleryItemTinyStyle(item)">
                                                     <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
                                                         <template x-for="tile in item.preview_tiles" :key="tile.id">
@@ -280,33 +284,36 @@
                                                         <span x-text="`${item.livephoto_count} 条 Live Photo`"></span>
                                                     </div>
                                                 </div>
+                                                        </div>
+                                                    </template>
                                             </article>
                                         </template>
-                                    </div>
-                                </template>
-                                <div class="gallery-virtual-spacer" :style="galleryVirtualBottomStyle()" x-show="galleryVirtualHeightAfter(lastLoadedGalleryPage()) > 0" aria-hidden="true"></div>
                             </div>
                         </template>
                         <template x-if="galleryViewMode === 'pair'">
-                            <div class="gallery-virtual-list">
-                                <div class="gallery-virtual-spacer" :style="galleryVirtualTopStyle()" x-show="galleryVirtualHeightBefore(firstLoadedGalleryPage()) > 0" aria-hidden="true"></div>
-                                <template x-for="pageNumber in galleryLoadedPages" :key="`asset-page-${pageNumber}`">
-                                    <div class="masonry asset-masonry gallery-page" :style="galleryMasonryStyle()" :data-gallery-page="pageNumber">
-                                        <template x-for="item in galleryPageItems(pageNumber)" :key="item.item_key">
+                            <div class="masonry asset-masonry gallery-page" :style="galleryMasonryStyle()">
+                                <template x-for="item in gallery.items" :key="galleryItemKey(item)">
                                             <article
                                                 class="photo-card asset-card gallery-item-card"
                                                 :data-gallery-key="galleryItemKey(item)"
-                                                :data-gallery-page="pageNumber"
                                                 :data-year-key="item.year_key"
                                                 :data-month-key="item.month_key"
-                                                :class="{ live: item.has_livephoto }"
-                                                @click="openGalleryPair(item)"
+                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder }"
+                                                @click="item.__deleted_placeholder ? null : openGalleryPair(item)"
                                                 @mouseenter="item.has_livephoto ? startHoverPreview($event) : null"
                                                 @mouseleave="item.has_livephoto ? stopHoverPreview($event) : null"
                                                 @touchstart.passive="item.has_livephoto ? scheduleHoverPreview($event) : null"
                                                 @touchend="item.has_livephoto ? cancelScheduledHoverPreview($event) : null"
                                                 @touchcancel="item.has_livephoto ? cancelScheduledHoverPreview($event) : null"
                                             >
+                                                <template x-if="item.__deleted_placeholder">
+                                                    <div class="deleted-placeholder-content">
+                                                        <span></span>
+                                                        <strong>已删除</strong>
+                                                    </div>
+                                                </template>
+                                                <template x-if="!item.__deleted_placeholder">
+                                                    <div>
                                                 <div class="photo-visual asset-visual" :style="assetVisualStyle(item)">
                                                     <img class="hover-preview-image" loading="lazy" decoding="async" :src="item.small_thumb_url || item.thumb_url || item.preview_url" :alt="item.title" :width="item.width || null" :height="item.height || null">
                                                     <template x-if="item.has_livephoto">
@@ -345,11 +352,10 @@
                                                         <span x-show="item.has_livephoto">支持播放</span>
                                                     </div>
                                                 </div>
+                                                    </div>
+                                                </template>
                                             </article>
                                         </template>
-                                    </div>
-                                </template>
-                                <div class="gallery-virtual-spacer" :style="galleryVirtualBottomStyle()" x-show="galleryVirtualHeightAfter(lastLoadedGalleryPage()) > 0" aria-hidden="true"></div>
                             </div>
                         </template>
                         <div class="empty-state" x-show="gallery.items.length === 0" x-cloak>
@@ -1134,6 +1140,8 @@
         </main>
 
         <div class="detail-backdrop" data-testid="detail-backdrop" x-show="detail.open || detailClosing" :class="{ open: detail.open && !detailClosing, closing: detailClosing }" @click.self="closeDetail()" @wheel.prevent.stop @touchmove.prevent.self x-cloak>
+            <button class="detail-post-nav detail-post-nav-left" x-show="canShowPreviousFolder()" @click.stop="showPreviousFolder()" aria-label="上一篇动态">&lt;</button>
+            <button class="detail-post-nav detail-post-nav-right" x-show="canShowNextFolder()" @click.stop="showNextFolder()" aria-label="下一篇动态">&gt;</button>
             <section class="detail-shell" x-ref="detailShell" x-show="detail.open || detailClosing" :class="{ open: detail.open && !detailClosing, closing: detailClosing }" @wheel.stop @touchmove.stop>
                 <header class="detail-head">
                     <div class="detail-head-copy">
@@ -1147,7 +1155,7 @@
                         </div>
                         <div class="detail-head-controls">
                             <label class="range-chip detail-range-chip density-chip">
-                                <span class="range-label">每行小图</span>
+                                <span class="range-label">网格密度 / 每行数量</span>
                                 <input type="range" min="1" max="8" step="1" :value="detailColumnCount" @input="setDetailColumnCount($event.target.value)">
                                 <small class="range-caption" x-text="detailDensityCaption()"></small>
                             </label>

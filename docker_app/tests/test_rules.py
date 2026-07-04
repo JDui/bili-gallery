@@ -36,6 +36,9 @@ class DummyIndexer:
     def index_folder(self, **kwargs) -> None:
         return
 
+    def _replace_gallery_index(self, folder: dict, assets: list[dict]) -> None:
+        return
+
 
 class DummyAuth:
     class State:
@@ -784,10 +787,50 @@ def test_move_to_trash_blacklists_and_removes_folder(tmp_path: Path) -> None:
     result = manager.move_to_trash(folder_name)
 
     assert result["ok"] is True
+    assert result["sidebar_counts"]["counts"]["all"] == 0
+    assert result["sidebar_counts"]["counts"]["trash"] == 1
     assert db.is_blacklisted("top", "src") is True
     assert db.list_trash_items()[0]["folder_name"] == folder_name
     assert not image_folder.exists()
     assert db.list_folders() == []
+
+
+def test_delete_pair_refreshes_sidebar_count_cache(tmp_path: Path) -> None:
+    config = DummyConfig(tmp_path)
+    storage = StorageService(config)
+    storage.ensure()
+    db = Database(config.database_path)
+    db.init()
+    folder_name = "20250101_测试"
+    db.upsert_folder(
+        {
+            "folder_name": folder_name,
+            "title": "测试动态",
+            "text_prefix": "测试",
+            "pub_ts": 1,
+            "pub_time": "1970-01-01 00:00:01",
+            "top_dynamic_id": "top",
+            "source_dynamic_id": "src",
+            "has_images": True,
+            "has_livephoto": False,
+        }
+    )
+    db.replace_folder_assets(
+        folder_name,
+        "image",
+        [
+            {"pair_index": 1, "filename": "01.jpg", "rel_path": f"data/images/{folder_name}/01.jpg"},
+        ],
+    )
+    manager = PullManager(db, storage, DummyIndexer(), DummyCleanup(), DummyAuth(), DummyLegacyImporter())
+
+    result = manager.delete_pair(folder_name, 1)
+    cached = db.get_sidebar_count_cache()["counts"]
+
+    assert result["ok"] is True
+    assert result["remove_empty_folder"] is True
+    assert result["sidebar_counts"]["counts"]["all"] == 0
+    assert cached["all"] == 0
 
 
 def test_reject_review_moves_item_to_trash_and_blacklist(tmp_path: Path) -> None:
