@@ -23,7 +23,10 @@ function galleryApp() {
       { key: "up", label: "UP订阅" },
       { key: "site", label: "站点订阅" },
     ],
-    gallery: { items: [], total: 0, page: 1, page_size: 24 },
+    gallery: { items: [], total: 0, page: 1, page_size: 24, total_pages: 1 },
+    galleryPages: {},
+    galleryLoadedPages: [],
+    galleryPageWindowSize: 2,
     galleryLoading: false,
     galleryViewMode: localStorage.getItem("gallery_view_mode") || "folder",
     sortOrder: localStorage.getItem("gallery_time_sort_mode") === "random"
@@ -100,10 +103,14 @@ function galleryApp() {
     siteLogsClearConfirm: false,
     siteValidateConfirmId: null,
     siteValidateConfirmStep: 0,
+    siteValidatePageDraftById: {},
     siteClearDeleteConfirmId: null,
     siteClearDeleteConfirmStep: 0,
     settings: {},
     galleryIndexStatus: {},
+    storageStats: {},
+    storageStatsLoading: false,
+    storageCleanupRunning: false,
     newSubscriptionUid: "",
     keywordText: "",
     pullStatus: {},
@@ -148,6 +155,7 @@ function galleryApp() {
     playbackModes: ["loop", "pingpong", "once", "pause"],
     playbackMode: localStorage.getItem("livephoto_playback_mode") || "once",
     loadingMore: false,
+    loadingPrevious: false,
     hoverPreviewEnabled: localStorage.getItem("livephoto_hover_preview") !== "0",
     hoverPreviewTimer: null,
     hoverPreviewCard: null,
@@ -697,20 +705,22 @@ function galleryApp() {
       return source.slice(0, 1).toUpperCase() || "?";
     },
 
-    async refreshGallery(reset = false) {
+    async refreshGallery(reset = false, targetPage = null, direction = "replace", anchor = null) {
       const requestId = ++this.galleryRequestId;
       this.galleryLoading = reset;
-      const existingLength = reset ? 0 : this.gallery.items.length;
+      const pageSize = this.gallery.page_size || 24;
+      const page = Math.max(1, Number(targetPage || (reset ? 1 : this.gallery.page) || 1));
       if (reset) {
-        const pageSize = this.gallery.page_size || 24;
-        this.gallery = { ...this.gallery, page: 1, page_size: pageSize };
+        this.galleryPages = {};
+        this.galleryLoadedPages = [];
+        this.gallery = { ...this.gallery, items: [], page: 1, page_size: pageSize, total_pages: 1 };
       }
       const params = new URLSearchParams({
         category: this.category,
         view_mode: this.galleryViewMode,
         sort_order: this.sortOrder,
-        page: String(this.gallery.page),
-        page_size: String(this.gallery.page_size || 24),
+        page: String(page),
+        page_size: String(pageSize),
       });
       if (this.timeFilterApplied.startMonth) {
         params.set("start_month", this.timeFilterApplied.startMonth);
@@ -728,17 +738,8 @@ function galleryApp() {
         if (requestId !== this.galleryRequestId) {
           return;
         }
-        if (reset) {
-          this.gallery = payload;
-        } else {
-          const merged = this.mergeGalleryItems(this.gallery.items, payload.items || []);
-          const appendedUnique = Math.max(0, merged.length - existingLength);
-          this.gallery = {
-            ...payload,
-            items: merged,
-            total: merged.length >= payload.total || (payload.items || []).length === 0 || appendedUnique === 0 ? merged.length : payload.total,
-          };
-        }
+        this.applyGalleryPagePayload(payload, page, reset ? "replace" : direction);
+        this.restoreGalleryAnchor(anchor);
         if (this.autoLoadEnabled()) {
           this.$nextTick(() => this.handleScroll());
         }
@@ -749,11 +750,18 @@ function galleryApp() {
       }
     },
 
+    galleryItemKey(item) {
+      if (!item) {
+        return "";
+      }
+      return String(item.item_key || item.folder_name || `${item.folder_name || "item"}::${item.pair_index || ""}`);
+    },
+
     mergeGalleryItems(existingItems, incomingItems) {
       const output = [];
       const seen = new Set();
       [...existingItems, ...incomingItems].forEach((item) => {
-        const key = item.item_key || item.folder_name;
+        const key = this.galleryItemKey(item);
         if (!key || seen.has(key)) {
           return;
         }
@@ -763,16 +771,138 @@ function galleryApp() {
       return output;
     },
 
-    async loadMore() {
-      if (this.loadingMore || this.gallery.items.length >= this.gallery.total) {
+    galleryPageNumbers() {
+      return Object.keys(this.galleryPages || {})
+        .map((page) => Number(page))
+        .filter((page) => Number.isFinite(page) && page > 0)
+        .sort((left, right) => left - right);
+    },
+
+    firstLoadedGalleryPage() {
+      const pages = this.galleryPageNumbers();
+      return pages.length ? pages[0] : Number(this.gallery.page || 1);
+    },
+
+    lastLoadedGalleryPage() {
+      const pages = this.galleryPageNumbers();
+      return pages.length ? pages[pages.length - 1] : Number(this.gallery.page || 1);
+    },
+
+    galleryTotalPages() {
+      const explicit = Number(this.gallery.total_pages);
+      if (Number.isFinite(explicit) && explicit > 0) {
+        return explicit;
+      }
+      const pageSize = Math.max(1, Number(this.gallery.page_size || 24));
+      return Math.max(1, Math.ceil((Number(this.gallery.total) || 0) / pageSize));
+    },
+
+    flattenGalleryPages(pages = null) {
+      const pageNumbers = pages || this.galleryPageNumbers();
+      return pageNumbers.flatMap((page) => this.galleryPages[String(page)] || []);
+    },
+
+    keepGalleryPageNumbers(pageNumbers, targetPage, direction) {
+      if (pageNumbers.length <= this.galleryPageWindowSize) {
+        return pageNumbers;
+      }
+      if (direction === "previous") {
+        const nextPage = pageNumbers.find((page) => page > targetPage);
+        return [targetPage, nextPage].filter(Boolean).sort((left, right) => left - right);
+      }
+      if (direction === "next") {
+        const previousPage = [...pageNumbers].reverse().find((page) => page < targetPage);
+        return [previousPage, targetPage].filter(Boolean).sort((left, right) => left - right);
+      }
+      return pageNumbers.slice(-this.galleryPageWindowSize);
+    },
+
+    applyGalleryPagePayload(payload, page, direction) {
+      const pageKey = String(page);
+      const nextPages = { ...(this.galleryPages || {}), [pageKey]: payload.items || [] };
+      const allPages = Object.keys(nextPages)
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .sort((left, right) => left - right);
+      const keepPages = this.keepGalleryPageNumbers(allPages, page, direction);
+      const keepSet = new Set(keepPages.map((value) => String(value)));
+      this.galleryPages = Object.fromEntries(
+        Object.entries(nextPages).filter(([key]) => keepSet.has(key)),
+      );
+      this.galleryLoadedPages = keepPages;
+      this.gallery = {
+        ...payload,
+        page,
+        page_size: payload.page_size || this.gallery.page_size || 24,
+        total_pages: payload.total_pages || this.gallery.total_pages || 1,
+        items: this.flattenGalleryPages(keepPages),
+      };
+    },
+
+    cssEscape(value) {
+      if (window.CSS && typeof window.CSS.escape === "function") {
+        return window.CSS.escape(value);
+      }
+      return String(value).replace(/["\\]/g, "\\$&");
+    },
+
+    captureGalleryAnchorForPage(page) {
+      const items = this.galleryPages[String(page)] || [];
+      for (const item of items) {
+        const key = this.galleryItemKey(item);
+        if (!key) {
+          continue;
+        }
+        const element = document.querySelector(`[data-gallery-key="${this.cssEscape(key)}"]`);
+        if (element) {
+          return { key, top: element.getBoundingClientRect().top };
+        }
+      }
+      return null;
+    },
+
+    restoreGalleryAnchor(anchor) {
+      if (!anchor?.key) {
         return;
       }
+      this.$nextTick(() => {
+        const element = document.querySelector(`[data-gallery-key="${this.cssEscape(anchor.key)}"]`);
+        if (!element) {
+          return;
+        }
+        const delta = element.getBoundingClientRect().top - Number(anchor.top || 0);
+        if (Math.abs(delta) > 1) {
+          window.scrollBy({ top: delta, left: 0, behavior: "auto" });
+        }
+      });
+    },
+
+    async loadMore() {
+      if (this.loadingMore || !this.hasMoreItems()) {
+        return;
+      }
+      const targetPage = this.lastLoadedGalleryPage() + 1;
+      const anchor = this.captureGalleryAnchorForPage(this.lastLoadedGalleryPage());
       this.loadingMore = true;
-      this.gallery.page += 1;
       try {
-        await this.refreshGallery(false);
+        await this.refreshGallery(false, targetPage, "next", anchor);
       } finally {
         this.loadingMore = false;
+      }
+    },
+
+    async loadPrevious() {
+      if (this.loadingPrevious || !this.hasPreviousItems()) {
+        return;
+      }
+      const currentFirstPage = this.firstLoadedGalleryPage();
+      const targetPage = currentFirstPage - 1;
+      const anchor = this.captureGalleryAnchorForPage(currentFirstPage);
+      this.loadingPrevious = true;
+      try {
+        await this.refreshGallery(false, targetPage, "previous", anchor);
+      } finally {
+        this.loadingPrevious = false;
       }
     },
 
@@ -922,8 +1052,16 @@ function galleryApp() {
       return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 96;
     },
 
+    isNearTop() {
+      return window.scrollY <= 160;
+    },
+
     hasMoreItems() {
-      return this.gallery.items.length < this.gallery.total;
+      return !this.randomModeActive() && this.lastLoadedGalleryPage() < this.galleryTotalPages();
+    },
+
+    hasPreviousItems() {
+      return !this.randomModeActive() && this.firstLoadedGalleryPage() > 1;
     },
 
     galleryReadyForLoad() {
@@ -935,7 +1073,7 @@ function galleryApp() {
         !this.viewerClosing &&
         !this.taskInspector.open &&
         this.bodyLockTop === null &&
-        this.hasMoreItems()
+        (this.hasMoreItems() || this.hasPreviousItems())
       );
     },
 
@@ -948,7 +1086,7 @@ function galleryApp() {
     },
 
     showManualLoadMore() {
-      return this.galleryReadyForLoad() && !this.autoLoadEnabled() && !this.randomModeActive();
+      return this.galleryReadyForLoad() && this.hasMoreItems() && !this.autoLoadEnabled() && !this.randomModeActive();
     },
 
     showRandomReloadButton() {
@@ -956,17 +1094,23 @@ function galleryApp() {
     },
 
     async handleScroll() {
-      if (!this.autoLoadEnabled() || !this.galleryReadyForLoad() || !this.isNearBottom()) {
+      if (!this.autoLoadEnabled() || !this.galleryReadyForLoad()) {
         return;
       }
-      await this.loadMore();
+      if (this.hasPreviousItems() && this.isNearTop()) {
+        await this.loadPrevious();
+        return;
+      }
+      if (this.hasMoreItems() && this.isNearBottom()) {
+        await this.loadMore();
+      }
     },
 
     galleryLoadFinished() {
       if (this.randomModeActive()) {
         return false;
       }
-      return this.gallery.items.length > 0 && this.gallery.items.length >= this.gallery.total;
+      return this.gallery.items.length > 0 && !this.hasMoreItems();
     },
 
     async rerollRandomGallery() {
@@ -1015,14 +1159,15 @@ function galleryApp() {
           return;
         }
         this.detailLoading = false;
+        const detailPairs = this.normalizeDetailPairs(payload.pairs || [], true);
+        this.preloadDetailPairImages(detailPairs);
         this.detail = {
           open: true,
-          pairs: this.normalizeDetailPairs(payload.pairs || []),
+          pairs: detailPairs,
           folder: payload.folder,
           videos: payload.videos || [],
         };
         this.cacheDetailPayload(folderName, this.detail);
-        this.scheduleDetailThumbnailPromotion(folderName, requestId);
         this.syncBodyLock();
       } catch (error) {
         if (requestId !== this.detailRequestId) {
@@ -1069,8 +1214,8 @@ function galleryApp() {
       }));
     },
 
-    normalizeDetailPairs(pairs) {
-      return (pairs || []).map((pair) => ({ ...pair, promote_preview: false }));
+    normalizeDetailPairs(pairs, promote = false) {
+      return (pairs || []).map((pair) => ({ ...pair, promote_preview: !!promote }));
     },
 
     assetRatio(asset) {
@@ -1089,6 +1234,18 @@ function galleryApp() {
         return image.thumb_url || livephoto.thumb_url || image.small_thumb_url || livephoto.small_thumb_url || pair.preview_url || image.url || livephoto.cover_url || livephoto.url;
       }
       return image.small_thumb_url || livephoto.small_thumb_url || pair?.preview_url || image.thumb_url || livephoto.thumb_url || image.url || livephoto.cover_url || livephoto.url;
+    },
+
+    preloadDetailPairImages(pairs) {
+      const candidates = (pairs || [])
+        .slice(0, Math.max(8, this.detailColumnCount * 3))
+        .map((pair) => this.detailPairPreviewUrl(pair))
+        .filter(Boolean);
+      for (const url of candidates) {
+        const image = new Image();
+        image.decoding = "async";
+        image.src = url;
+      }
     },
 
     scheduleDetailThumbnailPromotion(folderName, requestId) {
@@ -2129,12 +2286,30 @@ function galleryApp() {
       if (!this.viewer.open || !target) {
         return;
       }
+      if ((kind === "image" || kind === "video") && target.dataset.viewerToken !== String(this.viewerToken)) {
+        return;
+      }
       if (kind === "image") {
         this.viewerImageReady = true;
       }
-      if (kind === "video" && target.dataset.viewerToken !== String(this.viewerToken)) {
+      this.releaseViewerSwap();
+      if (kind === "image" && this.viewer.pair?.livephoto && !this.viewer.showVideo && this.playbackMode !== "pause") {
+        this.scheduleViewerPlaybackStart();
+      }
+    },
+
+    viewerMediaFailed(kind, event) {
+      const target = event?.target;
+      if (!this.viewer.open || !target || target.dataset.viewerToken !== String(this.viewerToken)) {
         return;
       }
+      if (kind === "image") {
+        this.viewerImageReady = false;
+      }
+      this.releaseViewerSwap();
+    },
+
+    releaseViewerSwap() {
       if (this.viewerSwapPending) {
         const direction = this.viewerPendingDirection;
         this.viewerSwapPending = false;
@@ -2142,9 +2317,6 @@ function galleryApp() {
         if (direction) {
           this.animateViewerSwitch(direction);
         }
-      }
-      if (kind === "image" && this.viewer.pair?.livephoto && !this.viewer.showVideo && this.playbackMode !== "pause") {
-        this.scheduleViewerPlaybackStart();
       }
     },
 
@@ -2532,6 +2704,8 @@ function galleryApp() {
         index: "索引",
         "site-sync": "站点同步",
         "site-validate": "站点校验",
+        "storage-cleanup": "存储清理",
+        icons: "图标刷新",
         startup: "启动整理",
         idle: "空闲",
       };
@@ -2779,6 +2953,8 @@ function galleryApp() {
       const previousGallery = {
         items: [...(this.gallery.items || [])],
         total: this.gallery.total || 0,
+        pages: Object.fromEntries(Object.entries(this.galleryPages || {}).map(([page, items]) => [page, [...(items || [])]])),
+        loadedPages: [...(this.galleryLoadedPages || [])],
       };
       const previousCache = this.detailCache[folderName] ? this.cloneDetailPayload(this.detailCache[folderName]) : null;
       const removedPair = (this.detail.pairs || []).find((pair) => Number(pair.pair_index) === Number(pairIndex))
@@ -2842,6 +3018,8 @@ function galleryApp() {
           items: previousGallery.items,
           total: previousGallery.total,
         };
+        this.galleryPages = previousGallery.pages;
+        this.galleryLoadedPages = previousGallery.loadedPages;
         if (!this.viewer.open) {
           const fallbackSequence = (previousDetail.pairs || []).map((pair) => ({ pair, folder: previousDetail.folder }));
           const fallbackIndex = fallbackSequence.findIndex((entry) => Number(entry.pair?.pair_index) === Number(pairIndex));
@@ -3153,11 +3331,21 @@ function galleryApp() {
     },
 
     cardPrimaryText(item) {
+      if (this.isSiteGalleryItem(item)) {
+        return this.truncateCardText(item.title || item.folder_name || "");
+      }
       return this.truncateCardText(item.text_prefix || item.title || item.folder_name || "");
     },
 
     cardSecondaryText(item) {
+      if (this.isSiteGalleryItem(item)) {
+        return this.truncateCardText(item.text_prefix || item.folder_name || "");
+      }
       return this.truncateCardText(item.title || item.folder_name || "");
+    },
+
+    isSiteGalleryItem(item) {
+      return String(item?.subscription_uid || "").startsWith("site:");
     },
 
     truncateCardText(text) {
@@ -3282,11 +3470,77 @@ function galleryApp() {
     },
 
     async loadSettings() {
-      const [settings, health] = await Promise.all([this.api("/api/settings"), this.api("/api/health")]);
+      const [settings, health, storageStats] = await Promise.all([
+        this.api("/api/settings"),
+        this.api("/api/health"),
+        this.api("/api/settings/storage-stats"),
+      ]);
       this.settings = settings;
       this.galleryIndexStatus = health.gallery_index || {};
+      this.storageStats = storageStats.stats || {};
       this.keywordText = (this.settings.ad_filter_keywords || []).join("\n");
       this.lazyLoaded.settings = true;
+    },
+
+    formatBytes(value) {
+      const bytes = Math.max(0, Number(value) || 0);
+      if (bytes < 1024) {
+        return `${bytes} B`;
+      }
+      const units = ["KB", "MB", "GB", "TB"];
+      let size = bytes / 1024;
+      let index = 0;
+      while (size >= 1024 && index < units.length - 1) {
+        size /= 1024;
+        index += 1;
+      }
+      return `${size >= 10 ? size.toFixed(1) : size.toFixed(2)} ${units[index]}`;
+    },
+
+    storageStatsUpdatedText() {
+      if (!this.storageStats?.updated_at) {
+        return "尚未统计";
+      }
+      return this.formatDateTime(this.storageStats.updated_at);
+    },
+
+    formatDateTime(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return String(value || "");
+      }
+      return date.toLocaleString("zh-CN", { hour12: false });
+    },
+
+    async refreshStorageStats(force = false) {
+      if (this.storageStatsLoading) {
+        return;
+      }
+      this.storageStatsLoading = true;
+      try {
+        const endpoint = force ? "/api/settings/storage-stats/refresh" : "/api/settings/storage-stats";
+        const result = await this.api(endpoint, { method: force ? "POST" : "GET" });
+        this.storageStats = result.stats || {};
+      } finally {
+        this.storageStatsLoading = false;
+      }
+    },
+
+    async cleanupStorageTrash() {
+      if (this.storageCleanupRunning) {
+        return;
+      }
+      this.storageCleanupRunning = true;
+      this.setImmediateTaskFeedback("正在提交垃圾文件清理任务...");
+      try {
+        const result = await this.api("/api/settings/storage-cleanup", { method: "POST" });
+        await Promise.all([this.refreshStatus(), this.refreshTasks()]);
+        this.notify("info", "垃圾清理已提交", result.message || "后台正在清理垃圾文件。");
+      } catch (error) {
+        this.notify("error", "垃圾清理提交失败", error.message || "请稍后重试。");
+      } finally {
+        this.storageCleanupRunning = false;
+      }
     },
 
     async saveSettings() {
@@ -3393,22 +3647,14 @@ function galleryApp() {
       }
       this.resetIconsRunning = true;
       this.resetIconsConfirmStep = 0;
-      this.notify("info", "正在重置图标", "正在重新拉取每个 UP 主头像和站点图标。");
+      this.notify("info", "正在提交图标重置", "后台会继续拉取每个 UP 主头像和站点图标。");
       try {
         const result = await this.api("/api/settings/reset-icons", { method: "POST" });
-        if (Array.isArray(result.items)) {
-          this.subscriptions = result.items.map((item) => this.normalizeSubscriptionItem(item));
-        }
-        await Promise.all([
-          this.loadSubscriptions(),
-          this.loadSiteSources(),
-          this.refreshMeta(),
-          this.refreshSidebarCounts(["subscriptions", "sites"]),
-        ]);
         this.iconLoadFailures = {};
-        this.notify("success", "图标重置完成", result.message || "订阅图标已重新拉取。");
+        await Promise.all([this.refreshStatus(), this.refreshTasks()]);
+        this.notify("success", "图标任务已提交", result.message || "后台正在刷新订阅图标。");
       } catch (error) {
-        this.notify("error", "图标重置失败", error.message || "请稍后重试。");
+        this.notify("error", "图标重置提交失败", error.message || "请稍后重试。");
       } finally {
         this.resetIconsRunning = false;
       }
@@ -3470,6 +3716,8 @@ function galleryApp() {
           ...this.gallery,
           items: [...(this.gallery.items || [])],
         },
+        galleryPages: Object.fromEntries(Object.entries(this.galleryPages || {}).map(([page, items]) => [page, [...(items || [])]])),
+        galleryLoadedPages: [...(this.galleryLoadedPages || [])],
         reviewItems: [...(this.reviewItems || [])],
         logs: [...(this.logs || [])],
         taskRuns: [...(this.taskRuns || [])],
@@ -3479,6 +3727,8 @@ function galleryApp() {
       this.clearDataConfirmStep = 0;
       this.closeViewer();
       this.closeDetail();
+      this.galleryPages = {};
+      this.galleryLoadedPages = [];
       this.gallery = { ...this.gallery, items: [], total: 0, page: 1 };
       this.reviewItems = [];
       this.logs = [];
@@ -3500,6 +3750,8 @@ function galleryApp() {
         this.notify("success", "内容已清空", result.message);
       } catch (error) {
         this.gallery = previousState.gallery;
+        this.galleryPages = previousState.galleryPages;
+        this.galleryLoadedPages = previousState.galleryLoadedPages;
         this.reviewItems = previousState.reviewItems;
         this.logs = previousState.logs;
         this.taskRuns = previousState.taskRuns;
@@ -3616,6 +3868,8 @@ function galleryApp() {
       }
       const previousGalleryItems = [...(this.gallery.items || [])];
       const previousGalleryTotal = this.gallery.total || 0;
+      const previousGalleryPages = Object.fromEntries(Object.entries(this.galleryPages || {}).map(([page, items]) => [page, [...(items || [])]]));
+      const previousGalleryLoadedPages = [...(this.galleryLoadedPages || [])];
       const previousDetail = {
         open: this.detail.open,
         pairs: [...(this.detail.pairs || [])],
@@ -3642,6 +3896,8 @@ function galleryApp() {
           items: previousGalleryItems,
           total: previousGalleryTotal,
         };
+        this.galleryPages = previousGalleryPages;
+        this.galleryLoadedPages = previousGalleryLoadedPages;
         if (!this.viewer.open && !this.detail.open && previousDetail.folder?.folder_name === folderName) {
           this.detail = previousDetail;
         }
@@ -3660,6 +3916,8 @@ function galleryApp() {
       const folder = (this.gallery.items || []).find((item) => item.folder_name === folderName);
       const previousGalleryItems = [...(this.gallery.items || [])];
       const previousGalleryTotal = this.gallery.total || 0;
+      const previousGalleryPages = Object.fromEntries(Object.entries(this.galleryPages || {}).map(([page, items]) => [page, [...(items || [])]]));
+      const previousGalleryLoadedPages = [...(this.galleryLoadedPages || [])];
       const previousCache = this.detailCache[folderName] ? this.cloneDetailPayload(this.detailCache[folderName]) : null;
       this.pendingTrashFolder = null;
       if (this.detail.folder?.folder_name === folderName) {
@@ -3681,6 +3939,8 @@ function galleryApp() {
           items: previousGalleryItems,
           total: previousGalleryTotal,
         };
+        this.galleryPages = previousGalleryPages;
+        this.galleryLoadedPages = previousGalleryLoadedPages;
         if (previousCache) {
           this.cacheDetailPayload(folderName, previousCache);
         }
@@ -3692,7 +3952,27 @@ function galleryApp() {
     },
 
     removeFolderFromGallery(folderName) {
-      const nextItems = (this.gallery.items || []).filter((item) => item.folder_name !== folderName);
+      if (!this.galleryPageNumbers().length) {
+        const nextItems = (this.gallery.items || []).filter((item) => item.folder_name !== folderName);
+        const removedCount = (this.gallery.items || []).length - nextItems.length;
+        if (removedCount <= 0) {
+          return;
+        }
+        this.gallery = {
+          ...this.gallery,
+          items: nextItems,
+          total: Math.max(0, (this.gallery.total || 0) - removedCount),
+        };
+        return;
+      }
+      const nextPages = Object.fromEntries(
+        Object.entries(this.galleryPages || {}).map(([page, items]) => [
+          page,
+          (items || []).filter((item) => item.folder_name !== folderName),
+        ]),
+      );
+      this.galleryPages = nextPages;
+      const nextItems = this.flattenGalleryPages();
       const removedCount = (this.gallery.items || []).length - nextItems.length;
       if (removedCount <= 0) {
         return;
@@ -3705,9 +3985,31 @@ function galleryApp() {
     },
 
     removePairFromGallery(folderName, pairIndex) {
-      const nextItems = (this.gallery.items || []).filter(
-        (item) => !(item.folder_name === folderName && Number(item.pair_index) === Number(pairIndex)),
+      if (!this.galleryPageNumbers().length) {
+        const nextItems = (this.gallery.items || []).filter(
+          (item) => !(item.folder_name === folderName && Number(item.pair_index) === Number(pairIndex)),
+        );
+        const removedCount = (this.gallery.items || []).length - nextItems.length;
+        if (removedCount <= 0) {
+          return;
+        }
+        this.gallery = {
+          ...this.gallery,
+          items: nextItems,
+          total: Math.max(0, (this.gallery.total || 0) - removedCount),
+        };
+        return;
+      }
+      const nextPages = Object.fromEntries(
+        Object.entries(this.galleryPages || {}).map(([page, items]) => [
+          page,
+          (items || []).filter(
+            (item) => !(item.folder_name === folderName && Number(item.pair_index) === Number(pairIndex)),
+          ),
+        ]),
       );
+      this.galleryPages = nextPages;
+      const nextItems = this.flattenGalleryPages();
       const removedCount = (this.gallery.items || []).length - nextItems.length;
       if (removedCount <= 0) {
         return;
@@ -4082,8 +4384,13 @@ function galleryApp() {
     askSiteValidate(sourceId) {
       const normalized = Number(sourceId);
       if (this.siteValidateConfirmId !== normalized) {
+        const source = (this.siteSources || []).find((item) => Number(item.id) === normalized);
         this.siteValidateConfirmId = normalized;
         this.siteValidateConfirmStep = 1;
+        this.siteValidatePageDraftById = {
+          ...this.siteValidatePageDraftById,
+          [String(normalized)]: Math.max(1, Number(source?.max_pages || 1)),
+        };
         return;
       }
       this.siteValidateConfirmStep = 2;
@@ -4092,6 +4399,24 @@ function galleryApp() {
     cancelSiteValidate() {
       this.siteValidateConfirmId = null;
       this.siteValidateConfirmStep = 0;
+    },
+
+    siteValidatePageDraft(sourceId) {
+      const key = String(sourceId);
+      const draft = Number(this.siteValidatePageDraftById[key]);
+      if (Number.isFinite(draft) && draft > 0) {
+        return draft;
+      }
+      const source = (this.siteSources || []).find((item) => String(item.id) === key);
+      return Math.max(1, Number(source?.max_pages || 1));
+    },
+
+    updateSiteValidatePageDraft(sourceId, value) {
+      const key = String(sourceId);
+      this.siteValidatePageDraftById = {
+        ...this.siteValidatePageDraftById,
+        [key]: Math.max(1, Number(value) || 1),
+      };
     },
 
     siteValidateLabel(sourceId) {
@@ -4245,7 +4570,10 @@ function galleryApp() {
       }
       this.cancelSiteValidate();
       this.setImmediateSiteTaskFeedback(`正在提交 ${source.name || "站点"} 全量校验任务...`, { running: true });
-      const result = await this.api(`/api/site-sources/${encodeURIComponent(source.id)}/validate`, { method: "POST" });
+      const result = await this.api(`/api/site-sources/${encodeURIComponent(source.id)}/validate`, {
+        method: "POST",
+        body: JSON.stringify({ max_pages: this.siteValidatePageDraft(source.id) }),
+      });
       this.notify("info", "站点全量校验已提交", result.message || "已开始全量校验。");
       await Promise.all([this.refreshStatus(), this.refreshTasks()]);
     },

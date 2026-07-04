@@ -492,6 +492,28 @@ video {
     white-space: nowrap;
 }
 
+.inline-number-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 6px 10px 6px 14px;
+    border: 1px solid rgba(113, 142, 191, 0.24);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.82);
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.inline-number-field input {
+    width: 86px;
+    min-width: 72px;
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+}
+
 .topbar h2 {
     margin-top: 4px;
     font-size: clamp(26px, 3vw, 34px);
@@ -1817,6 +1839,40 @@ video {
     font-size: 20px;
 }
 
+.storage-stat-list {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.storage-stat-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 12px;
+    align-items: baseline;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(122, 142, 166, 0.18);
+}
+
+.storage-stat-row span {
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.storage-stat-row strong {
+    font-size: 18px;
+    color: var(--text);
+}
+
+.storage-stat-row small {
+    grid-column: 1 / -1;
+    color: var(--muted);
+}
+
+.storage-stat-row.danger strong {
+    color: #b84242;
+}
+
 .settings-card label {
     display: block;
     margin-bottom: 14px;
@@ -2044,7 +2100,7 @@ video {
     overflow: auto;
     border-radius: var(--radius-xl);
     padding: 24px;
-    animation: modal-in var(--duration-base) var(--ease-fluid);
+    animation: detail-drawer-in 360ms var(--ease-fluid);
     will-change: transform, opacity;
     backface-visibility: hidden;
     overscroll-behavior: contain;
@@ -2366,7 +2422,7 @@ video {
 }
 
 .detail-shell.closing {
-    transform: translate3d(18px, 0, 0) scale(0.99);
+    transform: translate3d(54px, 0, 0) scale(0.992);
     opacity: 0;
 }
 
@@ -2388,7 +2444,7 @@ video {
 
 .drawer-enter-start,
 .drawer-leave-end {
-    transform: translate3d(40px, 0, 0) scale(0.985);
+    transform: translate3d(56px, 0, 0) scale(0.992);
     opacity: 0;
 }
 
@@ -2797,6 +2853,21 @@ video {
     72% {
         opacity: 1;
         transform: translate3d(0, -1px, 0) scale(1.002);
+    }
+    100% {
+        opacity: 1;
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+}
+
+@keyframes detail-drawer-in {
+    0% {
+        opacity: 0;
+        transform: translate3d(58px, 0, 0) scale(0.992);
+    }
+    70% {
+        opacity: 1;
+        transform: translate3d(-2px, 0, 0) scale(1.001);
     }
     100% {
         opacity: 1;

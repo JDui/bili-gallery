@@ -41,7 +41,7 @@ DEFAULT_SITE_USER_AGENT = (
 )
 DEFAULT_DATE_SELECTOR = (
     "time, .entry-date, .date, .updated, .published, .posted-on, .post-date, "
-    ".entry-meta, .post-meta, .meta-date, [datetime]"
+    ".entry-meta, .post-meta, .meta-date, .image-info-time, .item_images_info, [datetime]"
 )
 DEFAULT_TAG_SELECTOR = ".tag, .tags a, .cat-name, .category a, .post-categories a"
 DEFAULT_BODY_SELECTOR = "article, .entry-content, .post-content, .post-page-content, .content, main"
@@ -669,6 +669,8 @@ class SourceParser:
             return 0
         if parsed_base.scheme in {"http", "https"} and parsed_base.netloc != parsed_candidate.netloc:
             return 0
+        if parsed_candidate.path in {"", "/"} and not parsed_candidate.query:
+            return 0
         if parsed_candidate.path == parsed_base.path and not parsed_candidate.query:
             return 0
         suffix = Path(parsed_candidate.path.lower()).suffix
@@ -769,6 +771,8 @@ class SourceParser:
             ".post-date",
             ".date",
             ".meta-date",
+            ".image-info-time",
+            ".item_images_info",
         ):
             pub_date = self._selector_date(soup, selector)
             if pub_date:

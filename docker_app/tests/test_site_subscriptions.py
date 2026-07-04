@@ -18,7 +18,7 @@ from app.services.scheduler import SchedulerService
 from app.services.site_syncer import SiteSyncManager
 from app.services.storage import StorageService
 from app.services.thumbnailer import ThumbnailService
-from app.services.utils import clean_filename, dumps_json, parse_date
+from app.services.utils import clean_filename, dumps_json, loads_json, parse_date
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
@@ -44,6 +44,17 @@ def make_app(tmp_path: Path) -> tuple[Database, StorageService, SiteSyncManager]
     db = Database(config.database_path)
     db.init()
     return db, storage, SiteSyncManager(db, storage)
+
+
+def wait_for_task(db: Database, task_type: str, timeout: float = 3.0) -> dict:
+    deadline = time.time() + timeout
+    task = None
+    while time.time() < deadline:
+        task = db.last_task_run(task_type)
+        if task and task.get("status") != "running":
+            return task
+        time.sleep(0.02)
+    raise AssertionError(f"{task_type} task did not finish: {task}")
 
 
 def html_source() -> dict:
@@ -1134,6 +1145,42 @@ def test_site_sync_skips_posts_that_are_still_in_trash(tmp_path: Path) -> None:
     assert any(log["reason"] == "仍在内容垃圾桶" for log in db.list_site_filter_logs())
 
 
+def test_storage_usage_stats_counts_and_cleans_trash_assets(tmp_path: Path) -> None:
+    db, storage, _syncer = make_app(tmp_path)
+    image_dir = storage.image_folder("stats-folder")
+    thumb_dir = image_dir / ".thumbs"
+    site_dir = storage.config.data_dir / "sites" / "fixture"
+    image_dir.mkdir(parents=True)
+    thumb_dir.mkdir(parents=True)
+    site_dir.mkdir(parents=True)
+    image_path = image_dir / "001__image.jpg"
+    thumb_path = thumb_dir / "001__image.webp"
+    site_path = site_dir / "raw.jpg"
+    trash_path = image_dir / "trash.jpg"
+    image_path.write_bytes(b"image")
+    thumb_path.write_bytes(b"thumb")
+    site_path.write_bytes(b"site")
+    trash_path.write_bytes(b"trash")
+    folder = {
+        "top_dynamic_id": "top-trash",
+        "source_dynamic_id": "source-trash",
+        "folder_name": "stats-folder",
+        "title": "Stats Folder",
+    }
+    db.upsert_trash_item(folder, [{"rel_path": storage.relative_to_storage(trash_path)}])
+
+    stats = storage.storage_usage_stats(db.list_trash_items())
+    cleanup = storage.cleanup_trash_asset_files(db.list_trash_items())
+    refreshed = storage.storage_usage_stats(db.list_trash_items())
+
+    assert stats["image_bytes"] == len(b"image") + len(b"site") + len(b"trash")
+    assert stats["thumbnail_bytes"] == len(b"thumb")
+    assert stats["trash_bytes"] == len(b"trash")
+    assert cleanup == {"removed_files": 1, "removed_bytes": len(b"trash")}
+    assert refreshed["trash_bytes"] == 0
+    assert not trash_path.exists()
+
+
 def test_site_rule_engine_mode_keywords_match_title_or_tags() -> None:
     blacklist = RuleEngine({"mode": "blacklist", "keywords": ["photo"], "use_regex": False})
     whitelist = RuleEngine({"mode": "whitelist", "keywords": ["spring"], "use_regex": False})
@@ -1332,6 +1379,30 @@ def test_site_full_validation_clears_and_resyncs_source(tmp_path: Path) -> None:
     assert len(posts) == 1
     assert posts[0]["downloaded_count"] == 2
     assert detail["total"] == 1
+
+
+def test_site_full_validation_accepts_temporary_max_pages(tmp_path: Path) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    source = db.create_site_source(
+        {
+            **html_source(),
+            "name": "Temporary Pages",
+            "slug": "temporary-pages",
+            "entry_url": fixture_url("paged1.html"),
+            "page_url_template": f"file://{Path(__file__).parent.joinpath('site_fixtures').resolve()}/paged{{page}}.html",
+            "max_pages": 1,
+            "media_selector": ".content img",
+            "enabled": True,
+        }
+    )
+
+    result = syncer.execute_full_validation(source["id"], max_pages=2)
+    titles = {post["title"] for post in db.list_site_posts(source_id=source["id"])}
+
+    assert result["temporary_max_pages"] == 2
+    assert result["discovered"] == 4
+    assert {"Third Post", "Fourth Post"}.issubset(titles)
+    assert db.get_site_source(source["id"])["max_pages"] == 1
 
 
 def test_site_full_validation_records_empty_result_details_and_logs(tmp_path: Path) -> None:
@@ -1967,10 +2038,14 @@ def test_reset_all_icons_refreshes_up_and_site_icons(tmp_path: Path, monkeypatch
     client = TestClient(app_main.app)
 
     result = client.post("/api/settings/reset-icons").json()
+    task = wait_for_task(db, "icons")
+    details = loads_json(task["details_json"], {})
 
     assert result["ok"] is True
-    assert result["result"]["subscriptions"]["updated"] == subscription_total
-    assert result["result"]["sites"]["updated"] == 1
+    assert result["queued"] is False
+    assert task["status"] == "success"
+    assert details["result"]["subscriptions"]["updated"] == subscription_total
+    assert details["result"]["sites"]["updated"] == 1
     assert db.get_subscription("123")["avatar_url"] == "https://example.test/new.jpg"
     assert db.get_subscription("123")["uname"] == "新名称"
     assert db.get_site_source(source["id"])["icon_url"] == (site_dir / "site-logo.png").resolve().as_uri()
@@ -2009,10 +2084,13 @@ def test_reset_all_icons_clears_stale_icons_when_missing(tmp_path: Path, monkeyp
     client = TestClient(app_main.app)
 
     result = client.post("/api/settings/reset-icons").json()
+    task = wait_for_task(db, "icons")
+    details = loads_json(task["details_json"], {})
 
     assert result["ok"] is True
-    assert result["result"]["subscriptions"]["fallback"] >= 1
-    assert result["result"]["sites"]["fallback"] == 1
+    assert task["status"] == "success"
+    assert details["result"]["subscriptions"]["fallback"] >= 1
+    assert details["result"]["sites"]["fallback"] == 1
     assert db.get_subscription("123")["avatar_url"] is None
     assert db.get_site_source(source["id"])["icon_url"] is None
 
@@ -2149,12 +2227,15 @@ def test_reset_all_icons_throttles_subscription_avatar_refresh(tmp_path: Path, m
     client = TestClient(app_main.app)
 
     result = client.post("/api/settings/reset-icons").json()
+    task = wait_for_task(db, "icons")
+    details = loads_json(task["details_json"], {})
 
     assert result["ok"] is True
+    assert task["status"] == "success"
     assert len(sleep_calls) == len(db.list_subscriptions(include_paused=True))
     assert sleep_calls[0] == (0, None)
     assert any(error == "验证码校验" for _index, error in sleep_calls[1:])
-    assert result["result"]["subscriptions"]["wait_seconds"] == 1.25 * len(sleep_calls)
+    assert details["result"]["subscriptions"]["wait_seconds"] == 1.25 * len(sleep_calls)
 
 
 def test_avatar_refresh_risk_detection() -> None:

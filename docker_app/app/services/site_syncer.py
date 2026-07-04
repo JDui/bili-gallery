@@ -59,12 +59,12 @@ class SiteSyncManager:
         thread.start()
         return {"ok": True, "queued": False, "message": "已开始站点同步"}
 
-    def start_full_validation(self, source_id: int) -> dict[str, Any]:
+    def start_full_validation(self, source_id: int, max_pages: int | None = None) -> dict[str, Any]:
         if self._task_queue is not None:
-            return self._task_queue.start_site_validation(source_id)
+            return self._task_queue.start_site_validation(source_id, max_pages=max_pages)
         if not self._lock.acquire(blocking=False):
             return {"ok": True, "queued": False, "message": "已有站点同步任务正在运行"}
-        thread = threading.Thread(target=self._run_full_validation_thread, args=(source_id,), daemon=True)
+        thread = threading.Thread(target=self._run_full_validation_thread, args=(source_id, max_pages), daemon=True)
         thread.start()
         return {"ok": True, "queued": False, "message": "已开始站点全量校验"}
 
@@ -108,10 +108,10 @@ class SiteSyncManager:
         finally:
             self._lock.release()
 
-    def _run_full_validation_thread(self, source_id: int) -> None:
+    def _run_full_validation_thread(self, source_id: int, max_pages: int | None = None) -> None:
         task_id = self.db.create_task_run("site-sync", "running", "站点全量校验")
         try:
-            details = self.execute_full_validation(source_id)
+            details = self.execute_full_validation(source_id, max_pages=max_pages)
             self.db.finish_task_run(task_id, "success", "站点全量校验完成", details)
             self._status = {"running": False, "message": "站点全量校验完成"}
         except Exception as exc:
@@ -121,7 +121,7 @@ class SiteSyncManager:
         finally:
             self._lock.release()
 
-    def execute_sync(self, source_id: int | None = None, cooperate=None) -> dict[str, Any]:
+    def execute_sync(self, source_id: int | None = None, cooperate=None, max_pages: int | None = None) -> dict[str, Any]:
         settings = self.db.get_settings()
         details: dict[str, Any] = {
             "sources": 0,
@@ -149,7 +149,10 @@ class SiteSyncManager:
             }
             self._log_site_event(source, "sync-start", "开始同步站点来源")
             try:
-                result = self._sync_source(source, cooperate=cooperate)
+                if max_pages:
+                    result = self._sync_source(source, cooperate=cooperate, max_pages=max_pages)
+                else:
+                    result = self._sync_source(source, cooperate=cooperate)
             except Exception as exc:
                 details["errors"] += 1
                 self.db.add_site_filter_log(
@@ -178,7 +181,7 @@ class SiteSyncManager:
         self._status = {"running": False, "message": "站点同步完成"}
         return details
 
-    def execute_full_validation(self, source_id: int, cooperate=None) -> dict[str, Any]:
+    def execute_full_validation(self, source_id: int, cooperate=None, max_pages: int | None = None) -> dict[str, Any]:
         source = self.db.get_site_source(source_id)
         if not source:
             raise RuntimeError("站点来源不存在")
@@ -196,12 +199,14 @@ class SiteSyncManager:
             "已清理旧内容",
             f"旧帖子 {int(cleared.get('posts') or 0)} 条，旧素材 {int(cleared.get('assets') or 0)} 个，图库动态 {int(cleared.get('folders') or 0)} 个，删除文件 {removed_files} 个",
         )
-        result = self.execute_sync(source_id, cooperate=cooperate)
+        result = self.execute_sync(source_id, cooperate=cooperate, max_pages=max_pages)
         result["cleared_posts"] = int(cleared.get("posts") or 0)
         result["cleared_assets"] = int(cleared.get("assets") or 0)
         result["cleared_folders"] = int(cleared.get("folders") or 0)
         result["removed_files"] = removed_files
         result["validation_mode"] = True
+        if max_pages:
+            result["temporary_max_pages"] = int(max_pages)
         result["source"] = {
             "id": source.get("id"),
             "name": source.get("name"),
@@ -220,7 +225,7 @@ class SiteSyncManager:
         self._status = {"running": False, "message": "站点全量校验完成"}
         return result
 
-    def _sync_source(self, source: dict[str, Any], cooperate=None) -> dict[str, int]:
+    def _sync_source(self, source: dict[str, Any], cooperate=None, max_pages: int | None = None) -> dict[str, int]:
         settings = self.db.get_settings()
         source_settings = self._settings_for_source(settings, source)
         fetcher = PageFetcher(
@@ -236,7 +241,10 @@ class SiteSyncManager:
         max_media = max(int(settings.get("site_max_media_per_post") or 100), 1)
         counters = {"discovered": 0, "posts": 0, "downloaded": 0, "blocked": 0, "skipped": 0, "no_media": 0, "errors": 0}
 
-        posts = parser.discover(source, parse_assets=True)
+        parse_source = source
+        if max_pages:
+            parse_source = {**source, "max_pages": max(1, int(max_pages))}
+        posts = parser.discover(parse_source, parse_assets=True)
         counters["discovered"] = len(posts)
         self._status = {
             **self._status,
@@ -719,7 +727,12 @@ class SiteSyncManager:
         )
         if parsed.scheme in {"http", "https"} and parsed.netloc:
             root = f"{parsed.scheme}://{parsed.netloc}/"
-            return [urljoin(root, name) for name in names]
+            domain = parsed.netloc.split("@")[-1]
+            return [
+                *[urljoin(root, name) for name in names],
+                f"https://www.google.com/s2/favicons?domain={domain}&sz=128",
+                f"https://icons.duckduckgo.com/ip3/{domain}.ico",
+            ]
         if parsed.scheme == "file" and parsed.path:
             base = Path(parsed.path)
             directory = base if base.is_dir() else base.parent

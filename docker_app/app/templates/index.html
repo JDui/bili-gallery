@@ -231,6 +231,7 @@
                                     <article
                                         class="photo-card gallery-item-card"
                                         data-testid="photo-card"
+                                        :data-gallery-key="galleryItemKey(item)"
                                         :data-year-key="item.year_key"
                                         :data-month-key="item.month_key"
                                         :class="{ live: item.has_livephoto }"
@@ -261,8 +262,8 @@
                                                 </template>
                                                 <template x-if="pendingTrashFolder === item.folder_name">
                                                     <div class="mini-confirm-row">
-                                                        <button class="mini-confirm-button danger" @click="trashFolderCard(item.folder_name)">确认</button>
                                                         <button class="mini-confirm-button" @click="cancelTrashCurrentFolder()">取消</button>
+                                                        <button class="mini-confirm-button danger" @click="trashFolderCard(item.folder_name)">确认</button>
                                                     </div>
                                                 </template>
                                             </div>
@@ -284,6 +285,7 @@
                                 <template x-for="item in gallery.items" :key="item.item_key">
                                     <article
                                         class="photo-card asset-card gallery-item-card"
+                                        :data-gallery-key="galleryItemKey(item)"
                                         :data-year-key="item.year_key"
                                         :data-month-key="item.month_key"
                                         :class="{ live: item.has_livephoto }"
@@ -319,8 +321,8 @@
                                             </template>
                                             <template x-if="pairDeletePending(item.folder_name, item.pair_index)">
                                                 <div class="mini-confirm-row">
-                                                    <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(item.folder_name, item.pair_index)" @click="confirmDeletePair(item.folder_name, item.pair_index)">确认</button>
                                                     <button class="mini-confirm-button" @click="cancelDeleteViewerPair()">取消</button>
+                                                    <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(item.folder_name, item.pair_index)" @click="confirmDeletePair(item.folder_name, item.pair_index)">确认</button>
                                                 </div>
                                             </template>
                                         </div>
@@ -707,6 +709,32 @@
                         </div>
                     </article>
 
+                    <article class="settings-card storage-stats-card">
+                        <h4>数据统计</h4>
+                        <div class="storage-stat-list">
+                            <div class="storage-stat-row">
+                                <span>原图文件</span>
+                                <strong x-text="formatBytes(storageStats.image_bytes)"></strong>
+                                <small x-text="`${storageStats.image_files || 0} 个文件`"></small>
+                            </div>
+                            <div class="storage-stat-row">
+                                <span>缩略图文件</span>
+                                <strong x-text="formatBytes(storageStats.thumbnail_bytes)"></strong>
+                                <small x-text="`${storageStats.thumbnail_files || 0} 个文件`"></small>
+                            </div>
+                            <div class="storage-stat-row danger">
+                                <span>垃圾桶残留文件</span>
+                                <strong x-text="formatBytes(storageStats.trash_bytes)"></strong>
+                                <small x-text="`${storageStats.trash_files || 0} 个文件`"></small>
+                            </div>
+                        </div>
+                        <p class="field-copy" x-text="`最近统计：${storageStatsUpdatedText()}`"></p>
+                        <div class="button-row">
+                            <button class="secondary-button" @click="refreshStorageStats(true)" :disabled="storageStatsLoading" x-text="storageStatsLoading ? '统计中' : '重新统计'"></button>
+                            <button class="secondary-button danger-button" @click="cleanupStorageTrash()" :disabled="storageCleanupRunning || !(storageStats.trash_files > 0)" x-text="storageCleanupRunning ? '提交中' : '清理垃圾文件'"></button>
+                        </div>
+                    </article>
+
                     <article class="settings-card danger-settings-card">
                         <h4>内容清理</h4>
                         <p class="field-copy">会清空资料库、待审核、过滤日志、任务记录、垃圾桶和黑名单，但会保留当前 Cookie 登录状态与设置。</p>
@@ -977,6 +1005,10 @@
                                     </template>
                                     <template x-if="siteValidateConfirmId === source.id && siteValidateConfirmStep >= 2">
                                         <div class="button-row confirm-row">
+                                            <label class="inline-number-field site-validate-pages">
+                                                <span>本次页数</span>
+                                                <input type="number" min="1" :value="siteValidatePageDraft(source.id)" @input="updateSiteValidatePageDraft(source.id, $event.target.value)">
+                                            </label>
                                             <button class="primary-button danger-confirm confirm-anchor" @click="validateSiteSource(source)">确认全量校验</button>
                                             <button class="secondary-button" @click="cancelSiteValidate()">取消</button>
                                         </div>
@@ -1121,8 +1153,8 @@
                                 </template>
                                 <template x-if="pendingTrashFolder === detail.folder?.folder_name">
                                     <div class="button-row confirm-row detail-trash-confirm">
-                                        <button class="primary-button danger-confirm confirm-anchor" @click="trashCurrentFolder()">确认不喜欢</button>
                                         <button class="secondary-button" @click="cancelTrashCurrentFolder()">取消</button>
+                                        <button class="primary-button danger-confirm confirm-anchor" @click="trashCurrentFolder()">确认不喜欢</button>
                                     </div>
                                 </template>
                             </div>
@@ -1176,8 +1208,8 @@
                                     </template>
                                     <template x-if="pairDeletePending(detail.folder?.folder_name, pair.pair_index)">
                                         <div class="mini-confirm-row">
-                                            <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(detail.folder?.folder_name, pair.pair_index)" @click="confirmDeletePair(detail.folder?.folder_name, pair.pair_index)">确认</button>
                                             <button class="mini-confirm-button" @click="cancelDeleteViewerPair()">取消</button>
+                                            <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(detail.folder?.folder_name, pair.pair_index)" @click="confirmDeletePair(detail.folder?.folder_name, pair.pair_index)">确认</button>
                                         </div>
                                     </template>
                                 </div>
@@ -1234,8 +1266,8 @@
                         </template>
                         <template x-if="deletePairConfirmStep >= 1">
                         <div class="button-row confirm-row viewer-action-row viewer-action-confirm">
-                            <button class="primary-button danger-confirm confirm-anchor" @click="confirmDeleteViewerPair()">确认永久删除，不可恢复</button>
                             <button class="secondary-button" @click="cancelDeleteViewerPair()">取消</button>
+                            <button class="primary-button danger-confirm confirm-anchor" @click="confirmDeleteViewerPair()">确认永久删除，不可恢复</button>
                         </div>
                         </template>
                         <button class="secondary-button confirm-anchor viewer-action-button" @click="closeViewer()">关闭</button>
@@ -1257,7 +1289,7 @@
                         </template>
                         <div class="viewer-stage-loading-wash" :class="{ hidden: !viewerShouldShowImageWash() }" :style="viewerMediaStyle()"></div>
                         <template x-if="viewer.pair?.image">
-                            <img class="viewer-stage-image" :style="viewerMediaStyle()" :class="{ hidden: (viewer.showVideo && viewer.pair?.livephoto) || !viewerImageReady }" :src="viewer.pair?.image?.url" :alt="viewer.pair ? `图片 ${viewer.pair.pair_index}` : '图片'" @load="viewerMediaLoaded('image', $event)">
+                            <img class="viewer-stage-image" :style="viewerMediaStyle()" :class="{ hidden: (viewer.showVideo && viewer.pair?.livephoto) || !viewerImageReady }" :src="viewer.pair?.image?.url" :alt="viewer.pair ? `图片 ${viewer.pair.pair_index}` : '图片'" :data-viewer-token="viewerToken" @load="viewerMediaLoaded('image', $event)" @error="viewerMediaFailed('image', $event)">
                         </template>
                         <template x-if="viewer.pair?.livephoto">
                             <video

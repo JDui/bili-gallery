@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import random
 import re
+import threading
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -50,6 +51,7 @@ AVATAR_REFRESH_LONG_PAUSE_RANGE = (35.0, 75.0)
 AVATAR_REFRESH_RISK_BACKOFF_RANGE = (90.0, 180.0)
 AVATAR_REFRESH_RISK_KEYWORDS = ("验证码", "风控", "安全", "captcha", "-352", "412")
 AVATAR_CACHE_MAX_BYTES = 5 * 1024 * 1024
+_icon_reset_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -250,10 +252,12 @@ async def clear_delete_site_source(source_id: int) -> dict[str, Any]:
     for folder in folders:
         removed_files += storage.remove_folder_assets(folder["folder_name"])
     removed_files += storage.remove_site_source_assets(source.get("slug") or source.get("name") or str(source_id))
+    storage_stats = pull_manager.refresh_storage_stats_cache()
     return {
         "ok": True,
         "message": f"已清空并删除站点，移除 {result['posts']} 条贴文和 {result['folders']} 个图库项目",
         "removed_files": removed_files,
+        "storage_stats": storage_stats,
         **result,
     }
 
@@ -266,9 +270,16 @@ async def sync_site_source(source_id: int) -> dict[str, Any]:
 
 
 @app.post("/api/site-sources/{source_id}/validate")
-async def validate_site_source(source_id: int) -> dict[str, Any]:
+async def validate_site_source(source_id: int, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     if not db.get_site_source(source_id):
         raise HTTPException(status_code=404, detail="站点来源不存在")
+    max_pages = payload.get("max_pages")
+    try:
+        max_pages = max(1, int(max_pages)) if max_pages else None
+    except (TypeError, ValueError):
+        max_pages = None
+    if max_pages:
+        return site_syncer.start_full_validation(source_id, max_pages=max_pages)
     return site_syncer.start_full_validation(source_id)
 
 
@@ -331,6 +342,7 @@ async def toggle_site_post_block(post_id: int, payload: dict[str, Any] = Body(de
     if value:
         for folder_name in db.delete_site_gallery_post(current["source_id"], post_id):
             storage.remove_folder_assets(folder_name)
+        pull_manager.refresh_storage_stats_cache()
     return {"ok": True, "item": db.get_site_post(post_id)}
 
 
@@ -919,6 +931,24 @@ async def update_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]
     return settings
 
 
+@app.get("/api/settings/storage-stats")
+async def get_storage_stats() -> dict[str, Any]:
+    return {"ok": True, "stats": pull_manager.storage_stats()}
+
+
+@app.post("/api/settings/storage-stats/refresh")
+async def refresh_storage_stats() -> dict[str, Any]:
+    return {"ok": True, "stats": pull_manager.refresh_storage_stats_cache()}
+
+
+@app.post("/api/settings/storage-cleanup")
+async def cleanup_storage_trash() -> dict[str, Any]:
+    try:
+        return pull_manager.start_storage_cleanup()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/settings/clear-data")
 async def clear_data() -> dict[str, Any]:
     try:
@@ -943,9 +973,7 @@ async def rebuild_gallery_index() -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/api/settings/reset-icons")
-async def reset_all_icons() -> dict[str, Any]:
-    cookie = auth.get_cookie_state().cookie
+def _execute_reset_all_icons(cookie: str | None) -> dict[str, Any]:
     summary = {
         "subscriptions": {"total": 0, "updated": 0, "fallback": 0, "failed": 0},
         "sites": {"total": 0, "updated": 0, "fallback": 0, "failed": 0},
@@ -989,7 +1017,28 @@ async def reset_all_icons() -> dict[str, Any]:
         message += " 无法获取图像的项目已回退默认样式。"
     if summary["subscriptions"]["failed"] or summary["sites"]["failed"]:
         message += " 部分项目请求失败，详情已记录。"
-    return {"ok": True, "message": message, "result": summary, "items": _subscription_stats()}
+    return {"message": message, "result": summary}
+
+
+def _run_reset_all_icons_task(task_id: int, cookie: str | None) -> None:
+    try:
+        details = _execute_reset_all_icons(cookie)
+        db.finish_task_run(task_id, "success", details["message"], details)
+    except Exception as exc:
+        db.finish_task_run(task_id, "failed", str(exc), {"error": str(exc)})
+    finally:
+        _icon_reset_lock.release()
+
+
+@app.post("/api/settings/reset-icons")
+async def reset_all_icons() -> dict[str, Any]:
+    if not _icon_reset_lock.acquire(blocking=False):
+        return {"ok": True, "queued": True, "message": "已有图标重置任务正在运行"}
+    cookie = auth.get_cookie_state().cookie
+    task_id = db.create_task_run("icons", "running", "开始重置所有图标")
+    thread = threading.Thread(target=_run_reset_all_icons_task, args=(task_id, cookie), daemon=True)
+    thread.start()
+    return {"ok": True, "queued": False, "message": "图标重置任务已提交，可在任务队列中查看进度"}
 
 
 @app.post("/api/auth/qr/start")

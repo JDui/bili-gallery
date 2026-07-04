@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from app.config import AppConfig
-from app.services.utils import date_key, safe_slug
+from app.services.utils import date_key, loads_json, safe_slug
 
 
 class StorageService:
@@ -98,3 +98,67 @@ class StorageService:
         if not path:
             return None
         return f"/storage/{path}"
+
+    def storage_usage_stats(self, trash_items: list[dict] | None = None) -> dict[str, int]:
+        image_files = self._files_under(self.config.images_dir, include_thumbnails=False)
+        image_files.extend(self._files_under(self.config.livephoto_dir, include_thumbnails=False))
+        image_files.extend(self._files_under(self.config.data_dir / "sites", include_thumbnails=False))
+        thumbnail_files = self._thumbnail_files_under(self.config.images_dir)
+        thumbnail_files.extend(self._thumbnail_files_under(self.config.livephoto_dir))
+        trash_files = self.trash_asset_files(trash_items or [])
+        return {
+            "image_bytes": self._sum_file_sizes(image_files),
+            "thumbnail_bytes": self._sum_file_sizes(thumbnail_files),
+            "trash_bytes": self._sum_file_sizes(trash_files),
+            "image_files": len(image_files),
+            "thumbnail_files": len(thumbnail_files),
+            "trash_files": len(trash_files),
+        }
+
+    def cleanup_trash_asset_files(self, trash_items: list[dict]) -> dict[str, int]:
+        files = self.trash_asset_files(trash_items)
+        removed_bytes = self._sum_file_sizes(files)
+        removed_files = 0
+        for path in files:
+            if path.exists() and path.is_file():
+                path.unlink(missing_ok=True)
+                removed_files += 1
+        return {"removed_files": removed_files, "removed_bytes": removed_bytes}
+
+    def trash_asset_files(self, trash_items: list[dict]) -> list[Path]:
+        files: list[Path] = []
+        seen: set[Path] = set()
+        for item in trash_items:
+            for asset in loads_json(item.get("assets_json"), []):
+                for key in ("rel_path", "thumb_rel_path", "small_thumb_rel_path", "cover_rel_path", "reverse_rel_path"):
+                    path = self.resolve_storage_path(asset.get(key))
+                    if path and path.exists() and path.is_file() and path not in seen:
+                        seen.add(path)
+                        files.append(path)
+        return files
+
+    def _files_under(self, root: Path, include_thumbnails: bool) -> list[Path]:
+        if not root.exists():
+            return []
+        files = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            parts = set(path.parts)
+            is_thumb = ".thumbs" in parts or ".source_covers" in parts
+            if include_thumbnails != is_thumb:
+                continue
+            files.append(path)
+        return files
+
+    def _thumbnail_files_under(self, root: Path) -> list[Path]:
+        return self._files_under(root, include_thumbnails=True)
+
+    def _sum_file_sizes(self, files: list[Path]) -> int:
+        total = 0
+        for path in files:
+            try:
+                total += path.stat().st_size
+            except FileNotFoundError:
+                continue
+        return total

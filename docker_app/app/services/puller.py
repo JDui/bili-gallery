@@ -276,18 +276,36 @@ class PullManager:
         queued = self._queue_or_start("site-sync", label, self._run_site_sync, source_id)
         return {"ok": True, "message": "已加入任务队列" if queued else "已开始站点同步", "queued": queued}
 
-    def start_site_validation(self, source_id: int) -> dict[str, Any]:
+    def start_site_validation(self, source_id: int, max_pages: int | None = None) -> dict[str, Any]:
         if self.site_syncer is None:
             raise RuntimeError("站点同步器未初始化")
         source = self.db.get_site_source(source_id)
         if not source:
             raise RuntimeError("站点来源不存在")
-        label = f"全量校验站点 {source.get('name') or source_id}"
-        queued = self._queue_or_start("site-validate", label, self._run_site_validation, int(source_id))
+        try:
+            max_pages = max(1, int(max_pages)) if max_pages else None
+        except (TypeError, ValueError):
+            max_pages = None
+        page_suffix = f" · 临时 {max_pages} 页" if max_pages else ""
+        label = f"全量校验站点 {source.get('name') or source_id}{page_suffix}"
+        queued = self._queue_or_start("site-validate", label, self._run_site_validation, int(source_id), max_pages)
         return {"ok": True, "message": "已加入任务队列" if queued else "已开始站点全量校验", "queued": queued}
 
+    def start_storage_cleanup(self) -> dict[str, Any]:
+        queued = self._queue_or_start("storage-cleanup", "清理垃圾文件", self._run_storage_cleanup)
+        return {"ok": True, "message": "已加入任务队列" if queued else "已开始清理垃圾文件", "queued": queued}
+
+    def storage_stats(self, refresh: bool = False) -> dict[str, Any]:
+        cached = self.db.get_storage_stats_cache()
+        if refresh or not cached.get("updated_at"):
+            return self._refresh_storage_stats_cache()
+        return cached
+
+    def refresh_storage_stats_cache(self) -> dict[str, Any]:
+        return self._refresh_storage_stats_cache()
+
     def status(self) -> dict[str, Any]:
-        latest = self._latest_task_run(["pull", "review", "validate", "startup", "index", "site-sync"])
+        latest = self._latest_task_run(["pull", "review", "validate", "startup", "index", "site-sync", "storage-cleanup", "icons"])
         status = dict(self._status)
         if str(status.get("mode") or "").startswith("site") and self.site_syncer is not None:
             site_status = self.site_syncer.status()
@@ -375,7 +393,12 @@ class PullManager:
             source_id = retry_action.get("source_id")
             return self.start_site_sync(int(source_id) if source_id is not None else None)
         if kind == "site-validate":
-            return self.start_site_validation(int(retry_action.get("source_id") or 0))
+            return self.start_site_validation(
+                int(retry_action.get("source_id") or 0),
+                max_pages=retry_action.get("max_pages"),
+            )
+        if kind == "storage-cleanup":
+            return self.start_storage_cleanup()
         raise RuntimeError("当前任务不支持重试")
 
     def move_to_trash(self, folder_name: str, reason: str = "不喜欢") -> dict[str, Any]:
@@ -448,8 +471,9 @@ class PullManager:
             self.db.clear_content_data()
             self.cleanup.run()
             self.indexer.rebuild_gallery_indexes()
+            storage_stats = self._refresh_storage_stats_cache()
             self._status = {"running": False, "message": "内容数据已清空", "mode": "idle"}
-            return {"ok": True, "message": "已清空所有内容数据，登录状态已保留", "removed": removed}
+            return {"ok": True, "message": "已清空所有内容数据，登录状态已保留", "removed": removed, "storage_stats": storage_stats}
         finally:
             self._release()
             self._run_next_queued_task()
@@ -497,6 +521,7 @@ class PullManager:
     def _remove_folder_files(self, folder_name: str) -> None:
         self.storage.remove_folder_assets(folder_name)
         self.cleanup.run()
+        self._refresh_storage_stats_cache()
 
     def _remove_pair_files(self, assets: list[dict[str, Any]], folder_name: str, remove_empty_folder: bool) -> None:
         for asset in assets:
@@ -504,6 +529,7 @@ class PullManager:
         if remove_empty_folder:
             self.storage.remove_folder_assets(folder_name)
         self.cleanup.run()
+        self._refresh_storage_stats_cache()
 
     def _finalize_deleted_folder(self, folder_name: str, folder: dict[str, Any] | None = None) -> None:
         time.sleep(0.2)
@@ -566,6 +592,7 @@ class PullManager:
             stats = self._execute_pull()
             cleanup_stats = self.cleanup.run()
             stats["cleanup"] = cleanup_stats
+            stats["storage_stats"] = self._refresh_storage_stats_cache()
             gallery_index_check, schedule_index_check = self._evaluate_auto_gallery_index_check("拉取")
             stats["gallery_index_check"] = gallery_index_check
             stats["events"] = self._runtime_events()
@@ -599,6 +626,7 @@ class PullManager:
             cleanup_stats = self.cleanup.run()
             stats["validation"] = validation
             stats["cleanup"] = cleanup_stats
+            stats["storage_stats"] = self._refresh_storage_stats_cache()
             gallery_index_check, schedule_index_check = self._evaluate_auto_gallery_index_check("全量校验拉取")
             stats["gallery_index_check"] = gallery_index_check
             stats["events"] = self._runtime_events()
@@ -634,6 +662,7 @@ class PullManager:
             stats = self._execute_pull(target_uids=[uid], force_reload=False)
             cleanup_stats = self.cleanup.run()
             stats["cleanup"] = cleanup_stats
+            stats["storage_stats"] = self._refresh_storage_stats_cache()
             gallery_index_check, schedule_index_check = self._evaluate_auto_gallery_index_check("订阅拉取")
             stats["gallery_index_check"] = gallery_index_check
             stats["events"] = self._runtime_events()
@@ -667,6 +696,7 @@ class PullManager:
         try:
             stats = self.site_syncer.execute_sync(source_id, cooperate=self._cooperate)
             stats["retry_action"] = retry_action
+            stats["storage_stats"] = self._refresh_storage_stats_cache()
             stats["events"] = self._runtime_events()
             self.db.finish_task_run(task_id, "success", "站点同步完成", stats)
             self._status = {"running": False, "message": "站点同步完成", "mode": "idle", "stats": stats}
@@ -684,16 +714,17 @@ class PullManager:
             self._release()
             self._run_next_queued_task()
 
-    def _run_site_validation(self, source_id: int) -> None:
+    def _run_site_validation(self, source_id: int, max_pages: int | None = None) -> None:
         if self.site_syncer is None:
             self._release()
             self._run_next_queued_task()
             return
-        retry_action = {"kind": "site-validate", "source_id": source_id}
+        retry_action = {"kind": "site-validate", "source_id": source_id, "max_pages": max_pages}
         task_id = self.db.create_task_run("site-sync", "running", "开始站点全量校验", {"retry_action": retry_action})
         try:
-            stats = self.site_syncer.execute_full_validation(source_id, cooperate=self._cooperate)
+            stats = self.site_syncer.execute_full_validation(source_id, cooperate=self._cooperate, max_pages=max_pages)
             stats["retry_action"] = retry_action
+            stats["storage_stats"] = self._refresh_storage_stats_cache()
             stats["events"] = self._runtime_events()
             self.db.finish_task_run(task_id, "success", "站点全量校验完成", stats)
             self._status = {"running": False, "message": "站点全量校验完成", "mode": "idle", "stats": stats}
@@ -707,6 +738,29 @@ class PullManager:
             self._status = {"running": False, "message": f"站点全量校验失败: {exc}", "mode": "idle"}
             if self.site_syncer is not None:
                 self.site_syncer._status = {"running": False, "message": f"站点全量校验失败: {exc}"}
+        finally:
+            self._release()
+            self._run_next_queued_task()
+
+    def _run_storage_cleanup(self) -> None:
+        retry_action = {"kind": "storage-cleanup"}
+        task_id = self.db.create_task_run("storage-cleanup", "running", "开始清理垃圾文件", {"retry_action": retry_action})
+        try:
+            cleanup_stats = self.storage.cleanup_trash_asset_files(self.db.list_trash_items())
+            cleanup_stats["cleanup"] = self.cleanup.run()
+            cleanup_stats["storage_stats"] = self._refresh_storage_stats_cache()
+            cleanup_stats["retry_action"] = retry_action
+            cleanup_stats["events"] = self._runtime_events()
+            self.db.finish_task_run(task_id, "success", "垃圾文件清理完成", cleanup_stats)
+            self._status = {"running": False, "message": "垃圾文件清理完成", "mode": "idle", "stats": cleanup_stats}
+        except Exception as exc:
+            self.db.finish_task_run(
+                task_id,
+                "failed",
+                str(exc),
+                {"error": str(exc), "retry_action": retry_action, "events": self._runtime_events()},
+            )
+            self._status = {"running": False, "message": f"垃圾文件清理失败: {exc}", "mode": "idle"}
         finally:
             self._release()
             self._run_next_queued_task()
@@ -1137,11 +1191,13 @@ class PullManager:
                 self.indexer.rebuild_gallery_indexes()
             else:
                 self.db.set_gallery_index_rebuilding(False)
+            storage_stats = self._refresh_storage_stats_cache()
             details = {
                 "import": import_stats,
                 "cleanup": cleanup_stats,
                 "reindexed": reindexed,
                 "gallery_index": self.db.gallery_index_status(),
+                "storage_stats": storage_stats,
                 "events": self._runtime_events(),
             }
             self.db.finish_task_run(task_id, "success", "图库整理完成", details)
@@ -1242,8 +1298,13 @@ class PullManager:
                 self._download_candidate(candidate, settings, cookie)
             self.db.set_review_status(item_id, "approved")
             self.cleanup.run()
-            self.db.finish_task_run(task_id, "success", "审核项下载完成", {"item_id": item_id, "events": self._runtime_events()})
-            self._status = {"running": False, "message": "审核项下载完成", "mode": "idle"}
+            details = {
+                "item_id": item_id,
+                "storage_stats": self._refresh_storage_stats_cache(),
+                "events": self._runtime_events(),
+            }
+            self.db.finish_task_run(task_id, "success", "审核项下载完成", details)
+            self._status = {"running": False, "message": "审核项下载完成", "mode": "idle", "stats": details}
         except Exception as exc:
             if isinstance(exc, ResourceDownloadError) and candidate is not None:
                 self._queue_candidate_for_review(candidate, self._download_review_reason(exc))
@@ -1271,6 +1332,7 @@ class PullManager:
             stats = self._execute_validation()
             gallery_index_check, schedule_index_check = self._evaluate_auto_gallery_index_check("内容校验")
             stats["gallery_index_check"] = gallery_index_check
+            stats["storage_stats"] = self._refresh_storage_stats_cache()
             stats["events"] = self._runtime_events()
             self.db.finish_task_run(task_id, "success", "校验完成", stats)
             self._status = {"running": False, "message": "内容校验完成", "mode": "idle", "stats": stats}
@@ -1916,6 +1978,11 @@ class PullManager:
 
         return json.loads(raw)
 
+    def _refresh_storage_stats_cache(self) -> dict[str, Any]:
+        stats = self.storage.storage_usage_stats(self.db.list_trash_items())
+        stats["updated_at"] = now_iso()
+        return self.db.set_storage_stats_cache(stats)
+
     def _queue_or_start(self, mode: str, label: str, target, *args) -> bool:
         with self._queue_lock:
             if self._lock.locked():
@@ -1959,7 +2026,11 @@ class PullManager:
                 thread = threading.Thread(target=self._run_site_sync, args=(source_id,), daemon=True)
             elif next_task.kind == "site-validate":
                 source_id = int(next_task.payload.get("args", [0])[0])
-                thread = threading.Thread(target=self._run_site_validation, args=(source_id,), daemon=True)
+                args = next_task.payload.get("args", [])
+                max_pages = args[1] if len(args) > 1 else None
+                thread = threading.Thread(target=self._run_site_validation, args=(source_id, max_pages), daemon=True)
+            elif next_task.kind == "storage-cleanup":
+                thread = threading.Thread(target=self._run_storage_cleanup, daemon=True)
             else:
                 self._release()
                 return

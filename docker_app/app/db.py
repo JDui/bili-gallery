@@ -49,6 +49,15 @@ DEFAULT_SETTINGS = {
     "site_proxy_host": "127.0.0.1",
     "site_proxy_port": 7890,
     "review_source_open_mode": "browser",
+    "storage_stats_cache": {
+        "image_bytes": 0,
+        "thumbnail_bytes": 0,
+        "trash_bytes": 0,
+        "image_files": 0,
+        "thumbnail_files": 0,
+        "trash_files": 0,
+        "updated_at": None,
+    },
 }
 LEGACY_SITE_USER_AGENTS = {
     "PostArchiver/0.1 (+authorized personal archive)",
@@ -642,6 +651,14 @@ class Database:
                     (key, dumps_json(value)),
                 )
         return current
+
+    def get_storage_stats_cache(self) -> dict[str, Any]:
+        return dict(self.get_settings().get("storage_stats_cache") or DEFAULT_SETTINGS["storage_stats_cache"])
+
+    def set_storage_stats_cache(self, stats: dict[str, Any]) -> dict[str, Any]:
+        payload = {**DEFAULT_SETTINGS["storage_stats_cache"], **(stats or {})}
+        self.save_settings({"storage_stats_cache": payload})
+        return payload
 
     def set_gallery_index_rebuilding(self, rebuilding: bool) -> None:
         self.save_settings({"gallery_index_rebuilding": bool(rebuilding)})
