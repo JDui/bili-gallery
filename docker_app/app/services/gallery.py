@@ -290,6 +290,13 @@ class GalleryService:
                 or (livephoto or {}).get("small_thumb_url")
                 or item.get("thumb_url")
             ),
+            "tiny_thumb_url": (
+                (image or {}).get("tiny_thumb_url")
+                or (livephoto or {}).get("tiny_thumb_url")
+                or (image or {}).get("small_thumb_url")
+                or (livephoto or {}).get("small_thumb_url")
+                or item.get("thumb_url")
+            ),
             "image": image,
             "livephoto": livephoto,
             "display_ratio": item.get("display_ratio"),
@@ -309,6 +316,7 @@ class GalleryService:
             "url": self.storage.storage_url(asset["rel_path"]),
             "thumb_url": self.storage.storage_url(asset.get("thumb_rel_path")),
             "small_thumb_url": self.storage.storage_url(asset.get("small_thumb_rel_path")),
+            "tiny_thumb_url": self.storage.storage_url(asset.get("tiny_thumb_rel_path")),
             "cover_url": self.storage.storage_url(asset.get("cover_rel_path")),
             "reverse_url": self.storage.storage_url(asset.get("reverse_rel_path")),
             "width": asset.get("width"),
@@ -459,6 +467,7 @@ class GalleryService:
                         "preview_kind": pair.get("preview_kind"),
                         "thumb_url": preview.get("thumb_url") or preview.get("cover_url") or preview.get("url"),
                         "small_thumb_url": preview.get("small_thumb_url") or preview.get("thumb_url") or preview.get("cover_url") or preview.get("url"),
+                        "tiny_thumb_url": preview.get("tiny_thumb_url") or preview.get("small_thumb_url") or preview.get("thumb_url") or preview.get("cover_url") or preview.get("url"),
                         "image": pair.get("image"),
                         "livephoto": pair.get("livephoto"),
                         "display_ratio": pair.get("display_ratio"),

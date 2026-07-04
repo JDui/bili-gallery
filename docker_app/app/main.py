@@ -5,6 +5,7 @@ import random
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -406,6 +407,7 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 **item,
                 "uname": item.get("uname") or stat.get("uname") or f"UID {item['uid']}",
                 "icon_url": item.get("avatar_url"),
+                "icon_tiny_url": item.get("avatar_tiny_url"),
                 "folder_count": stat.get("folder_count", 0),
                 "image_count": stat.get("image_count", 0),
                 "livephoto_count": stat.get("livephoto_count", 0),
@@ -430,6 +432,7 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "created_at": source.get("created_at"),
                 "updated_at": source.get("updated_at"),
                 "icon_url": source.get("icon_url"),
+                "icon_tiny_url": source.get("icon_tiny_url"),
                 "source_id": source.get("id"),
                 "source_type": source.get("source_type"),
                 "entry_url": source.get("entry_url"),
@@ -453,6 +456,7 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "pull_livephoto": 0,
                 "include_forwarded": 0,
                 "icon_url": None,
+                "icon_tiny_url": None,
                 "folder_count": stat.get("folder_count", 0),
                 "image_count": stat.get("image_count", 0),
                 "livephoto_count": stat.get("livephoto_count", 0),
@@ -472,11 +476,12 @@ def _refresh_subscription_icon_item(current: dict[str, Any], cookie: str | None)
 
     avatar_url = profile.get("face") or None
     if avatar_url:
-        avatar_url = _cache_subscription_avatar(uid, avatar_url, cookie) or avatar_url
+        avatar_url, avatar_tiny_url = _cache_subscription_avatar(uid, avatar_url, cookie)
         item = db.upsert_subscription(
             uid=uid,
             uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
             avatar_url=avatar_url,
+            avatar_tiny_url=avatar_tiny_url,
             status=current.get("status", "active"),
             pull_images=bool(current.get("pull_images")),
             image_min_count=int(current.get("image_min_count", 1) or 1),
@@ -490,6 +495,7 @@ def _refresh_subscription_icon_item(current: dict[str, Any], cookie: str | None)
             uid=uid,
             uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
             avatar_url=current.get("avatar_url"),
+            avatar_tiny_url=current.get("avatar_tiny_url"),
             status=current.get("status", "active"),
             pull_images=bool(current.get("pull_images")),
             image_min_count=int(current.get("image_min_count", 1) or 1),
@@ -500,14 +506,15 @@ def _refresh_subscription_icon_item(current: dict[str, Any], cookie: str | None)
     return item, False, "未能获取 UP 主头像"
 
 
-def _cache_subscription_avatar(uid: str, avatar_url: str | None, cookie: str | None = None) -> str | None:
+def _cache_subscription_avatar(uid: str, avatar_url: str | None, cookie: str | None = None) -> tuple[str | None, str | None]:
     if not avatar_url or not _looks_like_bilibili_avatar_url(avatar_url):
-        return avatar_url
+        return avatar_url, None
     parsed = urlparse(avatar_url)
     extension = _avatar_extension(parsed.path)
     target_dir = storage.config.data_dir / "avatars" / "up"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"{uid}{extension}"
+    tiny_target = target_dir / "tiny" / f"{uid}.webp"
     tmp_target = target.with_suffix(f"{target.suffix}.tmp")
     headers = {
         "User-Agent": (
@@ -528,7 +535,7 @@ def _cache_subscription_avatar(uid: str, avatar_url: str | None, cookie: str | N
         response.raise_for_status()
         content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if content_type and not content_type.startswith("image/"):
-            return avatar_url
+            return avatar_url, None
         total = 0
         with tmp_target.open("wb") as file:
             for chunk in response.iter_content(chunk_size=64 * 1024):
@@ -537,19 +544,32 @@ def _cache_subscription_avatar(uid: str, avatar_url: str | None, cookie: str | N
                 total += len(chunk)
                 if total > AVATAR_CACHE_MAX_BYTES:
                     tmp_target.unlink(missing_ok=True)
-                    return avatar_url
+                    return avatar_url, None
                 file.write(chunk)
         if total <= 0:
             tmp_target.unlink(missing_ok=True)
-            return avatar_url
+            return avatar_url, None
         tmp_target.replace(target)
-        return storage.storage_url(storage.relative_to_storage(target))
+        avatar_tiny_url = _ensure_tiny_storage_image(target, tiny_target)
+        return storage.storage_url(storage.relative_to_storage(target)), avatar_tiny_url
     except Exception:
         tmp_target.unlink(missing_ok=True)
-        return avatar_url
+        return avatar_url, None
     finally:
         if response is not None:
             response.close()
+
+
+def _ensure_tiny_storage_image(source: Path, target: Path) -> str | None:
+    if not source.exists():
+        return None
+    try:
+        thumbnailer.ensure_tiny_image_thumbnail(source, target)
+    except Exception:
+        return None
+    if not target.exists():
+        return None
+    return storage.storage_url(storage.relative_to_storage(target))
 
 
 def _looks_like_bilibili_avatar_url(url: str) -> bool:
@@ -617,10 +637,12 @@ async def add_subscription(payload: dict[str, Any] = Body(...)) -> dict[str, Any
     except RuntimeError:
         profile = {"uid": uid, "uname": f"UID {uid}"}
     current = db.get_settings()
+    avatar_url, avatar_tiny_url = _cache_subscription_avatar(uid, profile.get("face"), cookie)
     db.upsert_subscription(
         uid,
         profile.get("uname"),
-        avatar_url=_cache_subscription_avatar(uid, profile.get("face"), cookie),
+        avatar_url=avatar_url,
+        avatar_tiny_url=avatar_tiny_url,
         status="active",
         pull_images=bool(current.get("pull_images", True)),
         image_min_count=int(current.get("image_min_count", 1) or 1),
@@ -658,10 +680,12 @@ async def refresh_subscription_profile(uid: str) -> dict[str, Any]:
         profile = auth.fetch_up_profile(uid, cookie)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    avatar_url, avatar_tiny_url = _cache_subscription_avatar(uid, profile.get("face"), cookie)
     item = db.upsert_subscription(
         uid=uid,
         uname=profile.get("uname") or current.get("uname") or f"UID {uid}",
-        avatar_url=_cache_subscription_avatar(uid, profile.get("face"), cookie) or current.get("avatar_url"),
+        avatar_url=avatar_url or current.get("avatar_url"),
+        avatar_tiny_url=avatar_tiny_url or current.get("avatar_tiny_url"),
         status=current.get("status", "active"),
         pull_images=bool(current.get("pull_images")),
         image_min_count=int(current.get("image_min_count", 1) or 1),

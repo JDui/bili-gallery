@@ -68,7 +68,7 @@ class StorageService:
 
     def remove_asset_files(self, asset: dict) -> int:
         removed = 0
-        for key in ("rel_path", "thumb_rel_path", "small_thumb_rel_path", "cover_rel_path", "reverse_rel_path"):
+        for key in ("rel_path", "thumb_rel_path", "small_thumb_rel_path", "tiny_thumb_rel_path", "cover_rel_path", "reverse_rel_path"):
             path = self.resolve_storage_path(asset.get(key))
             if path and path.exists():
                 path.unlink(missing_ok=True)
@@ -130,7 +130,7 @@ class StorageService:
         seen: set[Path] = set()
         for item in trash_items:
             for asset in loads_json(item.get("assets_json"), []):
-                for key in ("rel_path", "thumb_rel_path", "small_thumb_rel_path", "cover_rel_path", "reverse_rel_path"):
+                for key in ("rel_path", "thumb_rel_path", "small_thumb_rel_path", "tiny_thumb_rel_path", "cover_rel_path", "reverse_rel_path"):
                     path = self.resolve_storage_path(asset.get(key))
                     if path and path.exists() and path.is_file() and path not in seen:
                         seen.add(path)

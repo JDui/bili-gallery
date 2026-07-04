@@ -1341,6 +1341,8 @@ video {
     border-radius: 5px;
     min-height: 110px;
     background: rgba(223, 232, 243, 0.9);
+    background-position: center;
+    background-size: cover;
 }
 
 .photo-collage-tile img {
@@ -1400,6 +1402,14 @@ video {
 
 .asset-visual {
     min-height: 220px;
+}
+
+.photo-visual,
+.asset-visual,
+.detail-thumb,
+.link-badge.image {
+    background-position: center;
+    background-size: cover;
 }
 
 .asset-visual img,
@@ -2372,6 +2382,8 @@ video {
 .detail-thumb {
     position: relative;
     background: rgba(223, 232, 243, 0.9);
+    background-position: center;
+    background-size: cover;
 }
 
 .detail-card-trash {

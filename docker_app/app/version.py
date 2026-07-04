@@ -1,3 +1,3 @@
 APP_NAME = "BiliGalleryRC"
-APP_VERSION = "6.1"
+APP_VERSION = "6.2"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"

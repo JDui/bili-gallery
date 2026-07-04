@@ -1,6 +1,7 @@
 import threading
 import time
 import sqlite3
+from io import BytesIO
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -384,7 +385,7 @@ def test_new_databases_keep_site_scheduler_disabled_by_default(tmp_path: Path) -
     assert settings["site_scheduler_interval_hours"] == DEFAULT_SETTINGS["site_scheduler_interval_hours"]
 
 
-def test_gallery_thumbnails_use_576_and_258_short_edge_and_rebuild_cleans_old_derivatives(tmp_path: Path) -> None:
+def test_gallery_thumbnails_use_576_258_and_9p_short_edge_and_rebuild_cleans_old_derivatives(tmp_path: Path) -> None:
     db, storage, _syncer = make_app(tmp_path)
     image_folder = storage.image_folder("thumb-demo")
     image_folder.mkdir(parents=True, exist_ok=True)
@@ -393,29 +394,39 @@ def test_gallery_thumbnails_use_576_and_258_short_edge_and_rebuild_cleans_old_de
     indexer.index_folder("thumb-demo", 1, "Thumb Demo", "", "top", "source")
     old_marker = image_folder / ".thumbs" / "old-720.webp"
     old_small_marker = image_folder / ".thumbs" / "small" / "old-360.webp"
+    old_tiny_marker = image_folder / ".thumbs" / "tiny" / "old-9p.webp"
     old_marker.write_bytes(b"old")
     old_small_marker.write_bytes(b"old")
+    old_tiny_marker.write_bytes(b"old")
 
     indexer.rebuild_gallery_indexes()
     asset = db.list_assets_for_folder("thumb-demo")[0]
     thumb = storage.resolve_storage_path(asset["thumb_rel_path"])
     small = storage.resolve_storage_path(asset["small_thumb_rel_path"])
+    tiny = storage.resolve_storage_path(asset["tiny_thumb_rel_path"])
 
     assert not old_marker.exists()
     assert not old_small_marker.exists()
+    assert not old_tiny_marker.exists()
     with Image.open(thumb) as image:
         assert min(image.size) == 576
     with Image.open(small) as image:
         assert min(image.size) == 258
+    with Image.open(tiny) as image:
+        assert min(image.size) == 9
     Image.new("RGB", (640, 480), (20, 20, 180)).save(thumb, format="WEBP")
     Image.new("RGB", (320, 240), (20, 20, 180)).save(small, format="WEBP")
+    Image.new("RGB", (18, 12), (20, 20, 180)).save(tiny, format="WEBP")
     indexer.refresh_gallery_index("thumb-demo")
     with Image.open(thumb) as image:
         assert min(image.size) == 576
     with Image.open(small) as image:
         assert min(image.size) == 258
+    with Image.open(tiny) as image:
+        assert min(image.size) == 9
     detail = GalleryService(db, storage).get_folder_detail("thumb-demo")
     assert "/.thumbs/small/" in detail["pairs"][0]["preview_url"]
+    assert "/.thumbs/tiny/" in detail["pairs"][0]["image"]["tiny_thumb_url"]
 
 
 def test_site_sync_uses_configured_page_timeout(tmp_path: Path, monkeypatch) -> None:
@@ -1885,6 +1896,9 @@ def test_site_icon_refresh_caches_remote_icon_in_local_storage(tmp_path: Path, m
     source = create_fixture_source(db)
     remote_icon_url = "https://img.example.test/favicon"
     sessions = []
+    image_buffer = BytesIO()
+    Image.new("RGB", (64, 48), (80, 120, 180)).save(image_buffer, format="PNG")
+    icon_bytes = image_buffer.getvalue()
 
     class FakeResponse:
         headers = {"content-type": "image/png"}
@@ -1893,7 +1907,7 @@ def test_site_icon_refresh_caches_remote_icon_in_local_storage(tmp_path: Path, m
             return None
 
         def iter_content(self, chunk_size: int = 65536):
-            yield b"remote-site-icon"
+            yield icon_bytes
 
         def close(self) -> None:
             return None
@@ -1923,8 +1937,12 @@ def test_site_icon_refresh_caches_remote_icon_in_local_storage(tmp_path: Path, m
     item = syncer.refresh_site_icon(source["id"])
 
     cached_icon = icon_dir / f"{source['id']}.png"
+    tiny_icon = icon_dir / "tiny" / f"{source['id']}.webp"
     assert item["icon_url"] == f"/storage/data/avatars/sites/{source['id']}.png"
-    assert cached_icon.read_bytes() == b"remote-site-icon"
+    assert item["icon_tiny_url"] == f"/storage/data/avatars/sites/tiny/{source['id']}.webp"
+    assert cached_icon.read_bytes() == icon_bytes
+    with Image.open(tiny_icon) as image:
+        assert min(image.size) == 9
     assert not stale_icon.exists()
     assert sessions[0].calls[0]["url"] == remote_icon_url
     assert sessions[0].calls[0]["stream"] is True
@@ -2099,6 +2117,9 @@ def test_subscription_avatar_cache_uses_local_storage(tmp_path: Path, monkeypatc
     from app import main as app_main
 
     _db, storage, _syncer = make_app(tmp_path)
+    image_buffer = BytesIO()
+    Image.new("RGB", (72, 54), (120, 80, 160)).save(image_buffer, format="JPEG")
+    avatar_bytes = image_buffer.getvalue()
 
     class FakeResponse:
         headers = {"content-type": "image/jpeg"}
@@ -2107,7 +2128,7 @@ def test_subscription_avatar_cache_uses_local_storage(tmp_path: Path, monkeypatc
             return None
 
         def iter_content(self, chunk_size: int = 65536):
-            yield b"avatar-bytes"
+            yield avatar_bytes
 
         def close(self) -> None:
             return None
@@ -2115,10 +2136,13 @@ def test_subscription_avatar_cache_uses_local_storage(tmp_path: Path, monkeypatc
     monkeypatch.setattr(app_main, "storage", storage)
     monkeypatch.setattr(app_main.requests, "get", lambda *_args, **_kwargs: FakeResponse())
 
-    cached_url = app_main._cache_subscription_avatar("123", "https://i0.hdslb.com/bfs/face/avatar-test.jpg")
+    cached_url, tiny_url = app_main._cache_subscription_avatar("123", "https://i0.hdslb.com/bfs/face/avatar-test.jpg")
 
     assert cached_url == "/storage/data/avatars/up/123.jpg"
-    assert (storage.config.data_dir / "avatars" / "up" / "123.jpg").read_bytes() == b"avatar-bytes"
+    assert tiny_url == "/storage/data/avatars/up/tiny/123.webp"
+    assert (storage.config.data_dir / "avatars" / "up" / "123.jpg").read_bytes() == avatar_bytes
+    with Image.open(storage.config.data_dir / "avatars" / "up" / "tiny" / "123.webp") as image:
+        assert min(image.size) == 9
 
 
 def test_subscription_avatar_cache_accepts_dynamic_avatar(tmp_path: Path, monkeypatch) -> None:
@@ -2141,12 +2165,13 @@ def test_subscription_avatar_cache_accepts_dynamic_avatar(tmp_path: Path, monkey
     monkeypatch.setattr(app_main, "storage", storage)
     monkeypatch.setattr(app_main.requests, "get", lambda *_args, **_kwargs: FakeResponse())
 
-    cached_url = app_main._cache_subscription_avatar(
+    cached_url, tiny_url = app_main._cache_subscription_avatar(
         "123",
         "https://i0.hdslb.com/bfs/garb/item/dynamic-avatar.webp",
     )
 
     assert cached_url == "/storage/data/avatars/up/123.webp"
+    assert tiny_url is None
     assert (storage.config.data_dir / "avatars" / "up" / "123.webp").read_bytes() == b"dynamic-avatar-bytes"
 
 
@@ -2170,12 +2195,13 @@ def test_subscription_avatar_cache_accepts_activity_dynamic_avatar(tmp_path: Pat
     monkeypatch.setattr(app_main, "storage", storage)
     monkeypatch.setattr(app_main.requests, "get", lambda *_args, **_kwargs: FakeResponse())
 
-    cached_url = app_main._cache_subscription_avatar(
+    cached_url, tiny_url = app_main._cache_subscription_avatar(
         "123",
         "https://i0.hdslb.com/bfs/activity-plat/static/20220506/example/activity-avatar.gif",
     )
 
     assert cached_url == "/storage/data/avatars/up/123.gif"
+    assert tiny_url is None
     assert (storage.config.data_dir / "avatars" / "up" / "123.gif").read_bytes() == b"activity-avatar-bytes"
 
 
@@ -2193,9 +2219,10 @@ def test_subscription_avatar_cache_rejects_site_icon(tmp_path: Path, monkeypatch
     monkeypatch.setattr(app_main, "storage", storage)
     monkeypatch.setattr(app_main.requests, "get", fake_get)
 
-    url = app_main._cache_subscription_avatar("123", "https://www.bilibili.com/favicon.ico")
+    url, tiny_url = app_main._cache_subscription_avatar("123", "https://www.bilibili.com/favicon.ico")
 
     assert url == "https://www.bilibili.com/favicon.ico"
+    assert tiny_url is None
     assert called is False
 
 

@@ -117,31 +117,39 @@ class MediaIndexer:
     def _backfill_thumbnails(self, assets: list[dict]) -> list[dict]:
         output: list[dict] = []
         for asset in assets:
-            thumb_rel_path, small_thumb_rel_path = self._ensure_asset_thumbnails(asset)
-            if (thumb_rel_path or small_thumb_rel_path) and asset.get("id"):
-                self.db.update_asset_thumbnails(int(asset["id"]), thumb_rel_path, small_thumb_rel_path)
-                asset = {**asset, "thumb_rel_path": thumb_rel_path, "small_thumb_rel_path": small_thumb_rel_path}
+            thumb_rel_path, small_thumb_rel_path, tiny_thumb_rel_path = self._ensure_asset_thumbnails(asset)
+            if (thumb_rel_path or small_thumb_rel_path or tiny_thumb_rel_path) and asset.get("id"):
+                self.db.update_asset_thumbnails(int(asset["id"]), thumb_rel_path, small_thumb_rel_path, tiny_thumb_rel_path)
+                asset = {
+                    **asset,
+                    "thumb_rel_path": thumb_rel_path,
+                    "small_thumb_rel_path": small_thumb_rel_path,
+                    "tiny_thumb_rel_path": tiny_thumb_rel_path,
+                }
             output.append(asset)
         return output
 
-    def _ensure_asset_thumbnails(self, asset: dict) -> tuple[str | None, str | None]:
+    def _ensure_asset_thumbnails(self, asset: dict) -> tuple[str | None, str | None, str | None]:
         media_type = asset.get("media_type")
         if media_type == "image":
             source = self.storage.resolve_storage_path(asset.get("rel_path"))
         elif media_type == "livephoto":
             source = self.storage.resolve_storage_path(asset.get("cover_rel_path") or asset.get("thumb_rel_path"))
         else:
-            return None, None
+            return None, None, None
         if not source or not source.exists():
-            return None, None
+            return None, None, None
         thumb_root = source.parent.parent / ".thumbs" if source.parent.name == ".covers" else source.parent / ".thumbs"
         thumb_target = thumb_root / f"{source.stem}.webp"
         small_thumb_target = thumb_root / "small" / f"{source.stem}.webp"
+        tiny_thumb_target = thumb_root / "tiny" / f"{source.stem}.webp"
         self.thumbnailer.ensure_image_thumbnail(source, thumb_target)
         self.thumbnailer.ensure_small_image_thumbnail(source, small_thumb_target)
+        self.thumbnailer.ensure_tiny_image_thumbnail(source, tiny_thumb_target)
         return (
             self.storage.relative_to_storage(thumb_target) if thumb_target.exists() else None,
             self.storage.relative_to_storage(small_thumb_target) if small_thumb_target.exists() else None,
+            self.storage.relative_to_storage(tiny_thumb_target) if tiny_thumb_target.exists() else None,
         )
 
     def _replace_gallery_index(self, folder: dict, assets: list[dict]) -> None:
@@ -231,6 +239,7 @@ class MediaIndexer:
             next_pair_index = max(next_pair_index, pair_index + 1)
             thumb_path = folder_path / ".thumbs" / f"{file_path.stem}.webp"
             small_thumb_path = folder_path / ".thumbs" / "small" / f"{file_path.stem}.webp"
+            tiny_thumb_path = folder_path / ".thumbs" / "tiny" / f"{file_path.stem}.webp"
             width = height = None
             try:
                 with Image.open(file_path) as image:
@@ -240,6 +249,7 @@ class MediaIndexer:
             if generate_derivatives:
                 self.thumbnailer.ensure_image_thumbnail(file_path, thumb_path)
                 self.thumbnailer.ensure_small_image_thumbnail(file_path, small_thumb_path)
+                self.thumbnailer.ensure_tiny_image_thumbnail(file_path, tiny_thumb_path)
             assets.append(
                 {
                     "pair_index": pair_index,
@@ -247,6 +257,7 @@ class MediaIndexer:
                     "rel_path": self.storage.relative_to_storage(file_path),
                     "thumb_rel_path": self.storage.relative_to_storage(thumb_path) if thumb_path.exists() else None,
                     "small_thumb_rel_path": self.storage.relative_to_storage(small_thumb_path) if small_thumb_path.exists() else None,
+                    "tiny_thumb_rel_path": self.storage.relative_to_storage(tiny_thumb_path) if tiny_thumb_path.exists() else None,
                     "width": width,
                     "height": height,
                     "metadata": {
@@ -278,12 +289,14 @@ class MediaIndexer:
             cover_path = folder_path / ".covers" / f"{file_path.stem}.jpg"
             cover_webp = folder_path / ".thumbs" / f"{file_path.stem}.webp"
             small_cover_webp = folder_path / ".thumbs" / "small" / f"{file_path.stem}.webp"
+            tiny_cover_webp = folder_path / ".thumbs" / "tiny" / f"{file_path.stem}.webp"
             reverse_path = folder_path / ".reverse" / file_path.name
             if generate_derivatives:
                 self.thumbnailer.ensure_video_cover(file_path, cover_path)
                 if cover_path.exists():
                     self.thumbnailer.ensure_image_thumbnail(cover_path, cover_webp)
                     self.thumbnailer.ensure_small_image_thumbnail(cover_path, small_cover_webp)
+                    self.thumbnailer.ensure_tiny_image_thumbnail(cover_path, tiny_cover_webp)
                 self.thumbnailer.ensure_reverse_video(file_path, reverse_path)
             pair_index = self._extract_pair_index(file_path.name) or self._match_live_pair_index(
                 folder_path,
@@ -302,6 +315,7 @@ class MediaIndexer:
                     "rel_path": self.storage.relative_to_storage(file_path),
                     "thumb_rel_path": self.storage.relative_to_storage(cover_webp) if cover_webp.exists() else None,
                     "small_thumb_rel_path": self.storage.relative_to_storage(small_cover_webp) if small_cover_webp.exists() else None,
+                    "tiny_thumb_rel_path": self.storage.relative_to_storage(tiny_cover_webp) if tiny_cover_webp.exists() else None,
                     "cover_rel_path": self.storage.relative_to_storage(cover_path) if cover_path.exists() else None,
                     "reverse_rel_path": self.storage.relative_to_storage(reverse_path) if reverse_path.exists() else None,
                     "metadata": {
@@ -381,6 +395,7 @@ class MediaIndexer:
             "url": self.storage.storage_url(asset.get("rel_path")),
             "thumb_url": self.storage.storage_url(asset.get("thumb_rel_path")),
             "small_thumb_url": self.storage.storage_url(asset.get("small_thumb_rel_path")),
+            "tiny_thumb_url": self.storage.storage_url(asset.get("tiny_thumb_rel_path")),
             "cover_url": self.storage.storage_url(asset.get("cover_rel_path")),
             "reverse_url": self.storage.storage_url(asset.get("reverse_rel_path")),
             "width": asset.get("width"),

@@ -146,6 +146,7 @@ class Database:
                     rel_path text not null,
                     thumb_rel_path text,
                     small_thumb_rel_path text,
+                    tiny_thumb_rel_path text,
                     cover_rel_path text,
                     reverse_rel_path text,
                     width integer,
@@ -230,6 +231,7 @@ class Database:
                     uid text primary key,
                     uname text,
                     avatar_url text,
+                    avatar_tiny_url text,
                     status text not null default 'active',
                     pull_images integer not null default 1,
                     image_min_count integer not null default 1,
@@ -263,6 +265,7 @@ class Database:
                     skip_tail_images integer not null default 0,
                     use_proxy integer not null default 1,
                     icon_url text,
+                    icon_tiny_url text,
                     enabled integer not null default 1,
                     start_date text,
                     created_at text not null,
@@ -408,6 +411,7 @@ class Database:
             self._ensure_column(conn, "folders", "subscription_name", "text")
             self._ensure_column(conn, "folders", "is_favorite", "integer not null default 0")
             self._ensure_column(conn, "assets", "small_thumb_rel_path", "text")
+            self._ensure_column(conn, "assets", "tiny_thumb_rel_path", "text")
             conn.execute(
                 "create index if not exists idx_folders_subscription_pub_ts on folders(subscription_uid, pub_ts desc)"
             )
@@ -416,10 +420,12 @@ class Database:
             self._ensure_column(conn, "subscriptions", "pull_livephoto", "integer not null default 1")
             self._ensure_column(conn, "subscriptions", "include_forwarded", "integer not null default 1")
             self._ensure_column(conn, "subscriptions", "avatar_url", "text")
+            self._ensure_column(conn, "subscriptions", "avatar_tiny_url", "text")
             self._ensure_column(conn, "site_sources", "skip_head_images", "integer not null default 0")
             self._ensure_column(conn, "site_sources", "skip_tail_images", "integer not null default 0")
             self._ensure_column(conn, "site_sources", "use_proxy", "integer not null default 1")
             self._ensure_column(conn, "site_sources", "icon_url", "text")
+            self._ensure_column(conn, "site_sources", "icon_tiny_url", "text")
             self._ensure_sidebar_count_cache(conn)
             self._ensure_default_settings(conn)
             self._ensure_default_site_rules(conn)
@@ -1301,6 +1307,7 @@ class Database:
         pull_livephoto: bool | None = None,
         include_forwarded: bool | None = None,
         avatar_url: str | None = None,
+        avatar_tiny_url: str | None = None,
     ) -> dict[str, Any]:
         now = now_iso()
         with self.connect() as conn:
@@ -1327,6 +1334,7 @@ class Database:
                 "uid": str(uid),
                 "uname": uname if uname is not None else (existing["uname"] if existing else None),
                 "avatar_url": avatar_url if avatar_url is not None else (existing["avatar_url"] if existing else None),
+                "avatar_tiny_url": avatar_tiny_url if avatar_tiny_url is not None else (existing["avatar_tiny_url"] if existing else None),
                 "status": status if status is not None else (existing["status"] if existing else "active"),
                 "pull_images": pull_images_flag,
                 "image_min_count": normalized_threshold,
@@ -1338,12 +1346,13 @@ class Database:
             conn.execute(
                 """
                 insert into subscriptions(
-                    uid, uname, avatar_url, status, pull_images, image_min_count, pull_livephoto, include_forwarded, created_at, updated_at
+                    uid, uname, avatar_url, avatar_tiny_url, status, pull_images, image_min_count, pull_livephoto, include_forwarded, created_at, updated_at
                 )
-                values (:uid, :uname, :avatar_url, :status, :pull_images, :image_min_count, :pull_livephoto, :include_forwarded, :created_at, :updated_at)
+                values (:uid, :uname, :avatar_url, :avatar_tiny_url, :status, :pull_images, :image_min_count, :pull_livephoto, :include_forwarded, :created_at, :updated_at)
                 on conflict(uid) do update set
                     uname = excluded.uname,
                     avatar_url = excluded.avatar_url,
+                    avatar_tiny_url = excluded.avatar_tiny_url,
                     status = excluded.status,
                     pull_images = excluded.pull_images,
                     image_min_count = excluded.image_min_count,
@@ -1357,6 +1366,7 @@ class Database:
             "uid": str(uid),
             "uname": uname,
             "avatar_url": avatar_url,
+            "avatar_tiny_url": avatar_tiny_url,
             "status": status,
             "pull_images": 1 if pull_images and self._normalize_image_threshold(image_min_count, DEFAULT_SETTINGS["image_min_count"]) >= 0 else 0,
             "image_min_count": self._normalize_image_threshold(image_min_count, DEFAULT_SETTINGS["image_min_count"]),
@@ -1398,24 +1408,24 @@ class Database:
             number = int(fallback)
         return max(-1, min(12, number))
 
-    def set_subscription_icon(self, uid: str, avatar_url: str | None) -> dict[str, Any] | None:
+    def set_subscription_icon(self, uid: str, avatar_url: str | None, avatar_tiny_url: str | None = None) -> dict[str, Any] | None:
         current = self.get_subscription(uid)
         if not current:
             return None
         with self.connect() as conn:
             conn.execute(
-                "update subscriptions set avatar_url = ?, updated_at = ? where uid = ?",
-                (avatar_url or None, now_iso(), str(uid)),
+                "update subscriptions set avatar_url = ?, avatar_tiny_url = ?, updated_at = ? where uid = ?",
+                (avatar_url or None, avatar_tiny_url or None, now_iso(), str(uid)),
             )
         return self.get_subscription(uid)
 
-    def set_site_source_icon(self, source_id: int, icon_url: str | None) -> dict[str, Any] | None:
+    def set_site_source_icon(self, source_id: int, icon_url: str | None, icon_tiny_url: str | None = None) -> dict[str, Any] | None:
         if not self.get_site_source(source_id):
             return None
         with self.connect() as conn:
             conn.execute(
-                "update site_sources set icon_url = ?, updated_at = ? where id = ?",
-                (icon_url or None, now_iso(), int(source_id)),
+                "update site_sources set icon_url = ?, icon_tiny_url = ?, updated_at = ? where id = ?",
+                (icon_url or None, icon_tiny_url or None, now_iso(), int(source_id)),
             )
         return self.get_site_source(source_id)
 
@@ -1487,11 +1497,11 @@ class Database:
                 conn.execute(
                     """
                     insert into assets(
-                        folder_name, media_type, pair_index, filename, rel_path, thumb_rel_path, small_thumb_rel_path,
+                        folder_name, media_type, pair_index, filename, rel_path, thumb_rel_path, small_thumb_rel_path, tiny_thumb_rel_path,
                         cover_rel_path, reverse_rel_path, width, height, status, metadata_json,
                         created_at, updated_at
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         folder_name,
@@ -1501,6 +1511,7 @@ class Database:
                         asset["rel_path"],
                         asset.get("thumb_rel_path"),
                         asset.get("small_thumb_rel_path"),
+                        asset.get("tiny_thumb_rel_path"),
                         asset.get("cover_rel_path"),
                         asset.get("reverse_rel_path"),
                         asset.get("width"),
@@ -1577,11 +1588,17 @@ class Database:
                 (small_thumb_rel_path, now_iso(), int(asset_id)),
             )
 
-    def update_asset_thumbnails(self, asset_id: int, thumb_rel_path: str | None, small_thumb_rel_path: str | None) -> None:
+    def update_asset_thumbnails(
+        self,
+        asset_id: int,
+        thumb_rel_path: str | None,
+        small_thumb_rel_path: str | None,
+        tiny_thumb_rel_path: str | None = None,
+    ) -> None:
         with self.connect() as conn:
             conn.execute(
-                "update assets set thumb_rel_path = ?, small_thumb_rel_path = ?, updated_at = ? where id = ?",
-                (thumb_rel_path, small_thumb_rel_path, now_iso(), int(asset_id)),
+                "update assets set thumb_rel_path = ?, small_thumb_rel_path = ?, tiny_thumb_rel_path = ?, updated_at = ? where id = ?",
+                (thumb_rel_path, small_thumb_rel_path, tiny_thumb_rel_path, now_iso(), int(asset_id)),
             )
 
     def add_deleted_pair_mark(

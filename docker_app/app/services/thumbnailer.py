@@ -15,9 +15,15 @@ except ImportError:  # pragma: no cover - optional runtime fallback
 
 
 class ThumbnailService:
-    def __init__(self, thumb_size: tuple[int, int] = (576, 576), small_thumb_size: tuple[int, int] = (258, 258)) -> None:
+    def __init__(
+        self,
+        thumb_size: tuple[int, int] = (576, 576),
+        small_thumb_size: tuple[int, int] = (258, 258),
+        tiny_thumb_size: tuple[int, int] = (9, 9),
+    ) -> None:
         self.thumb_size = thumb_size
         self.small_thumb_size = small_thumb_size
+        self.tiny_thumb_size = tiny_thumb_size
 
     def _resolve_ffmpeg(self) -> str | None:
         ffmpeg = shutil.which("ffmpeg")
@@ -49,6 +55,12 @@ class ThumbnailService:
 
     def ensure_small_image_thumbnail(self, source: Path, target: Path) -> bool:
         return self.ensure_image_thumbnail(source, target, size=self.small_thumb_size, quality=42)
+
+    def ensure_tiny_image_thumbnail(self, source: Path, target: Path) -> bool:
+        try:
+            return self.ensure_image_thumbnail(source, target, size=self.tiny_thumb_size, quality=28)
+        except Exception:
+            return False
 
     def _thumbnail_matches(self, target: Path, source: Path, size: tuple[int, int]) -> bool:
         try:

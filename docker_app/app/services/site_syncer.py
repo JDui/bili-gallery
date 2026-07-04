@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time as datetime_time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 from xml.etree import ElementTree
 
 from PIL import Image, ImageOps
@@ -21,6 +21,7 @@ from app.services.site_downloader import MediaDownloader
 from app.services.site_filtering import RuleEngine
 from app.services.site_parser import PageFetcher, ParsedPost, SourceParser, browser_like_site_headers, parse_html
 from app.services.storage import StorageService
+from app.services.thumbnailer import ThumbnailService
 from app.services.utils import TIMEZONE, clean_filename, parse_date, safe_slug
 
 
@@ -37,6 +38,7 @@ class SiteSyncManager:
         self.db = db
         self.storage = storage
         self.indexer = indexer
+        self.thumbnailer = indexer.thumbnailer if indexer else ThumbnailService()
         self._lock = threading.Lock()
         self._task_queue: Any | None = None
         self._status: dict[str, Any] = {"running": False, "message": "空闲"}
@@ -438,19 +440,25 @@ class SiteSyncManager:
             raise RuntimeError("站点来源不存在")
         settings = self._settings_for_source(self.db.get_settings(), source)
         icon_url = self.discover_site_icon(source)
-        cached_url = self._cache_site_icon(source_id, icon_url, settings, str(source.get("entry_url") or ""))
+        cached_url, cached_tiny_url = self._cache_site_icon(source_id, icon_url, settings, str(source.get("entry_url") or ""))
         icon_url = cached_url or icon_url
-        item = self.db.set_site_source_icon(source_id, icon_url)
+        item = self.db.set_site_source_icon(source_id, icon_url, cached_tiny_url)
         if not item:
             raise RuntimeError("站点来源不存在")
         return item
 
-    def _cache_site_icon(self, source_id: int, icon_url: str | None, settings: dict[str, Any], referer_url: str = "") -> str | None:
+    def _cache_site_icon(
+        self,
+        source_id: int,
+        icon_url: str | None,
+        settings: dict[str, Any],
+        referer_url: str = "",
+    ) -> tuple[str | None, str | None]:
         if not icon_url:
-            return None
+            return None, None
         parsed = urlparse(str(icon_url))
         if parsed.scheme not in {"http", "https"}:
-            return icon_url
+            return icon_url, self._tiny_icon_url_from_local_value(source_id, str(icon_url))
 
         target_dir = self.storage.config.data_dir / "avatars" / "sites"
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -472,7 +480,7 @@ class SiteSyncManager:
             response.raise_for_status()
             content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
             if content_type and not content_type.startswith("image/") and not self._looks_like_image_url(parsed.path):
-                return None
+                return None, None
             extension = self._site_icon_extension(parsed.path, content_type)
             target = target_dir / f"{int(source_id)}{extension}"
             tmp_target = target.with_suffix(f"{target.suffix}.tmp")
@@ -484,20 +492,21 @@ class SiteSyncManager:
                     total += len(chunk)
                     if total > SITE_ICON_CACHE_MAX_BYTES:
                         tmp_target.unlink(missing_ok=True)
-                        return None
+                        return None, None
                     file.write(chunk)
             if total <= 0:
                 tmp_target.unlink(missing_ok=True)
-                return None
+                return None, None
             tmp_target.replace(target)
             for stale in target_dir.glob(f"{int(source_id)}.*"):
                 if stale != target:
                     stale.unlink(missing_ok=True)
-            return self.storage.storage_url(self.storage.relative_to_storage(target))
+            tiny_url = self._tiny_icon_url_from_path(source_id, target)
+            return self.storage.storage_url(self.storage.relative_to_storage(target)), tiny_url
         except Exception:
             if tmp_target is not None:
                 tmp_target.unlink(missing_ok=True)
-            return None
+            return None, None
         finally:
             if response is not None:
                 try:
@@ -505,6 +514,28 @@ class SiteSyncManager:
                 except Exception:
                     pass
             session.close()
+
+    def _tiny_icon_url_from_local_value(self, source_id: int, icon_url: str) -> str | None:
+        parsed = urlparse(str(icon_url))
+        if parsed.scheme == "file":
+            return self._tiny_icon_url_from_path(source_id, Path(unquote(parsed.path)))
+        if str(icon_url).startswith("/storage/"):
+            rel_path = str(icon_url).removeprefix("/storage/").split("?", 1)[0]
+            path = self.storage.resolve_storage_path(rel_path)
+            return self._tiny_icon_url_from_path(source_id, path) if path else None
+        return None
+
+    def _tiny_icon_url_from_path(self, source_id: int, source_path: Path) -> str | None:
+        if not source_path.exists():
+            return None
+        target = self.storage.config.data_dir / "avatars" / "sites" / "tiny" / f"{int(source_id)}.webp"
+        try:
+            self.thumbnailer.ensure_tiny_image_thumbnail(source_path, target)
+        except Exception:
+            return None
+        if not target.exists():
+            return None
+        return self.storage.storage_url(self.storage.relative_to_storage(target))
 
     def discover_site_icon(self, source: dict[str, Any]) -> str | None:
         entry_url = str(source.get("entry_url") or "").strip()

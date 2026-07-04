@@ -68,6 +68,7 @@ function galleryApp() {
     headerCompact: false,
     headerScrollRaf: null,
     lastScrollTop: 0,
+    scrollDirection: "down",
     reviewItems: [],
     logs: [],
     taskRuns: [],
@@ -235,7 +236,13 @@ function galleryApp() {
         this.lastScrollTop = this.bodyLockTop;
         return;
       }
-      this.lastScrollTop = window.scrollY || window.pageYOffset || 0;
+      const currentScrollTop = window.scrollY || window.pageYOffset || 0;
+      if (currentScrollTop > this.lastScrollTop + 2) {
+        this.scrollDirection = "down";
+      } else if (currentScrollTop < this.lastScrollTop - 2) {
+        this.scrollDirection = "up";
+      }
+      this.lastScrollTop = currentScrollTop;
       if (this.headerScrollRaf) {
         return;
       }
@@ -517,8 +524,64 @@ function galleryApp() {
       return `--detail-columns: ${this.resolveDetailColumns()};`;
     },
 
+    tinyThumbBackground(url) {
+      const value = String(url || "").trim();
+      if (!value) {
+        return "";
+      }
+      return `background-image: url("${value.replace(/["\\\n\r]/g, "\\$&")}");`;
+    },
+
+    galleryItemTinyUrl(item) {
+      const tiles = item?.preview_tiles || [];
+      const firstTile = tiles.find((tile) => tile?.tiny_thumb_url || tile?.small_thumb_url || tile?.thumb_url || tile?.cover_url || tile?.url) || {};
+      return firstTile.tiny_thumb_url || item?.tiny_thumb_url || firstTile.small_thumb_url || firstTile.thumb_url || firstTile.cover_url || firstTile.url || "";
+    },
+
+    pairTinyUrl(pair) {
+      const image = pair?.image || {};
+      const livephoto = pair?.livephoto || {};
+      return (
+        pair?.tiny_thumb_url ||
+        image.tiny_thumb_url ||
+        livephoto.tiny_thumb_url ||
+        pair?.small_thumb_url ||
+        image.small_thumb_url ||
+        livephoto.small_thumb_url ||
+        pair?.preview_url ||
+        image.thumb_url ||
+        livephoto.thumb_url ||
+        image.url ||
+        livephoto.cover_url ||
+        livephoto.url ||
+        ""
+      );
+    },
+
+    galleryItemTinyStyle(item) {
+      return this.tinyThumbBackground(this.galleryItemTinyUrl(item));
+    },
+
+    tileTinyStyle(tile) {
+      return this.tinyThumbBackground(tile?.tiny_thumb_url || tile?.small_thumb_url || tile?.thumb_url || tile?.cover_url || tile?.url);
+    },
+
     assetVisualStyle(item) {
-      return `aspect-ratio: ${item.display_ratio || "1 / 1"}`;
+      const styles = [`aspect-ratio: ${item.display_ratio || "1 / 1"}`];
+      const tiny = this.tinyThumbBackground(this.pairTinyUrl(item));
+      if (tiny) {
+        styles.push(tiny);
+      }
+      return styles.join("; ");
+    },
+
+    detailThumbStyle(pair) {
+      const styles = [`aspect-ratio: ${pair.display_ratio || "1 / 1"}`];
+      const tiny = this.tinyThumbBackground(this.pairTinyUrl(pair));
+      if (tiny) {
+        styles.push(tiny);
+      }
+      return styles.join("; ");
     },
 
     galleryDensityCaption() {
@@ -590,7 +653,9 @@ function galleryApp() {
         ...item,
         is_site: !!item.is_site || String(item.uid || "").startsWith("site:"),
         avatar_url: item.avatar_url || "",
+        avatar_tiny_url: item.avatar_tiny_url || "",
         icon_url: item.icon_url || item.avatar_url || "",
+        icon_tiny_url: item.icon_tiny_url || item.avatar_tiny_url || "",
         pull_images: !!item.pull_images,
         pull_livephoto: !!item.pull_livephoto,
         include_forwarded: !!item.include_forwarded,
@@ -637,6 +702,18 @@ function galleryApp() {
       return this.versionedIconUrl(item?.icon_url || item?.avatar_url || item?.site_icon_url || "", item?.updated_at);
     },
 
+    subscriptionIconTinyUrl(item) {
+      const key = String(item?.uid || "");
+      if (!key || this.iconLoadFailures[key]) {
+        return "";
+      }
+      return this.versionedIconUrl(item?.icon_tiny_url || item?.avatar_tiny_url || item?.site_icon_tiny_url || "", item?.updated_at);
+    },
+
+    subscriptionIconTinyStyle(item) {
+      return this.tinyThumbBackground(this.subscriptionIconTinyUrl(item));
+    },
+
     handleSubscriptionIconError(item) {
       const key = String(item?.uid || "");
       if (!key) {
@@ -651,6 +728,18 @@ function galleryApp() {
         return "";
       }
       return this.versionedIconUrl(source.icon_url, source.updated_at);
+    },
+
+    siteSourceIconTinyUrl(source) {
+      const key = `site:${source?.id || ""}`;
+      if (!source?.icon_tiny_url || this.iconLoadFailures[key]) {
+        return "";
+      }
+      return this.versionedIconUrl(source.icon_tiny_url, source.updated_at);
+    },
+
+    siteSourceIconTinyStyle(source) {
+      return this.tinyThumbBackground(this.siteSourceIconTinyUrl(source));
     },
 
     versionedIconUrl(url, version) {
@@ -1178,12 +1267,33 @@ function galleryApp() {
       }
     },
 
-    isNearBottom() {
-      return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 96;
+    galleryPreloadDistance() {
+      return Math.max(560, Math.round((window.innerHeight || 720) * 0.85));
     },
 
-    isNearTop() {
-      return window.scrollY <= 160;
+    galleryPageElement(page) {
+      if (typeof document === "undefined" || !document.querySelector) {
+        return null;
+      }
+      return document.querySelector(`.gallery-page[data-gallery-page="${this.cssEscape(String(page))}"]`);
+    },
+
+    isNearLoadedBottom() {
+      const element = this.galleryPageElement(this.lastLoadedGalleryPage());
+      if (!element) {
+        return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 96;
+      }
+      const rect = element.getBoundingClientRect();
+      return rect.bottom <= (window.innerHeight || 0) + this.galleryPreloadDistance();
+    },
+
+    isNearLoadedTop() {
+      const element = this.galleryPageElement(this.firstLoadedGalleryPage());
+      if (!element) {
+        return window.scrollY <= 160;
+      }
+      const rect = element.getBoundingClientRect();
+      return rect.top >= -this.galleryPreloadDistance();
     },
 
     hasMoreItems() {
@@ -1227,11 +1337,17 @@ function galleryApp() {
       if (!this.autoLoadEnabled() || !this.galleryReadyForLoad()) {
         return;
       }
-      if (this.hasPreviousItems() && this.isNearTop()) {
+      const nearLoadedTop = this.hasPreviousItems() && this.isNearLoadedTop();
+      const nearLoadedBottom = this.hasMoreItems() && this.isNearLoadedBottom();
+      if (nearLoadedBottom && this.scrollDirection !== "up") {
+        await this.loadMore();
+        return;
+      }
+      if (nearLoadedTop) {
         await this.loadPrevious();
         return;
       }
-      if (this.hasMoreItems() && this.isNearBottom()) {
+      if (nearLoadedBottom) {
         await this.loadMore();
       }
     },
@@ -3313,6 +3429,12 @@ function galleryApp() {
                 avatar_url: Object.prototype.hasOwnProperty.call(refreshed, "avatar_url")
                   ? (refreshed.avatar_url || "")
                   : (item.avatar_url || ""),
+                avatar_tiny_url: Object.prototype.hasOwnProperty.call(refreshed, "avatar_tiny_url")
+                  ? (refreshed.avatar_tiny_url || "")
+                  : (item.avatar_tiny_url || ""),
+                icon_tiny_url: Object.prototype.hasOwnProperty.call(refreshed, "avatar_tiny_url")
+                  ? (refreshed.icon_tiny_url || refreshed.avatar_tiny_url || "")
+                  : (refreshed.icon_tiny_url || item.icon_tiny_url || ""),
                 image_min_count: Number.isFinite(Number(refreshed.image_min_count)) ? Number(refreshed.image_min_count) : item.image_min_count,
               })
             : item,
@@ -4498,7 +4620,12 @@ function galleryApp() {
           };
           this.subscriptions = (this.subscriptions || []).map((item) =>
             String(item.uid) === subscriptionUid
-              ? this.normalizeSubscriptionItem({ ...item, icon_url: result.item.icon_url || "", updated_at: result.item.updated_at || item.updated_at })
+              ? this.normalizeSubscriptionItem({
+                  ...item,
+                  icon_url: result.item.icon_url || "",
+                  icon_tiny_url: result.item.icon_tiny_url || "",
+                  updated_at: result.item.updated_at || item.updated_at,
+                })
               : item,
           );
           this.iconLoadFailures = { ...this.iconLoadFailures, [subscriptionUid]: false };

@@ -23,6 +23,7 @@ class CleanupService:
                     continue
                 removed_files += self._remove_if_exists(asset.get("thumb_rel_path"))
                 removed_files += self._remove_if_exists(asset.get("small_thumb_rel_path"))
+                removed_files += self._remove_if_exists(asset.get("tiny_thumb_rel_path"))
                 removed_files += self._remove_if_exists(asset.get("cover_rel_path"))
                 removed_files += self._remove_if_exists(asset.get("reverse_rel_path"))
                 self.db.delete_asset(int(asset["id"]))

@@ -53,7 +53,7 @@
                 <div class="sidebar-subscription-list" x-show="!subscriptionSectionCollapsed" x-transition.opacity.duration.160ms x-cloak>
                     <template x-for="item in subscriptions" :key="item.uid">
                         <button class="sidebar-link" :class="{ active: currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid }" :title="item.uname || item.uid" @click="selectSubscription(item.uid)">
-                            <span class="link-badge subscription-link-badge" :class="{ image: subscriptionIconUrl(item) }">
+                            <span class="link-badge subscription-link-badge" :class="{ image: subscriptionIconUrl(item) }" :style="subscriptionIconTinyStyle(item)">
                                 <template x-if="subscriptionIconUrl(item)">
                                     <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
                                 </template>
@@ -241,10 +241,10 @@
                                                 :class="{ live: item.has_livephoto }"
                                                 @click="openFolder(item.folder_name)"
                                                 >
-                                                    <div class="photo-visual" x-show="item.preview_tiles?.length">
+                                                    <div class="photo-visual" x-show="item.preview_tiles?.length" :style="galleryItemTinyStyle(item)">
                                                     <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
                                                         <template x-for="tile in item.preview_tiles" :key="tile.id">
-                                                            <div class="photo-collage-tile">
+                                                            <div class="photo-collage-tile" :style="tileTinyStyle(tile)">
                                                                 <img loading="lazy" decoding="async" :src="tile.small_thumb_url || tile.thumb_url || tile.cover_url || tile.url" :alt="item.title" :width="tile.width || null" :height="tile.height || null">
                                                             </div>
                                                         </template>
@@ -787,7 +787,7 @@
                     <article class="panel-card subscription-card" :class="{ expanded: isSubscriptionExpanded(item.uid) }">
                         <button class="subscription-card-head" @click="toggleSubscriptionExpanded(item.uid)" :aria-expanded="isSubscriptionExpanded(item.uid)">
                             <div class="panel-card-main subscription-card-main">
-                                <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: subscriptionIconUrl(item) }">
+                                <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: subscriptionIconUrl(item) }" :style="subscriptionIconTinyStyle(item)">
                                     <template x-if="subscriptionIconUrl(item)">
                                         <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
                                     </template>
@@ -957,7 +957,7 @@
                         <article class="panel-card subscription-card" :class="{ expanded: isSiteSourceExpanded(source.id) }">
                             <button class="subscription-card-head" @click="toggleSiteSourceExpanded(source.id)" :aria-expanded="isSiteSourceExpanded(source.id)">
                                 <div class="panel-card-main subscription-card-main">
-                                    <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: siteSourceIconUrl(source) }">
+                                    <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: siteSourceIconUrl(source) }" :style="siteSourceIconTinyStyle(source)">
                                         <template x-if="siteSourceIconUrl(source)">
                                             <img :src="siteSourceIconUrl(source)" :alt="source.name" loading="lazy" decoding="async" @error="iconLoadFailures = { ...iconLoadFailures, [`site:${source.id}`]: true }">
                                         </template>
@@ -1198,7 +1198,7 @@
                             @touchend="pair.livephoto ? cancelScheduledHoverPreview($event) : null"
                             @touchcancel="pair.livephoto ? cancelScheduledHoverPreview($event) : null"
                         >
-                            <div class="detail-thumb" :style="`aspect-ratio: ${pair.display_ratio || '1 / 1'}`">
+                            <div class="detail-thumb" :style="detailThumbStyle(pair)">
                                 <img class="hover-preview-image detail-preview-image" decoding="async" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`">
                                 <template x-if="pair.livephoto">
                                     <video
