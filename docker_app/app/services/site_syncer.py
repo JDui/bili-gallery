@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import threading
 import time
 import shutil
@@ -512,6 +514,7 @@ class SiteSyncManager:
             text = fetcher.get_text(entry_url)
             candidates.extend(self._icon_candidates_from_xml(entry_url, text))
             candidates.extend(self._icon_candidates_from_html(entry_url, text))
+            candidates.extend(self._manifest_icon_candidates(fetcher, entry_url, text))
             homepage_candidates.extend(self._homepage_candidates_from_markup(entry_url, text))
             for homepage in homepage_candidates[:2]:
                 if homepage == entry_url:
@@ -521,6 +524,7 @@ class SiteSyncManager:
                 except Exception:
                     continue
                 candidates.extend(self._icon_candidates_from_html(homepage, homepage_text))
+                candidates.extend(self._manifest_icon_candidates(fetcher, homepage, homepage_text))
         except Exception:
             pass
         candidates.extend(self._fallback_icon_candidates(entry_url))
@@ -530,7 +534,11 @@ class SiteSyncManager:
 
     def _icon_candidates_from_html(self, base_url: str, html: str) -> list[str]:
         soup = parse_html(html)
-        candidates: list[str] = []
+        link_candidates: list[str] = []
+        structured_candidates: list[str] = []
+        image_candidates: list[str] = []
+        meta_candidates: list[str] = []
+        raw_candidates: list[str] = []
         for node in self._iter_markup_nodes(soup, "link"):
             rel_value = self._node_attr(node, "rel") or ""
             if isinstance(rel_value, (list, tuple)):
@@ -538,30 +546,119 @@ class SiteSyncManager:
             else:
                 rel_text = str(rel_value)
             rel_text = rel_text.lower()
-            if "icon" not in rel_text and "image_src" not in rel_text:
-                continue
             href = self._node_attr(node, "href")
-            if href:
-                candidates.append(urljoin(base_url, str(href)))
+            if not href:
+                continue
+            href_url = urljoin(base_url, str(href))
+            as_value = str(self._node_attr(node, "as") or "").lower()
+            marker = f"{rel_text} {as_value} {href_url}".lower()
+            if "icon" in rel_text or "image_src" in rel_text or "mask-icon" in rel_text:
+                link_candidates.append(href_url)
+            elif as_value == "image" and any(keyword in marker for keyword in ("logo", "icon", "favicon", "apple-touch", "cropped-")):
+                image_candidates.append(href_url)
+        for node in self._iter_markup_nodes(soup, "script"):
+            script_type = str(self._node_attr(node, "type") or "").lower()
+            if "ld+json" not in script_type:
+                continue
+            text = ""
+            try:
+                text = node.get_text(" ", strip=True)
+            except Exception:
+                text = ""
+            structured_candidates.extend(self._icon_candidates_from_json_ld(base_url, text))
         for node in self._iter_markup_nodes(soup, "meta"):
             key = str(self._node_attr(node, "property") or self._node_attr(node, "name") or self._node_attr(node, "itemprop") or "").lower()
             if key not in {"og:image", "og:logo", "twitter:image", "twitter:image:src", "image", "thumbnail", "msapplication-tileimage"}:
                 continue
             content = self._node_attr(node, "content")
             if content:
-                candidates.append(urljoin(base_url, str(content)))
+                meta_candidates.append(urljoin(base_url, str(content)))
         for node in self._iter_markup_nodes(soup, "img"):
             marker = " ".join(
                 str(self._node_attr(node, key) or "")
                 for key in ("class", "id", "alt", "aria-label", "title")
             ).lower()
-            src = self._node_attr(node, "src") or self._node_attr(node, "data-src") or self._node_attr(node, "data-original")
+            src = (
+                self._node_attr(node, "src")
+                or self._node_attr(node, "data-src")
+                or self._node_attr(node, "data-original")
+                or self._node_attr(node, "data-lazy-src")
+            )
             if src and any(keyword in marker for keyword in ("logo", "icon", "brand", "site-logo", "avatar", "站点", "图标")):
-                candidates.append(urljoin(base_url, str(src)))
+                image_candidates.append(urljoin(base_url, str(src)))
             srcset = self._node_attr(node, "srcset") or self._node_attr(node, "data-srcset")
             if srcset and any(keyword in marker for keyword in ("logo", "icon", "brand", "site-logo")):
                 if first_src := self._first_srcset_url(str(srcset)):
-                    candidates.append(urljoin(base_url, first_src))
+                    image_candidates.append(urljoin(base_url, first_src))
+        for match in re.finditer(r"""["'(]([^"'()<> ]*(?:favicon|apple-touch|site-icon|logo|cropped-)[^"'()<> ]+\.(?:ico|png|jpe?g|webp|svg|gif|avif)(?:\?[^"'()<> ]*)?)["')]""", html, re.IGNORECASE):
+            raw_candidates.append(urljoin(base_url, match.group(1)))
+        return self._dedupe_urls(link_candidates + structured_candidates + image_candidates + meta_candidates + raw_candidates)
+
+    def _manifest_icon_candidates(self, fetcher: PageFetcher, base_url: str, html: str) -> list[str]:
+        soup = parse_html(html)
+        manifest_urls: list[str] = []
+        for node in self._iter_markup_nodes(soup, "link"):
+            rel_value = self._node_attr(node, "rel") or ""
+            rel_text = " ".join(str(item) for item in rel_value) if isinstance(rel_value, (list, tuple)) else str(rel_value)
+            if "manifest" not in rel_text.lower():
+                continue
+            href = self._node_attr(node, "href")
+            if href:
+                manifest_urls.append(urljoin(base_url, str(href)))
+        parsed = urlparse(base_url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            root = f"{parsed.scheme}://{parsed.netloc}/"
+            manifest_urls.extend([urljoin(root, "site.webmanifest"), urljoin(root, "manifest.json")])
+        candidates: list[str] = []
+        for manifest_url in self._dedupe_urls(manifest_urls):
+            try:
+                manifest = json.loads(fetcher.get_text(manifest_url))
+            except Exception:
+                continue
+            for icon in manifest.get("icons") or []:
+                if isinstance(icon, dict) and icon.get("src"):
+                    candidates.append(urljoin(manifest_url, str(icon["src"])))
+        return self._dedupe_urls(candidates)
+
+    def _icon_candidates_from_json_ld(self, base_url: str, text: str) -> list[str]:
+        if not text:
+            return []
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return []
+        candidates: list[str] = []
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                value_type = value.get("@type")
+                types = value_type if isinstance(value_type, list) else [value_type]
+                is_site_entity = any(str(item).lower() in {"organization", "website", "webpage"} for item in types if item)
+                if is_site_entity:
+                    for key in ("logo", "image"):
+                        collect_image_value(value.get(key))
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        def collect_image_value(value: Any) -> None:
+            if isinstance(value, str) and self._looks_like_image_url(value):
+                candidates.append(urljoin(base_url, value))
+            elif isinstance(value, dict):
+                for key in ("url", "src", "contentUrl"):
+                    raw = value.get(key)
+                    if raw and self._looks_like_image_url(str(raw)):
+                        candidates.append(urljoin(base_url, str(raw)))
+                for child in value.values():
+                    if isinstance(child, (dict, list)):
+                        collect_image_value(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect_image_value(child)
+
+        visit(payload)
         return self._dedupe_urls(candidates)
 
     def _icon_candidates_from_xml(self, base_url: str, text: str) -> list[str]:
@@ -609,7 +706,17 @@ class SiteSyncManager:
 
     def _fallback_icon_candidates(self, url: str) -> list[str]:
         parsed = urlparse(url)
-        names = ("favicon.ico", "favicon.png", "favicon.svg", "apple-touch-icon.png", "apple-touch-icon-precomposed.png")
+        names = (
+            "favicon.ico",
+            "favicon.png",
+            "favicon.svg",
+            "favicon-32x32.png",
+            "favicon-16x16.png",
+            "apple-touch-icon.png",
+            "apple-touch-icon-precomposed.png",
+            "logo.png",
+            "logo.svg",
+        )
         if parsed.scheme in {"http", "https"} and parsed.netloc:
             root = f"{parsed.scheme}://{parsed.netloc}/"
             return [urljoin(root, name) for name in names]

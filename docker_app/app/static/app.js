@@ -2942,6 +2942,10 @@ function galleryApp() {
       if (!normalized || this.subscriptionIconRefreshingUid === normalized) {
         return;
       }
+      if (normalized.startsWith("site:")) {
+        await this.refreshSiteSourceIcon({ id: normalized.replace(/^site:/, "") });
+        return;
+      }
       this.subscriptionIconRefreshingUid = normalized;
       this.iconLoadFailures = { ...this.iconLoadFailures, [normalized]: false };
       try {
@@ -2963,6 +2967,8 @@ function galleryApp() {
             : item,
         );
         this.notify("success", "头像已刷新", result.message || "已更新订阅头像。");
+      } catch (error) {
+        this.notify("error", "头像刷新失败", error.message || "请稍后重试。");
       } finally {
         this.subscriptionIconRefreshingUid = null;
       }
@@ -4003,6 +4009,7 @@ function galleryApp() {
       const key = String(sourceId);
       this.siteIconRefreshingById = { ...this.siteIconRefreshingById, [key]: true };
       this.iconLoadFailures = { ...this.iconLoadFailures, [`site:${sourceId}`]: false };
+      this.notify("info", "正在刷新站点图标", "正在重新探测并缓存站点 icon。");
       try {
         const result = await this.api(`/api/site-sources/${encodeURIComponent(sourceId)}/refresh-icon`, { method: "POST" });
         if (result.item) {
@@ -4015,12 +4022,14 @@ function galleryApp() {
           };
           this.subscriptions = (this.subscriptions || []).map((item) =>
             String(item.uid) === `site:${sourceId}`
-              ? { ...item, icon_url: result.item.icon_url || "", updated_at: result.item.updated_at || item.updated_at }
+              ? this.normalizeSubscriptionItem({ ...item, icon_url: result.item.icon_url || "", updated_at: result.item.updated_at || item.updated_at })
               : item,
           );
           this.iconLoadFailures = { ...this.iconLoadFailures, [`site:${sourceId}`]: false };
         }
         this.notify("success", "站点图标已刷新", result.message || "已更新站点图标。");
+      } catch (error) {
+        this.notify("error", "站点图标刷新失败", error.message || "请稍后重试。");
       } finally {
         this.siteIconRefreshingById = { ...this.siteIconRefreshingById, [key]: false };
       }

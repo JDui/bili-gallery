@@ -443,6 +443,9 @@ class SourceParser:
             ".posts-item",
             ".grid-item",
             ".ajax-item",
+            ".i_list",
+            ".update_area_lists li",
+            ".cxudy-list-formatimage",
             "article",
             ".hentry",
             ".entry",
@@ -505,6 +508,8 @@ class SourceParser:
             valid_links += 1
             title = self._node_title_hint(node)
             pub_date = self._selector_date(node, DEFAULT_DATE_SELECTOR)
+            if not pub_date:
+                pub_date = self._node_asset_date_hint(node)
             if title:
                 titled += 1
             if pub_date:
@@ -521,7 +526,7 @@ class SourceParser:
         score += media
         if selector == "li" and dated == 0 and media < max(2, valid_links // 3):
             return 0, []
-        if selector in {".content-post", ".post-list", ".post-card", ".post-item", ".posts-item", ".grid-item", ".ajax-item", "article", ".hentry", ".post", ".item"}:
+        if selector in {".content-post", ".post-list", ".post-card", ".post-item", ".posts-item", ".grid-item", ".ajax-item", ".i_list", ".update_area_lists li", ".cxudy-list-formatimage", "article", ".hentry", ".post", ".item"}:
             score += 18
         elif "." in selector or "[" in selector:
             score += 8
@@ -549,7 +554,7 @@ class SourceParser:
         return None
 
     def _node_title_hint(self, node: Any) -> str:
-        for selector in [".entry-title", ".post-title", ".title", "h1", "h2", "h3", "a"]:
+        for selector in [".meta-title", ".entry-title", ".post-title", ".title", "h1", "h2", "h3", "a"]:
             title = self._selector_text(node, selector)
             title = re.sub(r"\s+", " ", title).strip()
             if title and not parse_date(title):
@@ -569,6 +574,22 @@ class SourceParser:
             return bool(node.select_one("img, video, source"))
         except Exception:
             return False
+
+    def _node_asset_date_hint(self, node: Any) -> str | None:
+        try:
+            images = node.select("img")
+        except Exception:
+            return None
+        for image in images:
+            for key in ("data-original", "data-src", "data-lazy-src", "src"):
+                value = str(image.get(key) or "")
+                if pub_date := self._date_from_media_path(value):
+                    return pub_date
+            for key in ("data-srcset", "srcset"):
+                if first_src := self._first_srcset_url(str(image.get(key) or "")):
+                    if pub_date := self._date_from_media_path(first_src):
+                        return pub_date
+        return None
 
     def _guess_page_url_template(self, soup: Any, entry_url: str) -> str:
         try:
@@ -776,13 +797,17 @@ class SourceParser:
 
     def _asset_date_fallback(self, assets: list[ParsedAsset]) -> str | None:
         for asset in assets:
-            path = urlparse(asset.url).path
-            match = re.search(r"/(20\d{2})/(\d{1,2})/(\d{1,2})(?:/|$)", path)
-            if match:
-                parsed = parse_date(f"{match.group(1)}-{match.group(2)}-{match.group(3)}")
-                if parsed:
-                    return parsed.isoformat()
+            if pub_date := self._date_from_media_path(asset.url):
+                return pub_date
         return None
+
+    def _date_from_media_path(self, value: str) -> str | None:
+        path = urlparse(str(value or "")).path
+        match = re.search(r"(?:^|/)(20\d{2})/(\d{1,2})/(\d{1,2})(?:/|$)", path)
+        if not match:
+            return None
+        parsed = parse_date(f"{match.group(1)}-{match.group(2)}-{match.group(3)}")
+        return parsed.isoformat() if parsed else None
 
     def _iter_nodes(self, root: Any, name: str | None = None) -> list[Any]:
         if hasattr(root, "find_all"):

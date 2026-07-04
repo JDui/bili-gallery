@@ -887,6 +887,81 @@ def test_site_parser_handles_foamgirl_style_cards_external_ads_and_asset_dates(t
     assert len(posts[0].assets) == 2
 
 
+def test_site_parser_handles_foamgirl_category_list_items(tmp_path: Path) -> None:
+    site_dir = tmp_path / "foamgirl-category-site"
+    site_dir.mkdir(parents=True)
+    (site_dir / "cosplay.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>Cosplay - FoamGirl</title></head>
+          <body>
+            <nav>
+              <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="chinese.html">Chinese</a></li>
+                <li><a href="cosplay.html">Cosplay</a></li>
+              </ul>
+            </nav>
+            <ul class="update_area_lists">
+              <li class="i_list list_n1 lms-one cxudy-list-formatimage">
+                <a href="post.html" class="thumb-srcbox">
+                  <img class="waitpic" src="placeholder.gif" data-original="wp-content/uploads/2026/07/02/cover.webp" alt="Cosplay Hokunaimeko - 2B">
+                </a>
+                <div class="case_info">
+                  <a class="meta-title" href="post.html">Cosplay Hokunaimeko - 2B</a>
+                  <div class="meta-post">2 days ago</div>
+                </div>
+              </li>
+              <li class="i_list list_n1 lms-one cxudy-list-formatimage">
+                <a href="post2.html" class="thumb-srcbox">
+                  <img class="waitpic" src="placeholder.gif" data-original="wp-content/uploads/2026/07/01/cover2.webp" alt="Cosplay Quan - Tora">
+                </a>
+                <div class="case_info">
+                  <a class="meta-title" href="post2.html">Cosplay Quan - Tora</a>
+                  <div class="meta-post">3 days ago</div>
+                </div>
+              </li>
+            </ul>
+            <a href="cosplay/page/2">2</a>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post.html").write_text(
+        """
+        <!doctype html>
+        <article>
+          <h1>Cosplay Hokunaimeko - 2B</h1>
+          <div class="content"><img src="wp-content/uploads/2026/07/02/001.jpg"></div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "post2.html").write_text(
+        """
+        <!doctype html>
+        <article>
+          <h1>Cosplay Quan - Tora</h1>
+          <div class="content"><img src="wp-content/uploads/2026/07/01/001.jpg"></div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+
+    parser = SourceParser(PageFetcher())
+    suggestion = parser.suggest((site_dir / "cosplay.html").resolve().as_uri())
+    posts = parser.discover(suggestion, limit=2)
+
+    assert suggestion["list_item_selector"] in {".i_list", ".update_area_lists li", ".cxudy-list-formatimage"}
+    assert suggestion["preview"][0]["title"] == "Cosplay Hokunaimeko - 2B"
+    assert suggestion["preview"][0]["pub_date"] == "2026-07-02"
+    assert suggestion["page_url_template"].endswith("/cosplay/page/{page}")
+    assert [post.pub_date for post in posts] == ["2026-07-02", "2026-07-01"]
+    assert [post.title for post in posts] == ["Cosplay Hokunaimeko - 2B", "Cosplay Quan - Tora"]
+
+
 def test_site_parser_handles_hotgirlpix_style_articles(tmp_path: Path) -> None:
     site_dir = tmp_path / "hotgirlpix-style-site"
     site_dir.mkdir(parents=True)
@@ -1781,6 +1856,72 @@ def test_site_icon_refresh_caches_remote_icon_in_local_storage(tmp_path: Path, m
     assert sessions[0].calls[0]["url"] == remote_icon_url
     assert sessions[0].calls[0]["stream"] is True
     assert sessions[0].headers["Referer"] == source["entry_url"]
+
+
+def test_site_icon_refresh_discovers_web_manifest_icon(tmp_path: Path) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    site_dir = tmp_path / "manifest-icon-site"
+    site_dir.mkdir()
+    (site_dir / "manifest-icon.png").write_bytes(b"manifest icon")
+    (site_dir / "site.webmanifest").write_text(
+        '{"icons":[{"src":"manifest-icon.png","sizes":"192x192","type":"image/png"}]}',
+        encoding="utf-8",
+    )
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html><head><link rel="manifest" href="site.webmanifest"></head><body></body></html>
+        """,
+        encoding="utf-8",
+    )
+    source = db.create_site_source(
+        {
+            "name": "Manifest Icon Fixture",
+            "slug": "manifest-icon-fixture",
+            **html_source(),
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "enabled": True,
+        }
+    )
+
+    item = syncer.refresh_site_icon(source["id"])
+
+    assert item["icon_url"] == (site_dir / "manifest-icon.png").resolve().as_uri()
+
+
+def test_site_icon_refresh_discovers_json_ld_and_lazy_logo(tmp_path: Path) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    site_dir = tmp_path / "structured-logo-site"
+    site_dir.mkdir()
+    (site_dir / "structured-logo.svg").write_text("<svg></svg>", encoding="utf-8")
+    (site_dir / "lazy-logo.png").write_bytes(b"lazy logo")
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head>
+            <script type="application/ld+json">
+              {"@type":"Organization","logo":{"url":"structured-logo.svg"}}
+            </script>
+          </head>
+          <body><img class="site-logo" data-lazy-src="lazy-logo.png" alt="site logo"></body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    source = db.create_site_source(
+        {
+            "name": "Structured Logo Fixture",
+            "slug": "structured-logo-fixture",
+            **html_source(),
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "enabled": True,
+        }
+    )
+
+    item = syncer.refresh_site_icon(source["id"])
+
+    assert item["icon_url"] == (site_dir / "structured-logo.svg").resolve().as_uri()
 
 
 def test_reset_all_icons_refreshes_up_and_site_icons(tmp_path: Path, monkeypatch) -> None:

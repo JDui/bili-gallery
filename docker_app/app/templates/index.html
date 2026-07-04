@@ -962,7 +962,7 @@
                                 <div class="panel-card-actions subscription-card-actions">
                                     <button class="primary-button" @click="saveSiteSource(source.id)" x-text="siteSourceSavingLabel(source.id)"></button>
                                     <button class="secondary-button" @click="testSiteSource(source.id)" x-text="siteSourceTestingLabel(source.id)"></button>
-                                    <button class="secondary-button" @click="refreshSiteSourceIcon(source)" :disabled="siteIconRefreshingById[String(source.id)]" x-text="siteIconRefreshingById[String(source.id)] ? '刷新中' : '刷新图标'"></button>
+                                    <button type="button" class="secondary-button" @click="refreshSiteSourceIcon(source)" :disabled="siteIconRefreshingById[String(source.id)]" x-text="siteIconRefreshingById[String(source.id)] ? '刷新中' : '刷新图标'"></button>
                                     <button class="secondary-button" @click="syncSiteSource(source)">同步</button>
                                     <template x-if="siteValidateConfirmId !== source.id || siteValidateConfirmStep < 2">
                                         <div class="button-row confirm-row">
