@@ -46,21 +46,26 @@
             </section>
 
             <section class="nav-section" x-show="subscriptions.length">
-                <div class="section-label" x-show="!sidebarCollapsed">订阅</div>
-                <template x-for="item in subscriptions" :key="item.uid">
-                    <button class="sidebar-link" :class="{ active: currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid }" :title="item.uname || item.uid" @click="selectSubscription(item.uid)">
-                        <span class="link-badge subscription-link-badge" :class="{ image: subscriptionIconUrl(item) }">
-                            <template x-if="subscriptionIconUrl(item)">
-                                <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
-                            </template>
-                            <template x-if="!subscriptionIconUrl(item)">
-                                <span x-text="subscriptionBadgeText(item)"></span>
-                            </template>
-                        </span>
-                        <span class="link-text" x-show="!sidebarCollapsed" x-text="item.uname || item.uid"></span>
-                        <span class="link-count" x-show="!sidebarCollapsed" x-text="item.folder_count || 0"></span>
-                    </button>
-                </template>
+                <button type="button" class="section-label section-label-button" x-show="!sidebarCollapsed" @click="toggleSubscriptionSection()" :aria-expanded="!subscriptionSectionCollapsed">
+                    <span>订阅</span>
+                    <span class="section-label-chevron" :class="{ open: !subscriptionSectionCollapsed }"></span>
+                </button>
+                <div class="sidebar-subscription-list" x-show="!subscriptionSectionCollapsed" x-transition.opacity.duration.160ms x-cloak>
+                    <template x-for="item in subscriptions" :key="item.uid">
+                        <button class="sidebar-link" :class="{ active: currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid }" :title="item.uname || item.uid" @click="selectSubscription(item.uid)">
+                            <span class="link-badge subscription-link-badge" :class="{ image: subscriptionIconUrl(item) }">
+                                <template x-if="subscriptionIconUrl(item)">
+                                    <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
+                                </template>
+                                <template x-if="!subscriptionIconUrl(item)">
+                                    <span x-text="subscriptionBadgeText(item)"></span>
+                                </template>
+                            </span>
+                            <span class="link-text" x-show="!sidebarCollapsed" x-text="item.uname || item.uid"></span>
+                            <span class="link-count" x-show="!sidebarCollapsed" x-text="item.folder_count || 0"></span>
+                        </button>
+                    </template>
+                </div>
             </section>
 
             <section class="nav-section">
@@ -111,7 +116,7 @@
                         <p class="topbar-label" x-text="currentSectionLabel()"></p>
                         <div class="topbar-title-row">
                             <h2 x-text="currentSectionTitle()"></h2>
-                            <div class="mode-switch source-kind-switch" x-show="currentView === 'gallery'" x-cloak>
+                            <div class="mode-switch source-kind-switch" x-show="showGallerySourceKindSwitch()" x-cloak>
                                 <template x-for="option in sourceKindOptions" :key="option.key">
                                     <button
                                         class="chip-button"
@@ -778,7 +783,7 @@
                             </div>
                             <div class="panel-card-actions subscription-card-actions">
                                 <button class="secondary-button" @click="refreshSubscriptionProfile(item.uid)">刷新昵称</button>
-                                <button class="secondary-button" @click="refreshSubscriptionIcon(item.uid)" :disabled="subscriptionIconRefreshingUid === String(item.uid)" x-text="subscriptionIconRefreshingUid === String(item.uid) ? '刷新中' : '刷新头像'"></button>
+                                <button type="button" class="secondary-button" @click.stop.prevent="refreshSubscriptionIcon(item.uid)" :disabled="subscriptionIconRefreshingUid === String(item.uid)" x-text="subscriptionIconRefreshingUid === String(item.uid) ? '刷新中' : '刷新头像'"></button>
                                 <button class="secondary-button" @click="jumpToSubscriptionSpace(item.uid)">传送</button>
                                 <button class="secondary-button" @click="toggleSubscriptionStatus(item.uid)" x-text="item.status === 'paused' ? '继续订阅' : '暂停订阅'"></button>
                                 <template x-if="subscriptionReloadConfirmUid !== item.uid || subscriptionReloadConfirmStep < 2">
@@ -962,7 +967,7 @@
                                 <div class="panel-card-actions subscription-card-actions">
                                     <button class="primary-button" @click="saveSiteSource(source.id)" x-text="siteSourceSavingLabel(source.id)"></button>
                                     <button class="secondary-button" @click="testSiteSource(source.id)" x-text="siteSourceTestingLabel(source.id)"></button>
-                                    <button type="button" class="secondary-button" @click="refreshSiteSourceIcon(source)" :disabled="siteIconRefreshingById[String(source.id)]" x-text="siteIconRefreshingById[String(source.id)] ? '刷新中' : '刷新图标'"></button>
+                                    <button type="button" class="secondary-button" @click.stop.prevent="refreshSiteSourceIcon(source)" :disabled="siteIconRefreshingById[String(source.id)]" x-text="siteIconRefreshingById[String(source.id)] ? '刷新中' : '刷新图标'"></button>
                                     <button class="secondary-button" @click="syncSiteSource(source)">同步</button>
                                     <template x-if="siteValidateConfirmId !== source.id || siteValidateConfirmStep < 2">
                                         <div class="button-row confirm-row">

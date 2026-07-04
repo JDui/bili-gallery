@@ -952,12 +952,14 @@ def test_site_parser_handles_foamgirl_category_list_items(tmp_path: Path) -> Non
 
     parser = SourceParser(PageFetcher())
     suggestion = parser.suggest((site_dir / "cosplay.html").resolve().as_uri())
+    preview = parser.preview(suggestion, limit=2)
     posts = parser.discover(suggestion, limit=2)
 
     assert suggestion["list_item_selector"] in {".i_list", ".update_area_lists li", ".cxudy-list-formatimage"}
     assert suggestion["preview"][0]["title"] == "Cosplay Hokunaimeko - 2B"
     assert suggestion["preview"][0]["pub_date"] == "2026-07-02"
     assert suggestion["page_url_template"].endswith("/cosplay/page/{page}")
+    assert [post.pub_date for post in preview] == ["2026-07-02", "2026-07-01"]
     assert [post.pub_date for post in posts] == ["2026-07-02", "2026-07-01"]
     assert [post.title for post in posts] == ["Cosplay Hokunaimeko - 2B", "Cosplay Quan - Tora"]
 

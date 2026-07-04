@@ -243,6 +243,34 @@ video {
     color: #718095;
 }
 
+.section-label-button {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px 0 0;
+    background: transparent;
+    text-align: left;
+}
+
+.section-label-chevron {
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(-45deg);
+    transition: transform var(--duration-fast) var(--ease-soft);
+}
+
+.section-label-chevron.open {
+    transform: rotate(45deg) translateY(-1px);
+}
+
+.sidebar-subscription-list {
+    display: grid;
+    gap: 6px;
+}
+
 .field-copy,
 .photo-meta p {
     color: var(--muted);

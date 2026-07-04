@@ -395,6 +395,8 @@ class SourceParser:
         pub_date = self._selector_date(soup, source.get("date_selector"))
         if not pub_date and fallback_node:
             pub_date = self._selector_date(fallback_node, source.get("date_selector"))
+        if not pub_date and fallback_node:
+            pub_date = self._node_asset_date_hint(fallback_node) or self._first_date_in_text(fallback_node.get_text(" ", strip=True))
         if not pub_date:
             pub_date = self._html_date_fallback(soup, text)
         tags = self._selector_texts(soup, source.get("tag_selector"))

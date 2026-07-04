@@ -139,6 +139,7 @@ function galleryApp() {
     },
     viewerWheelOffset: 0,
     viewerWheelTimer: null,
+    viewerNavigationLockedUntil: 0,
     timeFilterOpen: false,
     timeFilterDraft: { startIndex: 0, endIndex: 0 },
     timeFilterApplied: { startMonth: null, endMonth: null },
@@ -151,6 +152,7 @@ function galleryApp() {
     hoverPreviewTimer: null,
     hoverPreviewCard: null,
     sidebarCollapsed: localStorage.getItem("gallery_sidebar_collapsed") === "1",
+    subscriptionSectionCollapsed: localStorage.getItem("gallery_subscription_section_collapsed") === "1",
     compactViewport: false,
     sidebarDrawerOpen: false,
     pendingTrashFolder: null,
@@ -360,6 +362,8 @@ function galleryApp() {
       if (this.currentView === "trash") return "Trash";
       if (this.currentView === "settings") return "Settings";
       if (this.currentView === "subscriptions") return "Subscriptions";
+      const subscription = this.activeSelectedSubscription();
+      if (subscription) return subscription.is_site ? "Site Subscription" : "UP Subscription";
       return "Library";
     },
 
@@ -370,6 +374,10 @@ function galleryApp() {
       if (this.currentView === "trash") return "内容垃圾桶";
       if (this.currentView === "settings") return "拉取与设置";
       if (this.currentView === "subscriptions") return "订阅管理";
+      const subscription = this.activeSelectedSubscription();
+      if (subscription) return subscription.uname || subscription.name || subscription.uid;
+      if (this.currentView === "gallery" && this.sourceKind === "up") return "UP 订阅";
+      if (this.currentView === "gallery" && this.sourceKind === "site") return "站点订阅";
       return this.activeCategory().label;
     },
 
@@ -378,11 +386,29 @@ function galleryApp() {
       if (this.currentView === "logs") return "知道每一条动态为什么被筛出去";
       if (this.currentView === "settings") return "同步、账号权限与过滤策略";
       if (this.currentView === "subscriptions") return "统一管理 UP 主与站点订阅";
+      const subscription = this.activeSelectedSubscription();
+      if (subscription) return `只浏览 ${subscription.uname || subscription.name || subscription.uid} 的内容`;
       return `${this.activeCategory().label}，按更像系统相册的方式浏览`;
     },
 
     activeCategory() {
       return this.navItems.find((item) => item.key === this.category) || this.navItems[0];
+    },
+
+    activeSelectedSubscription() {
+      if (this.currentView !== "gallery" || this.selectedSubscriptionUids.length !== 1) {
+        return null;
+      }
+      const uid = String(this.selectedSubscriptionUids[0]);
+      return (this.subscriptions || []).find((item) => String(item.uid) === uid) || {
+        uid,
+        uname: uid,
+        is_site: uid.startsWith("site:"),
+      };
+    },
+
+    showGallerySourceKindSwitch() {
+      return this.currentView === "gallery" && this.selectedSubscriptionUids.length === 0;
     },
 
     compactStats() {
@@ -638,6 +664,11 @@ function galleryApp() {
       };
     },
 
+    toggleSubscriptionSection() {
+      this.subscriptionSectionCollapsed = !this.subscriptionSectionCollapsed;
+      localStorage.setItem("gallery_subscription_section_collapsed", this.subscriptionSectionCollapsed ? "1" : "0");
+    },
+
     subscriptionThresholdSummary(item) {
       const value = Number(item.image_min_count);
       if (value === -1) {
@@ -806,7 +837,10 @@ function galleryApp() {
     selectSubscription(uid) {
       this.currentView = "gallery";
       this.category = "all";
-      this.selectedSubscriptionUids = [String(uid)];
+      const normalized = String(uid);
+      this.selectedSubscriptionUids = [normalized];
+      this.sourceKind = normalized.startsWith("site:") ? "site" : "up";
+      localStorage.setItem("gallery_source_kind", this.sourceKind);
       this.queuedCancelConfirmId = null;
       this.closeSidebarDrawer();
       this.closeViewer();
@@ -1106,6 +1140,7 @@ function galleryApp() {
       this.viewerImageReady = !pair.image;
       this.viewerSwapPending = !!switchDirection;
       this.viewerPendingDirection = switchDirection || "";
+      this.viewerNavigationLockedUntil = switchDirection ? Date.now() + 120 : 0;
       this.viewer = { open: true, pair, folder: entry.folder, showVideo: shouldShowVideo };
       this.cancelDeleteViewerPair();
       if (!preservePlayback) {
@@ -1279,6 +1314,7 @@ function galleryApp() {
       this.cancelDeleteViewerPair();
       this.viewerSwapPending = false;
       this.viewerPendingDirection = "";
+      this.viewerNavigationLockedUntil = 0;
       this.viewerClosing = true;
       this.viewer = { ...this.viewer, open: false };
       this.syncBodyLock();
@@ -1290,6 +1326,7 @@ function galleryApp() {
         this.viewerSource = "detail";
         this.viewerSequence = [];
         this.viewerIndex = 0;
+        this.viewerNavigationLockedUntil = 0;
         this.viewerClosing = false;
         this.viewerCloseTimer = null;
         this.syncBodyLock();
@@ -1323,11 +1360,6 @@ function galleryApp() {
         };
         html.style.overflow = "hidden";
         body.style.overflow = "hidden";
-        body.style.position = "fixed";
-        body.style.top = `-${scrollTop}px`;
-        body.style.left = "0";
-        body.style.right = "0";
-        body.style.width = "100%";
         if (scrollbarWidth) {
           body.style.paddingRight = `${scrollbarWidth}px`;
         }
@@ -1990,16 +2022,19 @@ function galleryApp() {
     },
 
     canShowPreviousPair() {
-      return this.currentViewerSequenceIndex() > 0;
+      return !this.viewerSwapPending && this.currentViewerSequenceIndex() > 0;
     },
 
     canShowNextPair() {
       const sequence = this.resolvedViewerSequence();
       const currentIndex = this.currentViewerSequenceIndex(sequence);
-      return currentIndex >= 0 && currentIndex < sequence.length - 1;
+      return !this.viewerSwapPending && currentIndex >= 0 && currentIndex < sequence.length - 1;
     },
 
     showPreviousPair() {
+      if (this.viewerSwapPending || Date.now() < this.viewerNavigationLockedUntil) {
+        return;
+      }
       const sequence = this.resolvedViewerSequence();
       const currentIndex = this.currentViewerSequenceIndex(sequence);
       if (currentIndex <= 0) {
@@ -2012,6 +2047,9 @@ function galleryApp() {
     },
 
     showNextPair() {
+      if (this.viewerSwapPending || Date.now() < this.viewerNavigationLockedUntil) {
+        return;
+      }
       const sequence = this.resolvedViewerSequence();
       const currentIndex = this.currentViewerSequenceIndex(sequence);
       if (currentIndex < 0 || currentIndex >= sequence.length - 1) {
@@ -2943,7 +2981,12 @@ function galleryApp() {
         return;
       }
       if (normalized.startsWith("site:")) {
-        await this.refreshSiteSourceIcon({ id: normalized.replace(/^site:/, "") });
+        this.subscriptionIconRefreshingUid = normalized;
+        try {
+          await this.refreshSiteSourceIcon({ id: normalized.replace(/^site:/, "") });
+        } finally {
+          this.subscriptionIconRefreshingUid = null;
+        }
         return;
       }
       this.subscriptionIconRefreshingUid = normalized;
@@ -4003,12 +4046,13 @@ function galleryApp() {
 
     async refreshSiteSourceIcon(source) {
       const sourceId = Number(source?.id);
+      const subscriptionUid = `site:${sourceId || ""}`;
       if (!sourceId || this.siteIconRefreshingById[String(sourceId)]) {
         return;
       }
       const key = String(sourceId);
       this.siteIconRefreshingById = { ...this.siteIconRefreshingById, [key]: true };
-      this.iconLoadFailures = { ...this.iconLoadFailures, [`site:${sourceId}`]: false };
+      this.iconLoadFailures = { ...this.iconLoadFailures, [subscriptionUid]: false };
       this.notify("info", "正在刷新站点图标", "正在重新探测并缓存站点 icon。");
       try {
         const result = await this.api(`/api/site-sources/${encodeURIComponent(sourceId)}/refresh-icon`, { method: "POST" });
@@ -4021,11 +4065,11 @@ function galleryApp() {
             [key]: this.siteSourceDraftFromSource(result.item),
           };
           this.subscriptions = (this.subscriptions || []).map((item) =>
-            String(item.uid) === `site:${sourceId}`
+            String(item.uid) === subscriptionUid
               ? this.normalizeSubscriptionItem({ ...item, icon_url: result.item.icon_url || "", updated_at: result.item.updated_at || item.updated_at })
               : item,
           );
-          this.iconLoadFailures = { ...this.iconLoadFailures, [`site:${sourceId}`]: false };
+          this.iconLoadFailures = { ...this.iconLoadFailures, [subscriptionUid]: false };
         }
         this.notify("success", "站点图标已刷新", result.message || "已更新站点图标。");
       } catch (error) {
