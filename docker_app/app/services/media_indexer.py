@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any, Callable
 
 from PIL import Image
 
@@ -16,6 +18,10 @@ from app.services.utils import dumps_json, format_pub_time, loads_json, now_iso
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm"}
 PAIR_PREFIX_RE = re.compile(r"^(?P<index>\d{3})__")
+THUMBNAIL_WORKERS_ENV = "APP_THUMBNAIL_WORKERS"
+DEFAULT_THUMBNAIL_WORKERS = 3
+ProgressCallback = Callable[[dict[str, Any]], None]
+CooperateCallback = Callable[[], None]
 
 
 class MediaIndexer:
@@ -72,14 +78,32 @@ class MediaIndexer:
         self.db.replace_folder_assets(folder_name, "livephoto", livephoto_assets)
         self.refresh_gallery_index(folder_name)
 
-    def reindex_library(self) -> None:
+    def reindex_library(
+        self,
+        progress: ProgressCallback | None = None,
+        cooperate: CooperateCallback | None = None,
+    ) -> None:
         folders = {path.name for path in self.storage.config.images_dir.iterdir() if path.is_dir()}
         folders.update(path.name for path in self.storage.config.livephoto_dir.iterdir() if path.is_dir())
         existing = {
             folder["folder_name"]: folder
             for folder in self.db.list_folders()
         }
-        for folder_name in sorted(folders):
+        folder_names = sorted(folders)
+        total = len(folder_names)
+        for index, folder_name in enumerate(folder_names, start=1):
+            if cooperate:
+                cooperate()
+            if progress:
+                progress(
+                    {
+                        "stage": "library-index",
+                        "message": f"正在索引图库 {index}/{total}",
+                        "processed": index - 1,
+                        "total": total,
+                        "current": folder_name,
+                    }
+                )
             folder = existing.get(folder_name, {})
             self.index_folder(
                 folder_name=folder_name,
@@ -94,19 +118,81 @@ class MediaIndexer:
                 review_reason=folder.get("review_reason"),
                 generate_derivatives=False,
             )
+            if progress:
+                progress(
+                    {
+                        "stage": "library-index",
+                        "message": f"已索引图库 {index}/{total}",
+                        "processed": index,
+                        "total": total,
+                        "current": folder_name,
+                    }
+                )
         self.db.mark_gallery_index_rebuilt()
 
-    def rebuild_gallery_indexes(self, clear_derivatives: bool = True) -> None:
+    def rebuild_gallery_indexes(
+        self,
+        clear_derivatives: bool = True,
+        progress: ProgressCallback | None = None,
+        cooperate: CooperateCallback | None = None,
+        thumbnail_workers: int | None = None,
+    ) -> None:
         folders = {folder["folder_name"]: folder for folder in self.db.list_folders()}
         assets_by_folder: dict[str, list[dict]] = {}
         for asset in self.db.list_all_assets():
             assets_by_folder.setdefault(asset["folder_name"], []).append(asset)
         self.db.clear_gallery_indexes()
-        for folder_name, folder in folders.items():
+        folder_items = list(folders.items())
+        total_folders = len(folder_items)
+        total_assets = sum(len(assets_by_folder.get(folder_name, [])) for folder_name in folders)
+        processed_assets = 0
+
+        def thumbnail_progress(payload: dict[str, Any]) -> None:
+            nonlocal processed_assets
+            processed_assets += int(payload.get("step") or 1)
+            if progress:
+                progress(
+                    {
+                        "stage": "thumbnails",
+                        "message": f"正在生成缩略图 {min(processed_assets, total_assets)}/{max(total_assets, 1)}",
+                        "processed": min(processed_assets, total_assets),
+                        "total": total_assets,
+                        "current": payload.get("current"),
+                    }
+                )
+
+        for folder_index, (folder_name, folder) in enumerate(folder_items, start=1):
+            if cooperate:
+                cooperate()
+            if progress:
+                progress(
+                    {
+                        "stage": "gallery-index",
+                        "message": f"正在重建页面索引 {folder_index}/{total_folders}",
+                        "processed": folder_index - 1,
+                        "total": total_folders,
+                        "current": folder_name,
+                    }
+                )
             if clear_derivatives:
                 self.storage.clear_folder_thumbnail_derivatives(folder_name)
-            assets = self._backfill_thumbnails(assets_by_folder.get(folder_name, []))
+            assets = self._backfill_thumbnails(
+                assets_by_folder.get(folder_name, []),
+                progress=thumbnail_progress,
+                cooperate=cooperate,
+                thumbnail_workers=thumbnail_workers,
+            )
             self._replace_gallery_index(folder, assets)
+            if progress:
+                progress(
+                    {
+                        "stage": "gallery-index",
+                        "message": f"已重建页面索引 {folder_index}/{total_folders}",
+                        "processed": folder_index,
+                        "total": total_folders,
+                        "current": folder_name,
+                    }
+                )
         self.db.mark_gallery_index_rebuilt()
 
     def refresh_gallery_index(self, folder_name: str) -> None:
@@ -117,10 +203,65 @@ class MediaIndexer:
         assets = self._backfill_thumbnails(assets)
         self._replace_gallery_index(folder, assets)
 
-    def _backfill_thumbnails(self, assets: list[dict]) -> list[dict]:
+    def _thumbnail_worker_count(self, requested: int | None = None) -> int:
+        raw = requested if requested is not None else os.environ.get(THUMBNAIL_WORKERS_ENV)
+        try:
+            count = int(raw if raw is not None else DEFAULT_THUMBNAIL_WORKERS)
+        except (TypeError, ValueError):
+            count = DEFAULT_THUMBNAIL_WORKERS
+        return max(1, min(16, count))
+
+    def _backfill_thumbnails(
+        self,
+        assets: list[dict],
+        progress: ProgressCallback | None = None,
+        cooperate: CooperateCallback | None = None,
+        thumbnail_workers: int | None = None,
+    ) -> list[dict]:
         output: list[dict] = []
-        for asset in assets:
-            thumb_rel_path, small_thumb_rel_path, tiny_thumb_rel_path = self._ensure_asset_thumbnails(asset)
+        if not assets:
+            return output
+        workers = min(self._thumbnail_worker_count(thumbnail_workers), len(assets))
+
+        if workers <= 1:
+            results = []
+            for asset in assets:
+                if cooperate:
+                    cooperate()
+                results.append((asset, self._ensure_asset_thumbnails(asset)))
+                if progress:
+                    progress({"current": asset.get("filename") or asset.get("folder_name"), "step": 1})
+        else:
+            results_by_key: dict[Any, tuple[str | None, str | None, str | None]] = {}
+            assets_by_key: dict[Any, dict] = {}
+            executor = ThreadPoolExecutor(max_workers=workers)
+            try:
+                future_map = {}
+                for index, asset in enumerate(assets):
+                    if cooperate:
+                        cooperate()
+                    key = asset.get("id") or index
+                    assets_by_key[key] = asset
+                    future_map[executor.submit(self._ensure_asset_thumbnails, dict(asset))] = key
+                for future in as_completed(future_map):
+                    if cooperate:
+                        cooperate()
+                    key = future_map[future]
+                    results_by_key[key] = future.result()
+                    asset = assets_by_key.get(key, {})
+                    if progress:
+                        progress({"current": asset.get("filename") or asset.get("folder_name"), "step": 1})
+            except Exception:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                executor.shutdown(wait=True)
+            results = [
+                (asset, results_by_key.get(asset.get("id") or index, (None, None, None)))
+                for index, asset in enumerate(assets)
+            ]
+
+        for asset, (thumb_rel_path, small_thumb_rel_path, tiny_thumb_rel_path) in results:
             if (thumb_rel_path or small_thumb_rel_path or tiny_thumb_rel_path) and asset.get("id"):
                 self.db.update_asset_thumbnails(int(asset["id"]), thumb_rel_path, small_thumb_rel_path, tiny_thumb_rel_path)
                 asset = {

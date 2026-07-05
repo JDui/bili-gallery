@@ -194,7 +194,7 @@ class PullManager:
         return self.db.refresh_sidebar_count_cache(["all", "favorites", "livephoto", "trash", "tasks"])
 
     def start_startup_sync(self) -> bool:
-        if not self._acquire(mode="startup", message="正在整理图库"):
+        if not self._acquire(mode="startup", message="启动后整理图库"):
             return False
         thread = threading.Thread(target=self._run_startup_sync, daemon=True)
         thread.start()
@@ -360,7 +360,17 @@ class PullManager:
         if not self._lock.locked():
             raise RuntimeError("当前没有可取消的任务")
         self._cancel_requested = True
-        return {"ok": True, "message": "已请求取消当前任务"}
+        self._pause_requested = False
+        self._status = {
+            **self._status,
+            "running": True,
+            "message": "正在中断当前任务",
+            "cancel_requested": True,
+            "current_step": "停止当前任务",
+            "next_step": "释放任务队列",
+        }
+        self._append_event("收到取消请求", mode=self._status.get("mode"))
+        return {"ok": True, "message": "已请求取消当前任务，正在停止当前执行步骤"}
 
     def cancel_queued(self, queue_id: int) -> dict[str, Any]:
         removed: QueuedTask | None = None
@@ -1210,23 +1220,45 @@ class PullManager:
         time.sleep(duration)
 
     def _run_startup_sync(self) -> None:
-        task_id = self.db.create_task_run("startup", "running", "启动后正在整理图库")
+        task_id = self.db.create_task_run("startup", "running", "启动后整理图库")
         try:
+            self._set_progress(
+                "startup",
+                "正在检查本地图库",
+                processed=0,
+                total=5,
+                target="启动后整理图库并刷新页面索引",
+                next_step="导入旧数据",
+            )
             existing_folders = self.db.list_folders()
             import_stats = {"skipped": True}
             cleanup_stats = {"skipped": True}
             reindexed = False
             if not existing_folders:
+                self._cooperate()
+                self._set_progress("startup", "正在导入旧数据", processed=1, total=5, next_step="清理孤立记录")
                 import_stats = self.legacy_importer.import_if_needed()
+                self._cooperate()
+                self._set_progress("startup", "正在清理图库记录", processed=2, total=5, next_step="索引本地图库")
                 cleanup_stats = self.cleanup.run()
                 if self._needs_library_reindex():
-                    self.indexer.reindex_library()
+                    self.indexer.reindex_library(
+                        progress=lambda payload: self._set_indexer_progress(payload, target="启动后整理图库并刷新页面索引"),
+                        cooperate=self._cooperate,
+                    )
                     reindexed = True
             if self.db.gallery_index_needs_rebuild():
+                self._cooperate()
+                self._set_progress("startup", "正在重建页面索引", processed=3, total=5, next_step="统计存储占用")
                 self.db.set_gallery_index_rebuilding(True)
-                self.indexer.rebuild_gallery_indexes()
+                self.indexer.rebuild_gallery_indexes(
+                    progress=lambda payload: self._set_indexer_progress(payload, target="启动后整理图库并刷新页面索引"),
+                    cooperate=self._cooperate,
+                )
             else:
                 self.db.set_gallery_index_rebuilding(False)
+            self._cooperate()
+            self._set_progress("startup", "正在统计存储占用", processed=4, total=5, next_step="写入任务日志")
             storage_stats = self._refresh_storage_stats_cache()
             details = {
                 "import": import_stats,
@@ -1255,7 +1287,18 @@ class PullManager:
         )
         self.db.set_gallery_index_rebuilding(True)
         try:
-            self.indexer.rebuild_gallery_indexes()
+            self._set_progress(
+                "index",
+                "正在准备页面索引重建",
+                processed=0,
+                total=1,
+                target="重建全部图库页面索引",
+                next_step="扫描图库素材",
+            )
+            self.indexer.rebuild_gallery_indexes(
+                progress=lambda payload: self._set_indexer_progress(payload, target="重建全部图库页面索引"),
+                cooperate=self._cooperate,
+            )
             details = {"gallery_index": self.db.gallery_index_status(), "events": self._runtime_events()}
             self.db.finish_task_run(task_id, "success", "页面索引重建完成", details)
             self._status = {"running": False, "message": "页面索引重建完成", "mode": "idle", "stats": details}
@@ -1281,11 +1324,25 @@ class PullManager:
         )
         self.db.set_gallery_index_rebuilding(True)
         try:
+            self._set_progress(
+                "thumbnail-rebuild",
+                f"正在清理 {level} 缩略图",
+                processed=0,
+                total=1,
+                target=f"重建 {level} 缩略图",
+                next_step="并发生成缩略图",
+            )
             removed = self.storage.clear_thumbnail_level(level)
-            self.indexer.rebuild_gallery_indexes(clear_derivatives=False)
+            self._cooperate()
+            self.indexer.rebuild_gallery_indexes(
+                clear_derivatives=False,
+                progress=lambda payload: self._set_indexer_progress(payload, target=f"重建 {level} 缩略图"),
+                cooperate=self._cooperate,
+            )
             stats = {
                 "level": level,
                 "removed": removed,
+                "thumbnail_workers": self.indexer._thumbnail_worker_count(),
                 "gallery_index": self.db.gallery_index_status(),
                 "storage_stats": self._refresh_storage_stats_cache(),
                 "events": self._runtime_events(),
@@ -1437,7 +1494,19 @@ class PullManager:
             "force_reload": force_reload,
             "added_items": [],
         }
-        for subscription in self._active_subscriptions(target_uids=target_uids):
+        subscriptions = self._active_subscriptions(target_uids=target_uids)
+        stats["subscription_total"] = len(subscriptions)
+        for index, subscription in enumerate(subscriptions, start=1):
+            self._set_progress(
+                "pull",
+                f"正在拉取订阅 {index}/{len(subscriptions)}",
+                processed=index - 1,
+                total=len(subscriptions),
+                current=subscription.get("uname") or f"UID {subscription['uid']}",
+                target="拉取订阅动态",
+                next_step="扫描动态分页",
+                stats=stats,
+            )
             self._execute_pull_subscription_with_retry(
                 subscription,
                 settings,
@@ -1445,6 +1514,16 @@ class PullManager:
                 filter_engine,
                 stats,
                 force_reload,
+            )
+            self._set_progress(
+                "pull",
+                f"已完成订阅 {index}/{len(subscriptions)}",
+                processed=index,
+                total=len(subscriptions),
+                current=subscription.get("uname") or f"UID {subscription['uid']}",
+                target="拉取订阅动态",
+                next_step="处理下一个订阅" if index < len(subscriptions) else "清理和刷新索引",
+                stats=stats,
             )
         return stats
 
@@ -1467,12 +1546,16 @@ class PullManager:
                 last_error = exc
                 if not self._is_transient_pull_error(exc) or attempt >= 2:
                     raise
-                self._status = {
-                    "running": True,
-                    "message": f"{subscription_name} 拉取波动，正在重试 {attempt + 2}/3",
-                    "mode": "pull",
-                    "stats": stats,
-                }
+                self._set_progress(
+                    "pull",
+                    f"{subscription_name} 拉取波动，正在重试 {attempt + 2}/3",
+                    processed=self._status.get("processed"),
+                    total=self._status.get("total"),
+                    current=subscription_name,
+                    target="拉取订阅动态",
+                    next_step="重新扫描动态分页",
+                    stats=stats,
+                )
                 self._sleep_request_jitter(0.9 + attempt * 0.45, spread=0.9)
         if last_error is not None:
             raise RuntimeError(str(last_error))
@@ -1507,9 +1590,30 @@ class PullManager:
         wanted_uids = {str(uid) for uid in target_uids} if target_uids else None
         if wanted_uids is not None:
             folders = [folder for folder in folders if str(folder.get("subscription_uid") or "") in wanted_uids]
+        total_folders = len(folders)
+        self._set_progress(
+            "validate",
+            "正在准备内容校验",
+            processed=0,
+            total=max(total_folders, 1),
+            target="校验图库完整性并修复缺失内容",
+            next_step="扫描订阅动态",
+            stats=stats,
+        )
         candidate_maps: dict[str, dict[tuple[str, str], MatchCandidate]] = {}
         if cookie_state.cookie:
             for subscription in self._active_subscriptions(target_uids=target_uids):
+                self._cooperate()
+                self._set_progress(
+                    "validate",
+                    f"正在扫描订阅：{subscription.get('uname') or subscription['uid']}",
+                    processed=0,
+                    total=max(total_folders, 1),
+                    current=subscription.get("uname") or f"UID {subscription['uid']}",
+                    target="校验图库完整性并修复缺失内容",
+                    next_step="比对本地图库",
+                    stats=stats,
+                )
                 options = self._subscription_options(settings, str(subscription["uid"]), subscription)
                 candidate_maps[str(subscription["uid"])] = self._collect_candidate_map_from_feed(
                     settings,
@@ -1520,6 +1624,16 @@ class PullManager:
         for folder in folders:
             self._cooperate()
             stats["checked"] += 1
+            self._set_progress(
+                "validate",
+                f"正在校验 {stats['checked']}/{max(total_folders, 1)}",
+                processed=stats["checked"],
+                total=max(total_folders, 1),
+                current=folder.get("folder_name"),
+                target="校验图库完整性并修复缺失内容",
+                next_step="修复缺失素材" if cookie_state.cookie else "统计校验结果",
+                stats=stats,
+            )
             stats["deduped_files"] += self._dedupe_folder_files(folder["folder_name"])
             if not cookie_state.cookie:
                 stats["skipped"] += 1
@@ -1641,12 +1755,16 @@ class PullManager:
                     candidate = self._apply_deleted_pair_marks(candidate)
                     if not self._candidate_has_selected_media(candidate, options):
                         continue
-                    self._status = {
-                        "running": True,
-                        "message": f"正在扫描 {subscription_name} · {candidate.top_dynamic_id}",
-                        "mode": "pull",
-                        "stats": stats,
-                    }
+                    self._set_progress(
+                        "pull",
+                        f"正在扫描 {subscription_name} · {candidate.top_dynamic_id}",
+                        processed=self._status.get("processed"),
+                        total=self._status.get("total"),
+                        current=subscription_name,
+                        target="拉取订阅动态",
+                        next_step="下载匹配内容",
+                        stats=stats,
+                    )
                     if self.db.is_blacklisted(candidate.top_dynamic_id, candidate.source_dynamic_id):
                         continue
                     existing_folder = self.db.get_folder_by_dynamic(candidate.top_dynamic_id, candidate.source_dynamic_id)
@@ -1714,12 +1832,16 @@ class PullManager:
                         pub_ts=candidate.pub_ts,
                         saved_files=saved_files,
                     )
-                    self._status = {
-                        "running": True,
-                        "message": f"已处理 {subscription_name} · {stats['downloaded_candidates']} 条动态",
-                        "mode": "pull",
-                        "stats": stats,
-                    }
+                    self._set_progress(
+                        "pull",
+                        f"已处理 {subscription_name} · {stats['downloaded_candidates']} 条动态",
+                        processed=self._status.get("processed"),
+                        total=self._status.get("total"),
+                        current=subscription_name,
+                        target="拉取订阅动态",
+                        next_step="继续扫描动态分页",
+                        stats=stats,
+                    )
             if cutoff_ts and page_num > 1 and page_has_non_top and not page_has_recent_non_top:
                 stale_non_top_pages += 1
             else:
@@ -2250,11 +2372,102 @@ class PullManager:
             return True
         return db_folders != disk_folders
 
+    def _set_indexer_progress(self, payload: dict[str, Any], target: str) -> None:
+        processed = payload.get("processed")
+        total = payload.get("total")
+        stage = str(payload.get("stage") or self._status.get("mode") or "index")
+        message = str(payload.get("message") or self._status.get("message") or "任务执行中")
+        self._set_progress(
+            stage,
+            message,
+            processed=processed,
+            total=total,
+            current=payload.get("current"),
+            target=target,
+            next_step="写入页面索引" if stage == "thumbnails" else "继续处理素材",
+        )
+
+    def _set_progress(
+        self,
+        stage: str,
+        message: str,
+        *,
+        processed: Any | None = None,
+        total: Any | None = None,
+        current: Any | None = None,
+        target: str | None = None,
+        next_step: str | None = None,
+        stats: dict[str, Any] | None = None,
+        counters: dict[str, Any] | None = None,
+    ) -> None:
+        previous = dict(self._status or {})
+        try:
+            processed_value = int(processed) if processed is not None else int(previous.get("processed") or 0)
+        except (TypeError, ValueError):
+            processed_value = 0
+        try:
+            total_value = int(total) if total is not None else int(previous.get("total") or 0)
+        except (TypeError, ValueError):
+            total_value = 0
+        if total_value <= 0:
+            progress_value = int(previous.get("progress") or 1)
+        else:
+            progress_value = max(1, min(100, round((max(0, processed_value) / total_value) * 100)))
+        completed_steps = list(previous.get("completed_steps") or [])
+        current_text = str(current or previous.get("current_source") or previous.get("current_post") or "").strip()
+        if current_text and completed_steps[-1:] != [current_text] and processed_value >= total_value > 0:
+            completed_steps.append(current_text)
+            completed_steps = completed_steps[-8:]
+        self._status = {
+            **previous,
+            "running": True,
+            "message": message,
+            "mode": previous.get("mode") if previous.get("mode") not in {None, "idle"} else stage,
+            "stage": stage,
+            "progress": progress_value,
+            "processed": max(0, processed_value),
+            "total": max(0, total_value),
+            "current_source": current_text or previous.get("current_source"),
+            "current_post": current_text or previous.get("current_post"),
+            "current_step": message,
+            "target": target or previous.get("target") or message,
+            "next_step": next_step or previous.get("next_step") or "继续执行",
+            "completed_steps": completed_steps,
+            "task_detail": {
+                "completed": completed_steps,
+                "doing": message,
+                "target": target or previous.get("target") or message,
+                "next": next_step or previous.get("next_step") or "继续执行",
+            },
+        }
+        if stats is not None:
+            self._status["stats"] = stats
+        if counters is not None:
+            self._status["counters"] = counters
+
     def _acquire(self, mode: str, message: str) -> bool:
         locked = self._lock.acquire(blocking=False)
         if locked:
             self._event_log = deque(maxlen=120)
-            self._status = {"running": True, "message": message, "mode": mode}
+            self._status = {
+                "running": True,
+                "message": message,
+                "mode": mode,
+                "stage": "prepare",
+                "progress": 1,
+                "processed": 0,
+                "total": 1,
+                "current_step": "准备任务范围",
+                "target": message,
+                "next_step": "开始执行",
+                "completed_steps": [],
+                "task_detail": {
+                    "completed": [],
+                    "doing": "准备任务范围",
+                    "target": message,
+                    "next": "开始执行",
+                },
+            }
             self._append_event("任务开始", mode=mode, status_message=message)
         return locked
 

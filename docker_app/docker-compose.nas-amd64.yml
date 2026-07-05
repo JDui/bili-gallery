@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   bili-gallery:
-    image: zzs-bili-gallery:6.7-amd64
+    image: zzs-bili-gallery:6.8-amd64
     container_name: bili-gallery
     restart: unless-stopped
     user: "0:0"
@@ -13,6 +13,7 @@ services:
     environment:
       - APP_REPO_ROOT=/workspace
       - APP_STORAGE_ROOT=/storage
+      - APP_THUMBNAIL_WORKERS=3
       - TZ=Asia/Shanghai
 
     volumes:

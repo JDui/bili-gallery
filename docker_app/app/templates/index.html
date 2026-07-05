@@ -51,6 +51,11 @@
                     <span class="section-label-chevron" :class="{ open: !subscriptionSectionCollapsed }"></span>
                 </button>
                 <div class="sidebar-subscription-list" x-show="!subscriptionSectionCollapsed" x-transition.opacity.duration.160ms x-cloak>
+                    <button class="sidebar-link subscription-manage-link" data-testid="nav-subscriptions-inline" :class="{ active: currentView === 'subscriptions' }" title="订阅管理" @click="openSubscriptions('overview')">
+                        <span class="link-badge search-link-badge"><span class="tab-search-icon" aria-hidden="true"></span></span>
+                        <span class="link-text" x-show="!sidebarCollapsed">订阅管理</span>
+                        <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('subscriptions')"></span>
+                    </button>
                     <template x-for="item in subscriptions" :key="item.uid">
                         <button class="sidebar-link" :class="{ active: currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid }" :title="item.uname || item.uid" @click="selectSubscription(item.uid)">
                             <span class="link-badge subscription-link-badge" :class="{ image: subscriptionIconUrl(item) }" :style="subscriptionIconTinyStyle(item)">
@@ -94,11 +99,6 @@
                     <span class="link-badge">设</span>
                     <span class="link-text" x-show="!sidebarCollapsed">拉取与设置</span>
                     <span class="link-count" x-show="!sidebarCollapsed">控制</span>
-                </button>
-                <button class="sidebar-link" data-testid="nav-subscriptions" :class="{ active: currentView === 'subscriptions' }" title="订阅管理" @click="openSubscriptions()">
-                    <span class="link-badge">订</span>
-                    <span class="link-text" x-show="!sidebarCollapsed">订阅管理</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('subscriptions')"></span>
                 </button>
             </section>
             </div>
@@ -285,8 +285,7 @@
                                                             </button>
                                                         </template>
                                                         <template x-if="pendingTrashFolder === item.folder_name">
-                                                            <div class="mini-confirm-row">
-                                                                <button class="mini-confirm-button" @click="cancelTrashCurrentFolder()">取消</button>
+                                                            <div class="mini-confirm-row single-confirm">
                                                                 <button class="mini-confirm-button danger" @click="trashFolderCard(item.folder_name)">确认</button>
                                                             </div>
                                                         </template>
@@ -354,8 +353,7 @@
                                                         </button>
                                                     </template>
                                                     <template x-if="pairDeletePending(item.folder_name, item.pair_index)">
-                                                        <div class="mini-confirm-row">
-                                                            <button class="mini-confirm-button" @click="cancelDeleteViewerPair()">取消</button>
+                                                        <div class="mini-confirm-row single-confirm">
                                                             <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(item.folder_name, item.pair_index)" @click="confirmDeletePair(item.folder_name, item.pair_index)">确认</button>
                                                         </div>
                                                     </template>
@@ -459,7 +457,6 @@
                         </div>
                         <div class="button-row confirm-row" x-show="clearFilterLogsConfirmStep === 1" x-cloak>
                             <button class="primary-button danger-confirm confirm-anchor" @click="confirmClearFilterLogs()">确认清理</button>
-                            <button class="secondary-button" @click="cancelClearFilterLogs()">取消</button>
                         </div>
                     </div>
                 </div>
@@ -496,7 +493,6 @@
                         </div>
                         <div class="button-row confirm-row" x-show="clearTaskLogsConfirmStep === 1" x-cloak>
                             <button class="primary-button danger-confirm confirm-anchor" @click="confirmClearTaskLogs()">确认清理</button>
-                            <button class="secondary-button" @click="cancelClearTaskLogs()">取消</button>
                         </div>
                     </div>
                 </div>
@@ -548,7 +544,6 @@
                                     <div class="button-row confirm-row">
                                         <button class="secondary-button" @click="openQueuedTaskInspector(item)">细节</button>
                                         <button class="secondary-button danger-button confirm-anchor" @click="askCancelQueuedTask(item.queue_id)" x-text="queuedTaskCancelLabel(item)"></button>
-                                        <button class="secondary-button" x-show="queuedCancelConfirmId === Number(item.queue_id)" @click="cancelQueuedTaskPrompt()">取消</button>
                                     </div>
                                 </div>
                             </template>
@@ -626,7 +621,6 @@
                                     <div class="panel-card-actions" x-show="pendingRestoreTrashId === item.id" x-cloak>
                                         <button class="secondary-button" @click="restoreTrash(item.id, false)">仅恢复</button>
                                         <button class="primary-button" @click="restoreTrash(item.id, true)">恢复并立即拉取</button>
-                                        <button class="secondary-button" @click="cancelRestoreTrash()">取消</button>
                                     </div>
                                 </div>
                             </template>
@@ -665,11 +659,9 @@
                         </div>
                         <div class="button-row confirm-row" x-show="fullReloadConfirmStep > 0 && fullReloadConfirmStep < 3" x-cloak>
                             <button class="secondary-button danger-button confirm-anchor" @click="askFullReload()" x-text="fullReloadButtonLabel()"></button>
-                            <button class="secondary-button" @click="cancelFullReload()">取消</button>
                         </div>
                         <div class="button-row confirm-row" x-show="fullReloadConfirmStep >= 3" x-cloak>
                             <button class="primary-button danger-confirm confirm-anchor" @click="confirmFullReload()">确认开始全量拉取</button>
-                            <button class="secondary-button" @click="cancelFullReload()">取消</button>
                         </div>
                     </article>
 
@@ -713,7 +705,6 @@
                                 <button class="secondary-button" x-show="thumbnailRebuildConfirmLevel !== 'tiny'" @click="askThumbnailRebuild('tiny')">重建 tiny</button>
                                 <div class="button-row confirm-row" x-show="thumbnailRebuildConfirmLevel === 'tiny'" x-cloak>
                                     <button class="primary-button confirm-anchor" @click="confirmThumbnailRebuild('tiny')">确认重建</button>
-                                    <button class="secondary-button" @click="cancelThumbnailRebuild()">取消</button>
                                 </div>
                             </div>
                             <div class="thumbnail-level-row">
@@ -723,7 +714,6 @@
                                 <button class="secondary-button" x-show="thumbnailRebuildConfirmLevel !== 'small'" @click="askThumbnailRebuild('small')">重建 small</button>
                                 <div class="button-row confirm-row" x-show="thumbnailRebuildConfirmLevel === 'small'" x-cloak>
                                     <button class="primary-button confirm-anchor" @click="confirmThumbnailRebuild('small')">确认重建</button>
-                                    <button class="secondary-button" @click="cancelThumbnailRebuild()">取消</button>
                                 </div>
                             </div>
                             <div class="thumbnail-level-row">
@@ -733,7 +723,6 @@
                                 <button class="secondary-button" x-show="thumbnailRebuildConfirmLevel !== 'thumb'" @click="askThumbnailRebuild('thumb')">重建 thumb</button>
                                 <div class="button-row confirm-row" x-show="thumbnailRebuildConfirmLevel === 'thumb'" x-cloak>
                                     <button class="primary-button confirm-anchor" @click="confirmThumbnailRebuild('thumb')">确认重建</button>
-                                    <button class="secondary-button" @click="cancelThumbnailRebuild()">取消</button>
                                 </div>
                             </div>
                         </div>
@@ -748,7 +737,6 @@
                         </div>
                         <div class="button-row confirm-row" x-show="resetIconsConfirmStep === 1" x-cloak>
                             <button class="primary-button confirm-anchor" @click="confirmResetAllIcons()" :disabled="resetIconsRunning" x-text="resetIconsRunning ? '重置中' : '确认重置所有图标'"></button>
-                            <button class="secondary-button" @click="cancelResetAllIcons()" :disabled="resetIconsRunning">取消</button>
                         </div>
                     </article>
 
@@ -778,7 +766,6 @@
                         </div>
                         <div class="button-row confirm-row" x-show="validateConfirmStep === 1" x-cloak>
                             <button class="primary-button confirm-anchor" @click="confirmValidateContent()">确认开始校验</button>
-                            <button class="secondary-button" @click="cancelValidateContent()">取消</button>
                         </div>
                     </article>
 
@@ -793,7 +780,6 @@
                         </div>
                         <div class="button-row confirm-row" x-show="rebuildIndexConfirmStep === 1" x-cloak>
                             <button class="primary-button confirm-anchor" @click="confirmRebuildGalleryIndex()">确认开始重建</button>
-                            <button class="secondary-button" @click="cancelRebuildGalleryIndex()">取消</button>
                         </div>
                     </article>
 
@@ -831,11 +817,9 @@
                         </div>
                         <div class="button-row confirm-row" x-show="clearDataConfirmStep > 0 && clearDataConfirmStep < 3" x-cloak>
                             <button class="secondary-button danger-button confirm-anchor" @click="askClearAllData()" x-text="clearDataButtonLabel()"></button>
-                            <button class="secondary-button" @click="cancelClearAllData()">取消</button>
                         </div>
                         <div class="button-row confirm-row" x-show="clearDataConfirmStep >= 3" x-cloak>
                             <button class="primary-button danger-confirm confirm-anchor" @click="confirmClearAllData()">确认清空全部内容</button>
-                            <button class="secondary-button" @click="cancelClearAllData()">取消</button>
                         </div>
                     </article>
                 </div>
@@ -968,25 +952,21 @@
                                 <template x-if="subscriptionReloadConfirmUid !== item.uid || subscriptionReloadConfirmStep < 2">
                                     <div class="button-row confirm-row">
                                         <button class="primary-button confirm-anchor" @click="askSubscriptionReload(item.uid)" x-text="subscriptionReloadLabel(item.uid)"></button>
-                                        <button class="secondary-button" x-show="subscriptionReloadConfirmUid === item.uid" @click="cancelSubscriptionReload()">取消</button>
                                     </div>
                                 </template>
                                 <template x-if="subscriptionReloadConfirmUid === item.uid && subscriptionReloadConfirmStep >= 2">
                                     <div class="button-row confirm-row">
                                         <button class="primary-button confirm-anchor" @click="confirmSubscriptionReload(item.uid)">确认全量校验拉取</button>
-                                        <button class="secondary-button" @click="cancelSubscriptionReload()">取消</button>
                                     </div>
                                 </template>
                                 <template x-if="subscriptionDeleteConfirmUid !== item.uid || subscriptionDeleteConfirmStep < 3">
                                     <div class="button-row confirm-row">
                                         <button class="secondary-button danger-button confirm-anchor" @click="askSubscriptionDelete(item.uid)" x-text="subscriptionDeleteLabel(item.uid)"></button>
-                                        <button class="secondary-button" x-show="subscriptionDeleteConfirmUid === item.uid" @click="cancelSubscriptionDelete()">取消</button>
                                     </div>
                                 </template>
                                 <template x-if="subscriptionDeleteConfirmUid === item.uid && subscriptionDeleteConfirmStep >= 3">
                                     <div class="button-row confirm-row">
                                         <button class="primary-button danger-confirm confirm-anchor" @click="confirmSubscriptionDelete(item.uid)">确认退订并删除</button>
-                                        <button class="secondary-button" @click="cancelSubscriptionDelete()">取消</button>
                                     </div>
                                 </template>
                             </div>
@@ -1154,7 +1134,6 @@
                                     <template x-if="siteValidateConfirmId !== source.id || siteValidateConfirmStep < 2">
                                         <div class="button-row confirm-row">
                                             <button class="secondary-button confirm-anchor" @click="askSiteValidate(source.id)" x-text="siteValidateLabel(source.id)"></button>
-                                            <button class="secondary-button" x-show="siteValidateConfirmId === source.id" @click="cancelSiteValidate()">取消</button>
                                         </div>
                                     </template>
                                     <template x-if="siteValidateConfirmId === source.id && siteValidateConfirmStep >= 2">
@@ -1164,7 +1143,6 @@
                                                 <input type="number" min="1" :value="siteValidatePageDraft(source.id)" @input="updateSiteValidatePageDraft(source.id, $event.target.value)">
                                             </label>
                                             <button class="primary-button danger-confirm confirm-anchor" @click="validateSiteSource(source)">确认全量校验</button>
-                                            <button class="secondary-button" @click="cancelSiteValidate()">取消</button>
                                         </div>
                                     </template>
                                     <button class="secondary-button" @click="resetSiteSourceDraft(source)">还原</button>
@@ -1172,13 +1150,11 @@
                                     <template x-if="siteClearDeleteConfirmId !== source.id || siteClearDeleteConfirmStep < 3">
                                         <div class="button-row confirm-row">
                                             <button class="secondary-button danger-button confirm-anchor" @click="askSiteClearDelete(source.id)" x-text="siteClearDeleteLabel(source.id)"></button>
-                                            <button class="secondary-button" x-show="siteClearDeleteConfirmId === source.id" @click="cancelSiteClearDelete()">取消</button>
                                         </div>
                                     </template>
                                     <template x-if="siteClearDeleteConfirmId === source.id && siteClearDeleteConfirmStep >= 3">
                                         <div class="button-row confirm-row">
                                             <button class="primary-button danger-confirm confirm-anchor" @click="confirmSiteClearDelete(source.id)">确认清空并删除</button>
-                                            <button class="secondary-button" @click="cancelSiteClearDelete()">取消</button>
                                         </div>
                                     </template>
                                 </div>
@@ -1254,7 +1230,6 @@
                                     <template x-if="siteLogsClearConfirm">
                                         <div class="button-row confirm-row">
                                             <button class="primary-button danger-confirm confirm-anchor" @click="clearSiteLogs()">确认清空历史</button>
-                                            <button class="secondary-button" @click="cancelClearSiteLogs()">取消</button>
                                         </div>
                                     </template>
                                 </div>
@@ -1309,7 +1284,6 @@
                                 </template>
                                 <template x-if="pendingTrashFolder === detail.folder?.folder_name">
                                     <div class="button-row confirm-row detail-trash-confirm">
-                                        <button class="secondary-button" @click="cancelTrashCurrentFolder()">取消</button>
                                         <button class="primary-button danger-confirm confirm-anchor" @click="trashCurrentFolder()">确认不喜欢</button>
                                     </div>
                                 </template>
@@ -1318,11 +1292,6 @@
                         </div>
                     </div>
                 </header>
-                <div class="detail-loading" x-show="detailLoading" x-cloak>
-                    <span class="loading-dot"></span>
-                    <strong>正在整理动态内容</strong>
-                    <p>页面先打开，素材正在继续加载。</p>
-                </div>
                 <div class="detail-grid" x-ref="detailGrid" :style="detailGridStyle()">
                     <template x-for="pair in detail.pairs" :key="pair.pair_index">
                         <article
@@ -1369,8 +1338,7 @@
                                         </button>
                                     </template>
                                     <template x-if="pairDeletePending(detail.folder?.folder_name, pair.pair_index)">
-                                        <div class="mini-confirm-row">
-                                            <button class="mini-confirm-button" @click="cancelDeleteViewerPair()">取消</button>
+                                        <div class="mini-confirm-row single-confirm">
                                             <button class="mini-confirm-button danger" :disabled="pairDeletingKey === pairDeleteKey(detail.folder?.folder_name, pair.pair_index)" @click="confirmDeletePair(detail.folder?.folder_name, pair.pair_index)">确认</button>
                                         </div>
                                     </template>
@@ -1428,7 +1396,6 @@
                         </template>
                         <template x-if="deletePairConfirmStep >= 1">
                         <div class="button-row confirm-row viewer-action-row viewer-action-confirm">
-                            <button class="secondary-button" @click="cancelDeleteViewerPair()">取消</button>
                             <button class="primary-button danger-confirm confirm-anchor" @click="confirmDeleteViewerPair()">确认永久删除，不可恢复</button>
                         </div>
                         </template>

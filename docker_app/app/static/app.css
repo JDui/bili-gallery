@@ -420,6 +420,11 @@ video {
     background: rgba(255, 255, 255, 0.94);
 }
 
+.search-link-badge .tab-search-icon {
+    margin-right: 0;
+    transform: translateX(-2px);
+}
+
 .link-text {
     text-align: left;
     font-size: 15px;
@@ -1855,6 +1860,10 @@ html.is-interacting .detail-backdrop {
     box-shadow: 0 8px 18px rgba(48, 56, 72, 0.12);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
+}
+
+.mini-confirm-row.single-confirm {
+    justify-content: center;
 }
 
 .mini-confirm-button {

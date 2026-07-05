@@ -30,7 +30,7 @@ function galleryApp() {
       { key: "site", label: "站点订阅" },
     ],
     searchTags: ["九图", "Live Photo", "收藏", "站点订阅", "COS", "写真", "视频", "转发"],
-    gallery: { items: [], total: 0, page: 1, page_size: 24, total_pages: 1 },
+    gallery: { items: [], total: 0, page: 1, page_size: 48, total_pages: 1 },
     galleryLoading: false,
     galleryMinHeight: 0,
     galleryViewMode: localStorage.getItem("gallery_view_mode") || "folder",
@@ -983,7 +983,7 @@ function galleryApp() {
       });
       const valueFor = (item, key) => {
         if (key === "posts") return Number(item.folder_count || item.post_count || 0);
-        if (key === "assets") return Number(item.asset_count || item.image_count || 0);
+        if (key === "assets") return this.subscriptionImageTotal(item);
         return String(item.uname || item.name || item.uid || "").toLowerCase();
       };
       return [...items].sort((left, right) => {
@@ -1018,24 +1018,27 @@ function galleryApp() {
     },
 
     subscriptionOverviewImageText(item) {
-      const assets = Number(item.asset_count || item.image_count || 0);
-      return `${assets}张`;
+      return `${this.subscriptionImageTotal(item)}张`;
+    },
+
+    subscriptionImageTotal(item) {
+      const explicit = Number(item?.image_total);
+      if (Number.isFinite(explicit)) {
+        return Math.max(0, explicit);
+      }
+      const images = Number(item?.image_count);
+      if (Number.isFinite(images)) {
+        return Math.max(0, images);
+      }
+      const assets = Number(item?.asset_count);
+      return Number.isFinite(assets) ? Math.max(0, assets) : 0;
     },
 
     openSubscriptionOverviewItem(item) {
-      const isSite = !!item?.is_site;
-      this.subscriptionPanel = isSite ? "site" : "up";
-      localStorage.setItem("subscription_panel", this.subscriptionPanel);
-      if (isSite) {
-        const sourceId = item?.source_id || item?.id;
-        if (sourceId) {
-          this.siteSourceExpanded = { ...this.siteSourceExpanded, [String(sourceId)]: true };
-        }
-        this.refreshSites();
-      } else if (item?.uid) {
-        this.subscriptionExpanded = { ...this.subscriptionExpanded, [String(item.uid)]: true };
+      if (!item?.uid) {
+        return;
       }
-      this.$nextTick(() => this.scrollViewTop());
+      this.selectSubscription(item.uid);
     },
 
     subscriptionIconUrl(item) {
@@ -1160,14 +1163,14 @@ function galleryApp() {
         return;
       }
       this.galleryLoading = reset;
-      const pageSize = this.gallery.page_size || 24;
+      const pageSize = Math.max(Number(this.gallery.page_size || 0), this.preferredGalleryPageSize());
       const page = Math.max(1, Number(targetPage || (reset ? 1 : this.gallery.page) || 1));
       if (reset) {
         this.lockGalleryMinHeight();
         this.gallerySkeletonCount = (this.gallery.items || []).length ? 0 : Math.max(8, Math.min(12, pageSize));
         this.gallery = { ...this.gallery, page: 1, page_size: pageSize, total_pages: 1 };
       } else if (direction === "next") {
-        this.gallerySkeletonCount = Math.max(4, Math.min(8, pageSize));
+        this.gallerySkeletonCount = 0;
       }
       const params = new URLSearchParams({
         category: this.category === "search" ? "all" : this.category,
@@ -1280,6 +1283,10 @@ function galleryApp() {
       return this.compactViewport ? 8 : 12;
     },
 
+    preferredGalleryPageSize() {
+      return Math.max(24, this.visibleGalleryBatchSize() * 4);
+    },
+
     cancelGalleryBatchWork() {
       if (this.galleryBatchTimer) {
         window.clearTimeout(this.galleryBatchTimer);
@@ -1293,46 +1300,20 @@ function galleryApp() {
     },
 
     queueGalleryBatch(items, token) {
-      if (!items.length) {
-        this.gallerySkeletonCount = 0;
-        this.$nextTick(() => {
-          this.observeGalleryCards();
-          this.observeGalleryLoadSentinel();
-        });
-        return;
-      }
-      this.galleryBatchQueue = items;
-      const appendBatch = () => {
-        if (token !== this.galleryRenderToken) {
-          return;
-        }
-        const batch = this.galleryBatchQueue.slice(0, 8);
-        this.galleryBatchQueue = this.galleryBatchQueue.slice(batch.length);
-        this.gallery = {
-          ...this.gallery,
-          items: this.mergeGalleryItems(this.gallery.items || [], batch),
-        };
-        this.gallerySkeletonCount = this.galleryBatchQueue.length ? Math.min(8, this.galleryBatchQueue.length) : 0;
-        this.$nextTick(() => {
-          this.observeGalleryCards();
-          this.observeGalleryLoadSentinel();
-        });
-        if (this.galleryBatchQueue.length) {
-          this.galleryBatchTimer = window.setTimeout(() => this.scheduleIdleWork(appendBatch, 300), 34);
-        } else {
-          this.galleryBatchTimer = null;
-        }
-      };
-      this.galleryBatchTimer = window.setTimeout(() => this.scheduleIdleWork(appendBatch, 300), 32);
+      void token;
+      this.galleryBatchQueue = [];
+      this.gallerySkeletonCount = 0;
+      this.$nextTick(() => {
+        this.observeGalleryCards();
+        this.observeGalleryLoadSentinel();
+      });
     },
 
     applyGalleryPagePayload(payload, page, direction, token = this.galleryRenderToken) {
       const pageItems = (payload.items || []).map((item) => ({ ...item, __gallery_page: page }));
       const existingItems = direction === "next" ? (this.gallery.items || []) : [];
-      const firstBatchSize = this.visibleGalleryBatchSize();
-      const firstBatch = this.prepareGalleryItems(pageItems.slice(0, firstBatchSize), page);
-      const remaining = this.prepareGalleryItems(pageItems.slice(firstBatchSize), page);
-      const nextItems = direction === "next" ? this.mergeGalleryItems(existingItems, firstBatch) : firstBatch;
+      const preparedItems = this.prepareGalleryItems(pageItems, page);
+      const nextItems = direction === "next" ? this.mergeGalleryItems(existingItems, preparedItems) : preparedItems;
       this.gallery = {
         ...payload,
         page,
@@ -1343,12 +1324,12 @@ function galleryApp() {
       if (direction !== "next") {
         this.displayedGalleryViewMode = this.galleryViewMode;
       }
-      this.gallerySkeletonCount = remaining.length ? Math.min(8, remaining.length) : 0;
+      this.gallerySkeletonCount = 0;
       this.$nextTick(() => {
         this.observeGalleryCards();
         this.observeGalleryLoadSentinel();
       });
-      this.queueGalleryBatch(remaining, token);
+      this.queueGalleryBatch([], token);
     },
 
     galleryLocalCacheKey(params) {
@@ -1844,7 +1825,7 @@ function galleryApp() {
         this.scheduleDetailThumbnailPromotion(folderName, requestId);
         return;
       }
-      this.detailLoading = true;
+      this.detailLoading = false;
       const previewPairs = this.detailPreviewPairs(folderName, previewFolder);
       this.detail = {
         open: true,
@@ -1853,7 +1834,6 @@ function galleryApp() {
         videos: this.detail.folder?.folder_name === folderName ? (this.detail.videos || []) : [],
       };
       this.syncBodyLock();
-      await new Promise((resolve) => this.runAfterInteraction(resolve, 260));
       if (requestId !== this.detailRequestId) {
         return;
       }
@@ -2314,6 +2294,7 @@ function galleryApp() {
           return;
         }
         const scrollTop = window.scrollY || window.pageYOffset || 0;
+        const scrollbarGap = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
         this.bodyLockTop = scrollTop;
         this.bodyLockPaddingRight = body.style.paddingRight || "";
         this.bodyLockStyles = {
@@ -2328,11 +2309,11 @@ function galleryApp() {
           bodyWidth: body.style.width || "",
           bodyPaddingRight: body.style.paddingRight || "",
         };
+        html.style.setProperty("--overlay-scrollbar-gap", `${scrollbarGap}px`);
         html.style.scrollbarGutter = "stable";
         body.style.scrollbarGutter = "stable";
         html.style.overflow = "hidden";
         body.style.overflow = "hidden";
-        const scrollbarGap = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
         if (scrollbarGap > 0) {
           const currentPaddingRight = Number.parseFloat(window.getComputedStyle(body).paddingRight) || 0;
           body.style.paddingRight = `${currentPaddingRight + scrollbarGap}px`;
@@ -2350,6 +2331,7 @@ function galleryApp() {
       const scrollTop = this.bodyLockTop;
       const previousStyles = this.bodyLockStyles || {};
       html.classList.add("scroll-restore-instant");
+      html.style.removeProperty("--overlay-scrollbar-gap");
       html.style.overflow = previousStyles.htmlOverflow || "";
       html.style.scrollbarGutter = previousStyles.htmlScrollbarGutter || "";
       body.style.overflow = previousStyles.bodyOverflow || "";
@@ -2475,24 +2457,44 @@ function galleryApp() {
     loadHoverPreview(card) {
       const video = card.querySelector(".hover-preview-video");
       const image = card.querySelector(".hover-preview-image");
-      if (!video) {
+      const src = video?.dataset?.src || "";
+      if (!video || !src) {
         return;
       }
       if (this.hoverPreviewLoadCard && this.hoverPreviewLoadCard !== card) {
         this.stopHoverPreviewByCard(this.hoverPreviewLoadCard);
       }
       this.hoverPreviewLoadCard = card;
-      if (!video.dataset.loaded && video.dataset.src) {
-        video.src = video.dataset.src;
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "metadata";
+      if (!video.dataset.loaded || video.src !== src) {
+        video.src = src;
         video.dataset.loaded = "1";
+        video.load();
       }
       if (image) {
         image.classList.add("hidden");
       }
       video.classList.remove("hidden");
-      video.currentTime = 0;
+      try {
+        video.currentTime = 0;
+      } catch (_error) {
+        // Some browsers reject currentTime before metadata is available.
+      }
       video.onended = () => this.stopHoverPreviewByCard(card);
-      video.play().catch(() => this.stopHoverPreviewByCard(card));
+      video.onerror = () => this.stopHoverPreviewByCard(card);
+      const play = () => {
+        if (this.hoverPreviewLoadCard !== card) {
+          return;
+        }
+        video.play().catch(() => this.stopHoverPreviewByCard(card));
+      };
+      if (video.readyState >= 2) {
+        play();
+      } else {
+        video.onloadeddata = play;
+      }
     },
 
     stopHoverPreview(event) {
@@ -2541,7 +2543,13 @@ function galleryApp() {
       const image = card.querySelector(".hover-preview-image");
       if (video) {
         video.pause();
-        video.currentTime = 0;
+        try {
+          video.currentTime = 0;
+        } catch (_error) {
+          // Metadata may not have loaded yet.
+        }
+        video.onloadeddata = null;
+        video.onerror = null;
         video.classList.add("hidden");
       }
       if (image) {
@@ -3492,6 +3500,75 @@ function galleryApp() {
       }
     },
 
+    formatTaskDetail(taskLike = {}) {
+      const details = taskLike.details || {};
+      const stats = taskLike.stats || details || {};
+      const taskDetail = taskLike.task_detail || details.task_detail || {};
+      const events = taskLike.events || details.events || [];
+      const completed = Array.isArray(taskDetail.completed) ? taskDetail.completed : [];
+      const counters = this.taskCounterTags({ ...taskLike, stats, counters: taskLike.counters || details.counters || stats.counters || {} });
+      const lines = [
+        `目标：${taskDetail.target || taskLike.target || this.taskTargetText(taskLike)}`,
+        `正在做：${taskDetail.doing || taskLike.current_step || taskLike.message || "已结束"}`,
+        `即将做：${taskDetail.next || taskLike.next_step || this.taskNextText(taskLike)}`,
+        `进度：${this.taskProgressText(taskLike)}`,
+        "",
+        "已完成：",
+      ];
+      if (completed.length) {
+        completed.forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+      } else if (taskLike.status && taskLike.status !== "running") {
+        lines.push(`1. ${taskLike.message || taskLike.status}`);
+      } else {
+        lines.push("暂无完成项，任务刚开始或正在准备范围。");
+      }
+      if (counters.length) {
+        lines.push("", "量化统计：");
+        counters.forEach((item) => lines.push(`${item.label}：${item.value}`));
+      }
+      if (Array.isArray(stats.added_items) && stats.added_items.length) {
+        lines.push("", `本次新增：${stats.added_items.length} 条`);
+      }
+      if (events.length) {
+        lines.push("", "事件日志：");
+        events.slice(-40).forEach((event, index) => {
+          const context = Object.entries(event)
+            .filter(([key]) => !["at", "message"].includes(key))
+            .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(",") : value}`)
+            .join(" · ");
+          lines.push(`${index + 1}. ${event.at || ""} ${event.message || ""}${context ? ` · ${context}` : ""}`.trim());
+        });
+      }
+      return lines.join("\n");
+    },
+
+    taskTargetText(taskLike = {}) {
+      const mode = taskLike.mode || taskLike.task_type;
+      return {
+        pull: "拉取订阅动态并刷新图库",
+        "subscription-pull": "拉取当前订阅动态",
+        "subscription-reload": "全量校验并拉取当前订阅",
+        review: "处理待审核内容",
+        validate: "校验图库完整性并修复缺失内容",
+        index: "重建页面索引",
+        "thumbnail-rebuild": "重建缩略图",
+        "site-sync": "同步站点订阅",
+        "site-validate": "全量校验站点订阅",
+        "storage-cleanup": "清理垃圾文件",
+        startup: "启动后整理图库",
+      }[mode] || "执行队列任务";
+    },
+
+    taskNextText(taskLike = {}) {
+      if (taskLike.cancel_requested) {
+        return "停止当前执行步骤并释放队列";
+      }
+      if (taskLike.status && taskLike.status !== "running") {
+        return this.canRetryTask(taskLike) ? "可重新提交任务" : "无后续步骤";
+      }
+      return "继续执行队列中的下一步";
+    },
+
     formatAddedItems(items) {
       const rows = Array.isArray(items) ? items : [];
       if (!rows.length) {
@@ -3517,20 +3594,7 @@ function galleryApp() {
         open: true,
         title: this.pullStatus.running ? "当前运行任务" : "当前状态",
         subtitle: this.pullStatus.message || "空闲",
-        body: this.formatInspectorJson({
-          mode: this.pullStatus.mode,
-          running: this.pullStatus.running,
-          paused: this.pullStatus.paused,
-          cancel_requested: this.pullStatus.cancel_requested,
-          progress: this.pullStatus.progress,
-          current_source: this.pullStatus.current_source,
-          current_post: this.pullStatus.current_post,
-          site_detail: this.pullStatus.site_detail || {},
-          stats: this.pullStatus.stats || {},
-          counters: this.pullStatus.counters || {},
-          events: this.pullStatus.events || [],
-          queue: this.pullStatus.queue || [],
-        }),
+        body: this.formatTaskDetail(this.pullStatus),
       };
       this.taskInspectorLoading = false;
       this.syncBodyLock();
@@ -3564,12 +3628,7 @@ function galleryApp() {
           open: true,
           title: `${task.task_type} #${task.id}`,
           subtitle: task.message || task.status,
-          body: this.formatInspectorJson({
-            status: task.status,
-            created_at: task.created_at,
-            finished_at: task.finished_at,
-            details: task.details || {},
-          }),
+          body: this.formatTaskDetail(task),
         };
       } catch (error) {
         this.taskInspector = {
@@ -3619,13 +3678,15 @@ function galleryApp() {
         open: true,
         title: `排队任务 #${item.queue_id}`,
         subtitle: item.label || item.kind,
-        body: this.formatInspectorJson({
-          kind: item.kind,
-          label: item.label,
-          position: item.position,
-          queued_at: item.queued_at,
-          payload: item.payload || {},
-        }),
+        body: [
+          `目标：${item.label || this.taskTargetText({ mode: item.kind })}`,
+          `正在做：等待前序任务完成`,
+          `即将做：排到第 ${item.position || "-"} 位后开始执行`,
+          `进度：排队中`,
+          "",
+          `任务类型：${this.taskModeLabel(item.kind)}`,
+          `入队时间：${item.queued_at || "-"}`,
+        ].join("\n"),
       };
       this.taskInspectorLoading = false;
       this.syncBodyLock();
@@ -3653,6 +3714,8 @@ function galleryApp() {
         review: "待审核",
         validate: "校验",
         index: "索引",
+        "thumbnail-rebuild": "缩略图",
+        thumbnails: "缩略图",
         "site-sync": "站点同步",
         "site-validate": "站点校验",
         "storage-cleanup": "存储清理",
@@ -3682,7 +3745,7 @@ function galleryApp() {
       if (Number.isFinite(processed) && Number.isFinite(total) && total > 0) {
         return `${Math.min(processed, total)} / ${total} · ${this.taskProgressValue(status)}%`;
       }
-      return status?.running ? "正在准备任务细节" : "无运行任务";
+      return status?.running ? `${status.current_step || status.message || "执行中"} · ${this.taskProgressValue(status)}%` : "无运行任务";
     },
 
     taskCounterTags(status) {

@@ -170,17 +170,7 @@ async def toggle_favorite(folder_name: str, payload: dict[str, Any] = Body(defau
 
 @app.get("/api/site-sources")
 async def list_site_sources() -> dict[str, Any]:
-    stats_by_source: dict[int, dict[str, int]] = {}
-    for post in db.list_site_posts(category="all"):
-        source_id = int(post.get("source_id") or 0)
-        stat = stats_by_source.setdefault(source_id, {"post_count": 0, "asset_count": 0})
-        stat["post_count"] += 1
-        stat["asset_count"] += int(post.get("asset_count") or 0)
-    for post in db.list_site_posts(category="blocked"):
-        source_id = int(post.get("source_id") or 0)
-        stat = stats_by_source.setdefault(source_id, {"post_count": 0, "asset_count": 0})
-        stat["post_count"] += 1
-        stat["asset_count"] += int(post.get("asset_count") or 0)
+    stats_by_source = db.site_source_content_stats()
     return {
         "items": [
             {
@@ -382,15 +372,25 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "folder_count": int(item.get("folder_count") or 0),
                 "image_count": int(item.get("image_count") or 0),
                 "livephoto_count": int(item.get("livephoto_count") or 0),
+                "asset_count": int(item.get("asset_count") or 0),
             }
             for item in db.subscription_stats_from_index()
         }
     else:
         stats_by_uid: dict[str, dict[str, Any]] = {}
+        assets_by_folder: dict[str, dict[str, int]] = {}
+        for asset in db.list_all_assets():
+            folder_stats = assets_by_folder.setdefault(str(asset.get("folder_name") or ""), {"image_count": 0, "livephoto_count": 0, "asset_count": 0})
+            folder_stats["asset_count"] += 1
+            if asset.get("media_type") == "image":
+                folder_stats["image_count"] += 1
+            if asset.get("media_type") == "livephoto":
+                folder_stats["livephoto_count"] += 1
         for folder in db.list_folders():
             uid = str(folder.get("subscription_uid") or "")
             if not uid:
                 continue
+            folder_assets = assets_by_folder.get(str(folder.get("folder_name") or ""), {})
             entry = stats_by_uid.setdefault(
                 uid,
                 {
@@ -399,14 +399,21 @@ def _subscription_stats() -> list[dict[str, Any]]:
                     "folder_count": 0,
                     "image_count": 0,
                     "livephoto_count": 0,
+                    "asset_count": 0,
                 },
             )
             entry["folder_count"] += 1
-            entry["image_count"] += int(bool(folder.get("has_images")))
-            entry["livephoto_count"] += int(bool(folder.get("has_livephoto")))
+            entry["image_count"] += int(folder_assets.get("image_count") or int(bool(folder.get("has_images"))))
+            entry["livephoto_count"] += int(folder_assets.get("livephoto_count") or int(bool(folder.get("has_livephoto"))))
+            entry["asset_count"] += int(folder_assets.get("asset_count") or 0)
+    site_stats_by_uid = {
+        db.site_subscription_uid(source_id): stat
+        for source_id, stat in db.site_source_content_stats().items()
+    }
     output = []
     for item in db.list_subscriptions(include_paused=True):
         stat = stats_by_uid.get(str(item["uid"]), {})
+        image_total = int(stat.get("image_count") or 0)
         output.append(
             {
                 **item,
@@ -415,7 +422,9 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "icon_tiny_url": item.get("avatar_tiny_url"),
                 "folder_count": stat.get("folder_count", 0),
                 "image_count": stat.get("image_count", 0),
+                "image_total": image_total,
                 "livephoto_count": stat.get("livephoto_count", 0),
+                "asset_count": stat.get("asset_count", 0),
                 "is_site": str(item["uid"]).startswith("site:"),
             }
         )
@@ -425,6 +434,8 @@ def _subscription_stats() -> list[dict[str, Any]]:
         if uid in existing_uids:
             continue
         stat = stats_by_uid.get(uid, {})
+        site_stat = site_stats_by_uid.get(uid, {})
+        image_total = int(stat.get("image_count") or 0) or int(site_stat.get("asset_count") or 0)
         output.append(
             {
                 "uid": uid,
@@ -441,9 +452,12 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "source_id": source.get("id"),
                 "source_type": source.get("source_type"),
                 "entry_url": source.get("entry_url"),
-                "folder_count": stat.get("folder_count", 0),
+                "folder_count": stat.get("folder_count", 0) or site_stat.get("post_count", 0),
+                "post_count": site_stat.get("post_count", 0),
                 "image_count": stat.get("image_count", 0),
+                "image_total": image_total,
                 "livephoto_count": stat.get("livephoto_count", 0),
+                "asset_count": stat.get("asset_count", 0) or site_stat.get("asset_count", 0),
                 "is_site": True,
             }
         )
@@ -451,6 +465,8 @@ def _subscription_stats() -> list[dict[str, Any]]:
     for uid, stat in sorted(stats_by_uid.items(), key=lambda item: str(item[1].get("uname") or item[0]).lower()):
         if not uid.startswith("site:") or uid in existing_uids:
             continue
+        site_stat = site_stats_by_uid.get(uid, {})
+        image_total = int(stat.get("image_count") or 0) or int(site_stat.get("asset_count") or 0)
         output.append(
             {
                 "uid": uid,
@@ -462,9 +478,12 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "include_forwarded": 0,
                 "icon_url": None,
                 "icon_tiny_url": None,
-                "folder_count": stat.get("folder_count", 0),
+                "folder_count": stat.get("folder_count", 0) or site_stat.get("post_count", 0),
+                "post_count": site_stat.get("post_count", 0),
                 "image_count": stat.get("image_count", 0),
+                "image_total": image_total,
                 "livephoto_count": stat.get("livephoto_count", 0),
+                "asset_count": stat.get("asset_count", 0) or site_stat.get("asset_count", 0),
                 "is_site": True,
             }
         )

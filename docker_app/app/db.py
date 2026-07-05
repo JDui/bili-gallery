@@ -1129,6 +1129,26 @@ class Database:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._site_post_row(row) for row in rows]
 
+    def site_source_content_stats(self) -> dict[int, dict[str, int]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select
+                    source_id,
+                    count(*) as post_count,
+                    coalesce(sum(asset_count), 0) as asset_count
+                from site_posts
+                group by source_id
+                """
+            ).fetchall()
+        return {
+            int(row["source_id"]): {
+                "post_count": int(row["post_count"] or 0),
+                "asset_count": int(row["asset_count"] or 0),
+            }
+            for row in rows
+        }
+
     def set_site_post_flag(self, post_id: int, key: str, value: bool) -> dict[str, Any] | None:
         if key not in {"is_favorite", "is_blocked"}:
             raise ValueError("不支持的标记")
@@ -2483,8 +2503,9 @@ class Database:
                     subscription_uid as uid,
                     max(subscription_name) as uname,
                     count(*) as folder_count,
-                    sum(case when has_images = 1 then 1 else 0 end) as image_count,
-                    sum(case when has_livephoto = 1 then 1 else 0 end) as livephoto_count
+                    sum(image_count) as image_count,
+                    sum(livephoto_count) as livephoto_count,
+                    sum(asset_count) as asset_count
                 from folder_index
                 where coalesce(subscription_uid, '') != ''
                 group by subscription_uid

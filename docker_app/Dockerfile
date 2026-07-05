@@ -32,7 +32,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     APP_REPO_ROOT=/workspace \
     APP_STORAGE_ROOT=/storage \
     APP_MEDIA_WORKER_BIN=/opt/zzs/bin/media-worker \
-    APP_INDEXER_BIN=/opt/zzs/bin/indexer
+    APP_INDEXER_BIN=/opt/zzs/bin/indexer \
+    APP_THUMBNAIL_WORKERS=3
 
 WORKDIR /opt/zzs/docker_app
 

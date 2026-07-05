@@ -2408,10 +2408,18 @@ def test_site_api_source_preview_sync_and_post_actions(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(syncer, "start_sync", sync_now)
     monkeypatch.setattr(syncer, "start_full_validation", sync_now)
+
+    class FakeAuth:
+        def check_cookie(self) -> dict:
+            return {"ok": False, "message": "未登录"}
+
     monkeypatch.setattr(app_main, "db", db)
     monkeypatch.setattr(app_main, "storage", storage)
     monkeypatch.setattr(app_main, "site_syncer", syncer)
     monkeypatch.setattr(app_main, "gallery", GalleryService(db, storage))
+    monkeypatch.setattr(app_main, "auth", FakeAuth())
+    monkeypatch.setattr(app_main, "scheduler", SimpleNamespace(reload=lambda: None))
+    monkeypatch.setattr(app_main, "pull_manager", SimpleNamespace(refresh_storage_stats_cache=lambda: {}))
     client = TestClient(app_main.app)
 
     source_payload = {
