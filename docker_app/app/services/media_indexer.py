@@ -96,14 +96,15 @@ class MediaIndexer:
             )
         self.db.mark_gallery_index_rebuilt()
 
-    def rebuild_gallery_indexes(self) -> None:
+    def rebuild_gallery_indexes(self, clear_derivatives: bool = True) -> None:
         folders = {folder["folder_name"]: folder for folder in self.db.list_folders()}
         assets_by_folder: dict[str, list[dict]] = {}
         for asset in self.db.list_all_assets():
             assets_by_folder.setdefault(asset["folder_name"], []).append(asset)
         self.db.clear_gallery_indexes()
         for folder_name, folder in folders.items():
-            self.storage.clear_folder_thumbnail_derivatives(folder_name)
+            if clear_derivatives:
+                self.storage.clear_folder_thumbnail_derivatives(folder_name)
             assets = self._backfill_thumbnails(assets_by_folder.get(folder_name, []))
             self._replace_gallery_index(folder, assets)
         self.db.mark_gallery_index_rebuilt()
@@ -246,7 +247,7 @@ class MediaIndexer:
             width = height = None
             sidecar_result = None
             if generate_derivatives:
-                sidecar_result = self.sidecar.derive_image(file_path, thumb_path, small_thumb_path, tiny_thumb_path)
+                sidecar_result = self.sidecar.derive_image(file_path, thumb_path, small_thumb_path, tiny_thumb_path, self.thumbnailer.sidecar_options())
                 if sidecar_result:
                     width = sidecar_result.get("width")
                     height = sidecar_result.get("height")
@@ -284,7 +285,7 @@ class MediaIndexer:
         return assets
 
     def _derive_image_with_sidecar(self, source: Path, thumb: Path, small: Path, tiny: Path) -> bool:
-        result = self.sidecar.derive_image(source, thumb, small, tiny)
+        result = self.sidecar.derive_image(source, thumb, small, tiny, self.thumbnailer.sidecar_options())
         return bool(result and thumb.exists() and small.exists() and tiny.exists())
 
     def _index_livephotos(

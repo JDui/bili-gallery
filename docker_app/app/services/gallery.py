@@ -22,6 +22,7 @@ class GalleryService:
         end_month: str | None = None,
         subscription_uids: list[str] | None = None,
         source_kind: str = "all",
+        search_query: str | None = None,
         page: int = 1,
         page_size: int = 24,
         view_mode: str = "folder",
@@ -38,6 +39,7 @@ class GalleryService:
             end_month=end_month,
             subscription_uids=subscription_uids,
             source_kind=source_kind,
+            search_query=search_query,
             page=page,
             page_size=page_size,
             view_mode=view_mode,
@@ -60,6 +62,7 @@ class GalleryService:
                 end_month=end_month,
                 subscription_uids=subscription_uids,
                 source_kind=source_kind,
+                search_query=search_query,
                 page=page,
                 page_size=page_size,
                 view_mode=view_mode,
@@ -75,6 +78,7 @@ class GalleryService:
                 end_month=end_month,
                 subscription_uids=subscription_uids,
                 source_kind=source_kind,
+                search_query=search_query,
                 page=page,
                 page_size=page_size,
                 sort_order=sort_order,
@@ -89,6 +93,7 @@ class GalleryService:
                 end_month=end_month,
                 subscription_uids=subscription_uids,
                 source_kind=source_kind,
+                search_query=search_query,
                 page=page,
                 page_size=page_size,
                 sort_order=sort_order,
@@ -116,6 +121,7 @@ class GalleryService:
         end_month: str | None,
         subscription_uids: list[str] | None,
         source_kind: str,
+        search_query: str | None,
         page: int,
         page_size: int,
         view_mode: str,
@@ -130,6 +136,7 @@ class GalleryService:
                 "end_month": end_month or "",
                 "subscription_uids": sorted(str(uid) for uid in (subscription_uids or []) if str(uid).strip()),
                 "source_kind": source_kind,
+                "search_query": str(search_query or "").strip(),
                 "page": int(page),
                 "page_size": int(page_size),
                 "view_mode": view_mode,
@@ -345,6 +352,7 @@ class GalleryService:
         end_month: str | None,
         subscription_uids: list[str] | None,
         source_kind: str,
+        search_query: str | None,
         page: int,
         page_size: int,
         view_mode: str,
@@ -356,6 +364,19 @@ class GalleryService:
             for folder in folders
             if self._match(folder, category, year, month, start_month, end_month, subscription_uids, source_kind)
         ]
+        terms = [term.strip().lower() for term in str(search_query or "").split() if term.strip()]
+        if terms:
+            filtered = [
+                folder
+                for folder in filtered
+                if all(
+                    term in " ".join(
+                        str(folder.get(key) or "").lower()
+                        for key in ("folder_name", "title", "text_prefix", "subscription_name")
+                    )
+                    for term in terms
+                )
+            ]
         if view_mode == "pair":
             items = self._fallback_pair_items(filtered, category, sort_order=sort_order)
         else:

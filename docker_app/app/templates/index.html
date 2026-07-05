@@ -18,7 +18,7 @@
                     <span></span>
                 </button>
                 <div class="brand-block" x-show="!sidebarCollapsed">
-                    <h1>{{ app_name }}</h1>
+                    <h1>{{ app_title }}</h1>
                     <p class="brand-version">v{{ app_version }}</p>
                 </div>
                 <button class="icon-button desktop-only" @click="toggleSidebar()" aria-label="切换边栏">
@@ -168,6 +168,21 @@
                         </label>
                     </div>
                 </div>
+                <section class="search-panel" x-show="searchActive()" x-cloak>
+                    <label class="search-field">
+                        <span>搜索</span>
+                        <input type="search" x-model="searchDraft" @keydown.enter.prevent="applySearch()" placeholder="输入标题、正文、订阅源或文件夹名">
+                    </label>
+                    <div class="search-tag-row">
+                        <template x-for="tag in searchTags" :key="tag">
+                            <button class="chip-button subtle" :class="{ active: searchQuery === tag }" @click="applySearch(tag)" x-text="tag"></button>
+                        </template>
+                    </div>
+                    <div class="button-row">
+                        <button class="primary-button" @click="applySearch()">搜索</button>
+                        <button class="secondary-button" @click="clearSearch()">清空</button>
+                    </div>
+                </section>
                 <section class="time-filter-panel" x-show="timeFilterOpen" x-cloak>
                     <div class="time-filter-copy">
                         <p>瀑布流选项</p>
@@ -234,7 +249,7 @@
                                                 :data-gallery-key="galleryItemKey(item)"
                                                 :data-year-key="item.year_key"
                                                 :data-month-key="item.month_key"
-                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder, 'is-appearing': item.__appearing }"
+                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder, 'is-appearing': item.__appearing, 'tiny-quality': galleryQualityFor(item) !== 'small', 'small-quality': galleryQualityFor(item) === 'small' }"
                                                 :style="item.__deleted_placeholder ? galleryPlaceholderStyle(item) : null"
                                                 @click="item.__deleted_placeholder ? null : openFolder(item.folder_name)"
                                                 >
@@ -250,7 +265,7 @@
                                                     <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
                                                         <template x-for="tile in item.preview_tiles" :key="tile.id">
                                                             <div class="photo-collage-tile" :style="tileTinyStyle(tile)">
-                                                                <img loading="lazy" decoding="async" :src="galleryTileUrl(tile, item)" :alt="item.title" :width="tile.width || null" :height="tile.height || null">
+                                                                <img :loading="galleryQualityFor(item) === 'small' ? 'eager' : 'lazy'" decoding="async" :src="galleryTileUrl(tile, item)" :alt="item.title" :width="tile.width || null" :height="tile.height || null">
                                                             </div>
                                                         </template>
                                                     </div>
@@ -278,11 +293,10 @@
                                                     </div>
                                                     <div class="photo-meta">
                                                     <h4 x-text="cardPrimaryText(item)"></h4>
-                                                    <p x-text="cardSecondaryText(item)"></p>
                                                     <div class="photo-stats">
                                                         <span x-text="item.subscription_name || '默认订阅'"></span>
                                                         <span x-text="`${item.image_count} 张照片`"></span>
-                                                        <span x-text="`${item.livephoto_count} 条 Live Photo`"></span>
+                                                        <span x-show="item.livephoto_count > 0" x-text="`${item.livephoto_count} 条 Live Photo`"></span>
                                                     </div>
                                                 </div>
                                                         </div>
@@ -299,7 +313,7 @@
                                                 :data-gallery-key="galleryItemKey(item)"
                                                 :data-year-key="item.year_key"
                                                 :data-month-key="item.month_key"
-                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder, 'is-appearing': item.__appearing }"
+                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder, 'is-appearing': item.__appearing, 'tiny-quality': galleryQualityFor(item) !== 'small', 'small-quality': galleryQualityFor(item) === 'small' }"
                                                 :style="item.__deleted_placeholder ? galleryPlaceholderStyle(item) : null"
                                                 @click="item.__deleted_placeholder ? null : openGalleryPair(item)"
                                                 @mouseenter="item.has_livephoto ? startHoverPreview($event) : null"
@@ -317,7 +331,7 @@
                                                 <template x-if="!item.__deleted_placeholder">
                                                     <div>
                                                 <div class="photo-visual asset-visual" :style="assetVisualStyle(item)">
-                                                    <img class="hover-preview-image" loading="lazy" decoding="async" :src="galleryPairImageUrl(item)" :alt="item.title" :width="item.width || null" :height="item.height || null">
+                                                    <img class="hover-preview-image" :loading="galleryQualityFor(item) === 'small' ? 'eager' : 'lazy'" decoding="async" :src="galleryPairImageUrl(item)" :alt="item.title" :width="item.width || null" :height="item.height || null">
                                                     <template x-if="item.has_livephoto">
                                                         <video
                                                             class="hover-preview-video hidden"
@@ -688,6 +702,44 @@
                         <p class="field-copy">慢站点或海外站点可把页面请求超时调高；代理只影响站点解析和站点媒体下载，不影响哔哩哔哩登录与动态拉取。</p>
                     </article>
 
+                    <article class="settings-card thumbnail-settings-card">
+                        <h4>界面与缩略图</h4>
+                        <label>应用标题 <input type="text" x-model="settings.app_title" placeholder="BiliGalleryRC"></label>
+                        <div class="thumbnail-level-grid">
+                            <div class="thumbnail-level-row">
+                                <strong>tiny</strong>
+                                <label>短边<input type="number" min="16" max="512" step="1" x-model.number="settings.tiny_thumb_edge"></label>
+                                <label>质量<input type="number" min="1" max="100" step="1" x-model.number="settings.tiny_thumb_quality"></label>
+                                <button class="secondary-button" x-show="thumbnailRebuildConfirmLevel !== 'tiny'" @click="askThumbnailRebuild('tiny')">重建 tiny</button>
+                                <div class="button-row confirm-row" x-show="thumbnailRebuildConfirmLevel === 'tiny'" x-cloak>
+                                    <button class="primary-button confirm-anchor" @click="confirmThumbnailRebuild('tiny')">确认重建</button>
+                                    <button class="secondary-button" @click="cancelThumbnailRebuild()">取消</button>
+                                </div>
+                            </div>
+                            <div class="thumbnail-level-row">
+                                <strong>small</strong>
+                                <label>短边<input type="number" min="64" max="1024" step="1" x-model.number="settings.small_thumb_edge"></label>
+                                <label>质量<input type="number" min="1" max="100" step="1" x-model.number="settings.small_thumb_quality"></label>
+                                <button class="secondary-button" x-show="thumbnailRebuildConfirmLevel !== 'small'" @click="askThumbnailRebuild('small')">重建 small</button>
+                                <div class="button-row confirm-row" x-show="thumbnailRebuildConfirmLevel === 'small'" x-cloak>
+                                    <button class="primary-button confirm-anchor" @click="confirmThumbnailRebuild('small')">确认重建</button>
+                                    <button class="secondary-button" @click="cancelThumbnailRebuild()">取消</button>
+                                </div>
+                            </div>
+                            <div class="thumbnail-level-row">
+                                <strong>thumb</strong>
+                                <label>短边<input type="number" min="128" max="2048" step="1" x-model.number="settings.thumb_edge"></label>
+                                <label>质量<input type="number" min="1" max="100" step="1" x-model.number="settings.thumb_quality"></label>
+                                <button class="secondary-button" x-show="thumbnailRebuildConfirmLevel !== 'thumb'" @click="askThumbnailRebuild('thumb')">重建 thumb</button>
+                                <div class="button-row confirm-row" x-show="thumbnailRebuildConfirmLevel === 'thumb'" x-cloak>
+                                    <button class="primary-button confirm-anchor" @click="confirmThumbnailRebuild('thumb')">确认重建</button>
+                                    <button class="secondary-button" @click="cancelThumbnailRebuild()">取消</button>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="field-copy">瀑布流只使用 tiny 和 small，详情与查看器按需加载 thumb。</p>
+                    </article>
+
                     <article class="settings-card">
                         <h4>订阅图标</h4>
                         <p class="field-copy">重新拉取每个 UP 主头像和每个站点来源的 logo/icon。无法获得图像的项目会回退为默认文字徽标。</p>
@@ -789,6 +841,67 @@
                 </div>
             </section>
 
+            <section class="panel-view subscription-overview-pane" data-testid="section-subscription-overview" x-show="currentView === 'subscriptions' && subscriptionPanel === 'overview'" x-cloak>
+                <div class="section-heading subscription-sticky-head">
+                    <div>
+                        <p>订阅中心</p>
+                        <h3>概览</h3>
+                    </div>
+                    <div class="button-row">
+                        <div class="segmented-pill subscription-segmented" role="tablist" aria-label="订阅页面切换">
+                            <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
+                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')">概览</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="subscription-overview-toolbar">
+                    <label class="subscription-search-field">
+                        <span class="search-glyph" aria-hidden="true"></span>
+                        <input type="search" x-model="subscriptionSearch" placeholder="搜索订阅名称、UID 或状态">
+                    </label>
+                    <select :value="subscriptionOverviewSort" @change="setSubscriptionOverviewSort($event.target.value)">
+                        <option value="name">按名称</option>
+                        <option value="posts">按贴文数</option>
+                        <option value="assets">按图片数</option>
+                    </select>
+                    <select :value="subscriptionOverviewGroup" @change="setSubscriptionOverviewGroup($event.target.value)">
+                        <option value="kind">按类型分组</option>
+                        <option value="status">按状态分组</option>
+                        <option value="none">不分组</option>
+                    </select>
+                </div>
+                <template x-for="group in subscriptionOverviewGroups()" :key="group.key">
+                    <section class="subscription-overview-group">
+                        <div class="subscription-overview-group-head">
+                            <h4 x-text="group.title"></h4>
+                            <span x-text="`${group.items.length} 个`"></span>
+                        </div>
+                        <div class="subscription-icon-grid">
+                            <template x-for="item in group.items" :key="item.uid">
+                                <button class="subscription-icon-tile" @click="openSubscriptionOverviewItem(item)">
+                                    <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: subscriptionIconUrl(item) }" :style="subscriptionIconTinyStyle(item)">
+                                        <template x-if="subscriptionIconUrl(item)">
+                                            <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.name || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
+                                        </template>
+                                        <template x-if="!subscriptionIconUrl(item)">
+                                            <span x-text="subscriptionBadgeText(item)"></span>
+                                        </template>
+                                    </span>
+                                    <strong x-text="item.uname || item.name || item.uid"></strong>
+                                    <small x-text="subscriptionOverviewCountText(item)"></small>
+                                </button>
+                            </template>
+                        </div>
+                    </section>
+                </template>
+                <div class="empty-state" x-show="subscriptionOverviewItems().length === 0" x-cloak>
+                    <strong>没有匹配的订阅</strong>
+                    <p>调整搜索关键词后再试。</p>
+                </div>
+            </section>
+
             <section class="panel-view" data-testid="section-subscriptions" x-show="currentView === 'subscriptions' && subscriptionPanel === 'up'" x-cloak>
                 <div class="section-heading">
                     <div>
@@ -796,8 +909,9 @@
                         <h3>订阅管理</h3>
                     </div>
                     <div class="button-row">
-                        <div class="segmented-pill" role="tablist" aria-label="订阅页面切换">
+                        <div class="segmented-pill subscription-segmented" role="tablist" aria-label="订阅页面切换">
                             <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
+                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')">概览</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
                         </div>
@@ -891,8 +1005,9 @@
                         <h3>订阅管理</h3>
                     </div>
                     <div class="button-row">
-                        <div class="segmented-pill" role="tablist" aria-label="订阅页面切换">
+                        <div class="segmented-pill subscription-segmented" role="tablist" aria-label="订阅页面切换">
                             <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
+                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')">概览</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
                         </div>
@@ -926,7 +1041,11 @@
                             <span class="subscription-expand-indicator" :class="{ open: newSiteSourceExpanded }">展开</span>
                         </button>
                         <div class="subscription-card-body" x-show="newSiteSourceExpanded" x-transition.opacity.duration.180ms x-cloak>
-                            <div class="subscription-policy-grid site-policy-grid">
+                            <div class="site-url-first-row">
+                                <label>入口 URL<input x-model="siteSourceForm.entry_url" required placeholder="https://example.com/feed.xml"></label>
+                                <button class="primary-button" @click="suggestSiteSource()" :disabled="siteSuggestLoading || !siteSourceForm.entry_url" x-text="siteSuggestLoading ? '探测中' : '自动填写'"></button>
+                            </div>
+                            <div class="subscription-policy-grid site-policy-grid" x-show="siteSourceFormExpanded" x-cloak>
                                 <label>名称<input x-model="siteSourceForm.name" required></label>
                                 <label>Slug<input x-model="siteSourceForm.slug" placeholder="自动生成"></label>
                                 <label>类型
@@ -936,7 +1055,6 @@
                                         <option value="sitemap">Sitemap</option>
                                     </select>
                                 </label>
-                                <label>入口 URL<input x-model="siteSourceForm.entry_url" required placeholder="https://example.com/feed.xml"></label>
                                 <label>分页模板<input x-model="siteSourceForm.page_url_template" placeholder="https://example.com/page/{page}"></label>
                                 <label>最大页数<input type="number" min="1" x-model.number="siteSourceForm.max_pages"></label>
                                 <label>列表项选择器<input x-model="siteSourceForm.list_item_selector" placeholder=".post-card"></label>
@@ -952,9 +1070,8 @@
                                 <label class="toggle-row switch-row"><input type="checkbox" x-model="siteSourceForm.enabled"><span>启用来源</span></label>
                                 <label class="toggle-row switch-row"><input type="checkbox" x-model="siteSourceForm.use_proxy"><span>应用站点网络代理</span></label>
                             </div>
-                            <div class="panel-card-actions subscription-card-actions">
+                            <div class="panel-card-actions subscription-card-actions" x-show="siteSourceFormExpanded" x-cloak>
                                 <button class="primary-button" @click="saveSiteSource()" :disabled="siteSourceSaving" x-text="siteSourceSaving ? '保存中' : '保存来源'"></button>
-                                <button class="secondary-button" @click="suggestSiteSource()" :disabled="siteSuggestLoading || !siteSourceForm.entry_url" x-text="siteSuggestLoading ? '探测中' : '自动填写'"></button>
                                 <button class="secondary-button" @click="testSiteSource()" :disabled="siteTestLoading" x-text="siteTestLoading ? '解析中' : '测试解析'"></button>
                                 <button class="secondary-button" @click="resetSiteSourceForm()">清空</button>
                             </div>
@@ -1212,10 +1329,10 @@
                             data-testid="detail-card"
                             role="button"
                             tabindex="0"
-                            :class="{ live: pair.livephoto }"
-                            @click="openPair(pair.pair_index)"
-                            @keydown.enter.prevent="openPair(pair.pair_index)"
-                            @keydown.space.prevent="openPair(pair.pair_index)"
+                            :class="{ live: pair.livephoto, placeholder: pair.placeholder }"
+                            @click="pair.placeholder ? null : openPair(pair.pair_index)"
+                            @keydown.enter.prevent="pair.placeholder ? null : openPair(pair.pair_index)"
+                            @keydown.space.prevent="pair.placeholder ? null : openPair(pair.pair_index)"
                             @mouseenter="pair.livephoto ? startHoverPreview($event) : null"
                             @mouseleave="pair.livephoto ? stopHoverPreview($event) : null"
                             @touchstart.passive="pair.livephoto ? scheduleHoverPreview($event) : null"
@@ -1223,7 +1340,12 @@
                             @touchcancel="pair.livephoto ? cancelScheduledHoverPreview($event) : null"
                         >
                             <div class="detail-thumb" :style="detailThumbStyle(pair)">
-                                <img class="hover-preview-image detail-preview-image" decoding="async" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`">
+                                <template x-if="!pair.placeholder">
+                                    <img class="hover-preview-image detail-preview-image" decoding="async" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`">
+                                </template>
+                                <template x-if="pair.placeholder">
+                                    <div class="detail-placeholder-wash"></div>
+                                </template>
                                 <template x-if="pair.livephoto">
                                     <video
                                         class="hover-preview-video hidden"

@@ -59,7 +59,9 @@ class SidecarRunner:
         thumb: Path,
         small: Path,
         tiny: Path,
+        options: dict[str, int] | None = None,
     ) -> dict[str, Any] | None:
+        options = options or {}
         return self._run_json(
             self.media_worker,
             [
@@ -72,6 +74,18 @@ class SidecarRunner:
                 str(small),
                 "--tiny",
                 str(tiny),
+                "--thumb-edge",
+                str(options.get("thumb_edge", 576)),
+                "--thumb-quality",
+                str(options.get("thumb_quality", 68)),
+                "--small-edge",
+                str(options.get("small_edge", 192)),
+                "--small-quality",
+                str(options.get("small_quality", 48)),
+                "--tiny-edge",
+                str(options.get("tiny_edge", 32)),
+                "--tiny-quality",
+                str(options.get("tiny_quality", 28)),
             ],
         )
 

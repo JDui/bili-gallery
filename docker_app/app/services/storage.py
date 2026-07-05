@@ -61,6 +61,26 @@ class StorageService:
                     removed += 1
         return removed
 
+    def clear_thumbnail_level(self, level: str) -> int:
+        targets = {
+            "thumb": lambda thumbs: [item for item in thumbs.glob("*.webp") if item.is_file()],
+            "small": lambda thumbs: [item for item in (thumbs / "small").glob("*.webp") if item.is_file()],
+            "tiny": lambda thumbs: [item for item in (thumbs / "tiny").glob("*.webp") if item.is_file()],
+        }
+        if level not in targets:
+            raise ValueError("unsupported thumbnail level")
+        removed = 0
+        for root in (self.config.images_dir, self.config.livephoto_dir, self.config.data_dir / "sites"):
+            if not root.exists():
+                continue
+            for thumbs in root.rglob(".thumbs"):
+                if not thumbs.is_dir():
+                    continue
+                for target in targets[level](thumbs):
+                    target.unlink(missing_ok=True)
+                    removed += 1
+        return removed
+
     def resolve_storage_path(self, rel_path: str | None) -> Path | None:
         if not rel_path:
             return None

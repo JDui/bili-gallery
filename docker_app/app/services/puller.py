@@ -274,6 +274,13 @@ class PullManager:
         queued = self._queue_or_start("index", "重建页面索引", self._run_gallery_index_rebuild)
         return {"ok": True, "message": "已加入任务队列" if queued else "已开始重建页面索引", "queued": queued}
 
+    def start_thumbnail_rebuild(self, level: str) -> dict[str, Any]:
+        if level not in {"tiny", "small", "thumb"}:
+            raise RuntimeError("缩略图等级无效")
+        label = f"重建 {level} 缩略图"
+        queued = self._queue_or_start("thumbnail-rebuild", label, self._run_thumbnail_rebuild, level)
+        return {"ok": True, "message": "已加入任务队列" if queued else f"已开始{label}", "queued": queued}
+
     def start_site_sync(self, source_id: int | None = None) -> dict[str, Any]:
         if self.site_syncer is None:
             raise RuntimeError("站点同步器未初始化")
@@ -311,7 +318,7 @@ class PullManager:
         return self._refresh_storage_stats_cache()
 
     def status(self) -> dict[str, Any]:
-        latest = self._latest_task_run(["pull", "review", "validate", "startup", "index", "site-sync", "storage-cleanup", "icons"])
+        latest = self._latest_task_run(["pull", "review", "validate", "startup", "index", "thumbnail-rebuild", "site-sync", "storage-cleanup", "icons"])
         status = dict(self._status)
         if str(status.get("mode") or "").startswith("site") and self.site_syncer is not None:
             site_status = self.site_syncer.status()
@@ -395,6 +402,8 @@ class PullManager:
             return self.start_validation()
         if kind == "index":
             return self.start_gallery_index_rebuild()
+        if kind == "thumbnail-rebuild":
+            return self.start_thumbnail_rebuild(str(retry_action.get("level") or ""))
         if kind == "site-sync":
             source_id = retry_action.get("source_id")
             return self.start_site_sync(int(source_id) if source_id is not None else None)
@@ -1263,6 +1272,39 @@ class PullManager:
             self._release()
             self._run_next_queued_task()
 
+    def _run_thumbnail_rebuild(self, level: str) -> None:
+        task_id = self.db.create_task_run(
+            "thumbnail-rebuild",
+            "running",
+            f"开始重建 {level} 缩略图",
+            {"level": level, "retry_action": {"kind": "thumbnail-rebuild", "level": level}},
+        )
+        self.db.set_gallery_index_rebuilding(True)
+        try:
+            removed = self.storage.clear_thumbnail_level(level)
+            self.indexer.rebuild_gallery_indexes(clear_derivatives=False)
+            stats = {
+                "level": level,
+                "removed": removed,
+                "gallery_index": self.db.gallery_index_status(),
+                "storage_stats": self._refresh_storage_stats_cache(),
+                "events": self._runtime_events(),
+            }
+            self.db.finish_task_run(task_id, "success", f"{level} 缩略图重建完成", stats)
+            self._status = {"running": False, "message": f"{level} 缩略图重建完成", "mode": "idle", "stats": stats}
+        except Exception as exc:
+            self.db.set_gallery_index_rebuilding(False)
+            self.db.finish_task_run(
+                task_id,
+                "failed",
+                str(exc),
+                {"error": str(exc), "level": level, "retry_action": {"kind": "thumbnail-rebuild", "level": level}, "events": self._runtime_events()},
+            )
+            self._status = {"running": False, "message": f"{level} 缩略图重建失败: {exc}", "mode": "idle"}
+        finally:
+            self._release()
+            self._run_next_queued_task()
+
     def _evaluate_auto_gallery_index_check(self, trigger: str) -> tuple[dict[str, Any], bool]:
         settings = self.db.get_settings()
         enabled = bool(settings.get("auto_gallery_index_check", True))
@@ -2047,6 +2089,9 @@ class PullManager:
                 thread = threading.Thread(target=self._run_validation, daemon=True)
             elif next_task.kind == "index":
                 thread = threading.Thread(target=self._run_gallery_index_rebuild, daemon=True)
+            elif next_task.kind == "thumbnail-rebuild":
+                level = str(next_task.payload.get("args", [""])[0])
+                thread = threading.Thread(target=self._run_thumbnail_rebuild, args=(level,), daemon=True)
             elif next_task.kind == "site-sync":
                 raw_source_id = next_task.payload.get("args", [None])[0]
                 source_id = int(raw_source_id) if raw_source_id is not None else None

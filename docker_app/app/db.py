@@ -11,6 +11,7 @@ from app.services.utils import dumps_json, loads_json, now_iso, safe_slug
 
 DEFAULT_SETTINGS = {
     "host_mid": 31968078,
+    "app_title": "BiliGalleryRC",
     "pull_images": True,
     "image_min_count": 6,
     "pull_livephoto": True,
@@ -50,6 +51,12 @@ DEFAULT_SETTINGS = {
     "site_proxy_host": "127.0.0.1",
     "site_proxy_port": 7890,
     "review_source_open_mode": "browser",
+    "thumb_edge": 576,
+    "thumb_quality": 68,
+    "small_thumb_edge": 192,
+    "small_thumb_quality": 48,
+    "tiny_thumb_edge": 32,
+    "tiny_thumb_quality": 28,
     "storage_stats_cache": {
         "image_bytes": 0,
         "thumbnail_bytes": 0,
@@ -2290,6 +2297,7 @@ class Database:
         end_month: str | None = None,
         subscription_uids: list[str] | None = None,
         source_kind: str = "all",
+        search_query: str | None = None,
         page: int = 1,
         page_size: int = 24,
         sort_order: str = "desc",
@@ -2302,6 +2310,7 @@ class Database:
             end_month=end_month,
             subscription_uids=subscription_uids,
             source_kind=source_kind,
+            search_query=search_query,
             table_alias="folder_index",
             pair_mode=False,
         )
@@ -2351,6 +2360,7 @@ class Database:
         end_month: str | None = None,
         subscription_uids: list[str] | None = None,
         source_kind: str = "all",
+        search_query: str | None = None,
         page: int = 1,
         page_size: int = 24,
         sort_order: str = "desc",
@@ -2363,6 +2373,7 @@ class Database:
             end_month=end_month,
             subscription_uids=subscription_uids,
             source_kind=source_kind,
+            search_query=search_query,
             table_alias="pair_index",
             pair_mode=True,
         )
@@ -2490,6 +2501,7 @@ class Database:
         end_month: str | None,
         subscription_uids: list[str] | None,
         source_kind: str,
+        search_query: str | None,
         table_alias: str,
         pair_mode: bool,
     ) -> tuple[str, list[Any]]:
@@ -2530,6 +2542,19 @@ class Database:
             )
         elif category == "favorites":
             clauses.append(f"{column('is_favorite')} = 1")
+        terms = [term.strip().lower() for term in str(search_query or "").split() if term.strip()]
+        for term in terms:
+            like_value = f"%{term}%"
+            if pair_mode:
+                clauses.append(
+                    f"(lower({column('title')}) like ? or lower({column('folder_name')}) like ? or lower(coalesce({column('subscription_name')}, '')) like ?)"
+                )
+                params.extend([like_value, like_value, like_value])
+            else:
+                clauses.append(
+                    f"(lower({column('title')}) like ? or lower({column('text_prefix')}) like ? or lower({column('folder_name')}) like ? or lower(coalesce({column('subscription_name')}, '')) like ?)"
+                )
+                params.extend([like_value, like_value, like_value, like_value])
         return " and ".join(clauses), params
 
     def clear_content_data(self) -> None:

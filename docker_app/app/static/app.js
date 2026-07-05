@@ -4,6 +4,7 @@ function galleryApp() {
     category: "all",
     navItems: [
       { key: "all", label: "全部项目", short: "全", copy: "所有图片与动态内容" },
+      { key: "search", label: "搜索", short: "搜", copy: "按标题、正文、订阅源搜索" },
       { key: "favorites", label: "收藏", short: "藏", copy: "只看已收藏动态" },
       { key: "livephoto", label: "Live Photo", short: "动", copy: "只看可播放动态" },
     ],
@@ -11,10 +12,15 @@ function galleryApp() {
     sidebarCounts: {},
     sidebarCountUpdatedAt: {},
     subscriptions: [],
-    subscriptionPanel: ["up", "site"].includes(localStorage.getItem("subscription_panel"))
+    subscriptionPanel: ["overview", "up", "site"].includes(localStorage.getItem("subscription_panel"))
       ? localStorage.getItem("subscription_panel")
-      : "up",
+      : "overview",
+    subscriptionSearch: "",
+    subscriptionOverviewSort: localStorage.getItem("subscription_overview_sort") || "name",
+    subscriptionOverviewGroup: localStorage.getItem("subscription_overview_group") || "kind",
     selectedSubscriptionUids: [],
+    searchDraft: localStorage.getItem("gallery_search_query") || "",
+    searchQuery: localStorage.getItem("gallery_search_query") || "",
     sourceKind: ["all", "up", "site"].includes(localStorage.getItem("gallery_source_kind"))
       ? localStorage.getItem("gallery_source_kind")
       : "all",
@@ -23,6 +29,7 @@ function galleryApp() {
       { key: "up", label: "UP订阅" },
       { key: "site", label: "站点订阅" },
     ],
+    searchTags: ["九图", "Live Photo", "收藏", "站点", "COS", "写真", "视频", "转发"],
     gallery: { items: [], total: 0, page: 1, page_size: 24, total_pages: 1 },
     galleryLoading: false,
     galleryMinHeight: 0,
@@ -40,6 +47,7 @@ function galleryApp() {
     gallerySkeletonCount: 0,
     galleryCardQuality: {},
     galleryCardObserver: null,
+    gallerySmallObserver: null,
     galleryLoadObserver: null,
     galleryLoadTimer: null,
     galleryColumnCache: null,
@@ -108,6 +116,7 @@ function galleryApp() {
     siteSuggestion: null,
     siteSourceForm: {},
     newSiteSourceExpanded: false,
+    siteSourceFormExpanded: false,
     siteSourceExpanded: {},
     siteSourceDrafts: {},
     sitePreviewItemsById: {},
@@ -187,6 +196,7 @@ function galleryApp() {
     clearDataConfirmStep: 0,
     validateConfirmStep: 0,
     rebuildIndexConfirmStep: 0,
+    thumbnailRebuildConfirmLevel: null,
     resetIconsConfirmStep: 0,
     resetIconsRunning: false,
     fullReloadConfirmStep: 0,
@@ -508,6 +518,7 @@ function galleryApp() {
       if (this.currentView === "subscriptions") return "订阅管理";
       const subscription = this.activeSelectedSubscription();
       if (subscription) return subscription.uname || subscription.name || subscription.uid;
+      if (this.searchActive()) return this.searchQuery ? `搜索：${this.searchQuery}` : "搜索";
       if (this.currentView === "gallery" && this.sourceKind === "up") return "UP 订阅";
       if (this.currentView === "gallery" && this.sourceKind === "site") return "站点订阅";
       return this.activeCategory().label;
@@ -520,6 +531,7 @@ function galleryApp() {
       if (this.currentView === "subscriptions") return "统一管理 UP 主与站点订阅";
       const subscription = this.activeSelectedSubscription();
       if (subscription) return `只浏览 ${subscription.uname || subscription.name || subscription.uid} 的内容`;
+      if (this.searchActive()) return "搜索标题、正文、订阅源和文件夹名";
       return `${this.activeCategory().label}，按更像系统相册的方式浏览`;
     },
 
@@ -565,7 +577,33 @@ function galleryApp() {
       ];
     },
 
+    searchActive() {
+      return this.currentView === "gallery" && this.category === "search";
+    },
+
+    applySearch(query = this.searchDraft) {
+      this.searchDraft = String(query || "").trim();
+      this.searchQuery = this.searchDraft;
+      localStorage.setItem("gallery_search_query", this.searchQuery);
+      this.category = "search";
+      this.selectedSubscriptionUids = [];
+      this.closeViewer();
+      this.closeDetail();
+      this.scrollViewTop();
+      this.scheduleDeferredGalleryRefresh(true);
+    },
+
+    clearSearch() {
+      this.searchDraft = "";
+      this.searchQuery = "";
+      localStorage.removeItem("gallery_search_query");
+      this.scheduleDeferredGalleryRefresh(true);
+    },
+
     sidebarCount(key) {
+      if (key === "search") {
+        return this.searchQuery ? this.gallery.total || 0 : "";
+      }
       if (key in (this.sidebarCounts || {})) {
         return this.sidebarCounts[key] || 0;
       }
@@ -698,19 +736,19 @@ function galleryApp() {
 
     galleryQualityFor(item) {
       const key = this.galleryItemKey(item);
-      return key && this.galleryCardQuality[key] === "active" ? "active" : "tiny";
+      return key && this.galleryCardQuality[key] === "small" ? "small" : "tiny";
     },
 
     galleryTileUrl(tile, parentItem = null) {
-      const active = !parentItem || this.galleryQualityFor(parentItem) === "active";
-      if (active) {
+      const small = !parentItem || this.galleryQualityFor(parentItem) === "small";
+      if (small) {
         return tile?.small_thumb_url || tile?.tiny_thumb_url || tile?.cover_url || tile?.url || "";
       }
       return tile?.tiny_thumb_url || tile?.small_thumb_url || tile?.cover_url || tile?.url || "";
     },
 
     galleryPairImageUrl(item) {
-      if (this.galleryQualityFor(item) === "active") {
+      if (this.galleryQualityFor(item) === "small") {
         return item?.small_thumb_url || item?.tiny_thumb_url || "";
       }
       return item?.tiny_thumb_url || item?.small_thumb_url || "";
@@ -826,7 +864,7 @@ function galleryApp() {
     },
 
     setSubscriptionPanel(panel) {
-      if (!["up", "site"].includes(panel) || this.subscriptionPanel === panel) {
+      if (!["overview", "up", "site"].includes(panel) || this.subscriptionPanel === panel) {
         return;
       }
       this.subscriptionPanel = panel;
@@ -835,18 +873,104 @@ function galleryApp() {
       if (panel === "site") {
         this.refreshSites();
         this.refreshSidebarCounts(["sites", "subscriptions"]).catch(() => {});
+      } else if (panel === "overview") {
+        this.loadSubscriptions();
+        this.refreshSites();
+        this.refreshSidebarCounts(["sites", "subscriptions"]).catch(() => {});
       } else {
         this.loadSubscriptions();
         this.refreshSidebarCounts(["subscriptions"]).catch(() => {});
       }
     },
 
+    subscriptionPanelIndex() {
+      return ["overview", "up", "site"].indexOf(this.subscriptionPanel);
+    },
+
     subscriptionPanelIndicatorStyle() {
-      return `transform: translateX(${this.subscriptionPanel === "site" ? "100%" : "0"});`;
+      const index = Math.max(0, this.subscriptionPanelIndex());
+      return `width: calc(33.333% - 4px); transform: translateX(${index * 100}%);`;
     },
 
     isSitePanelActive() {
       return this.currentView === "subscriptions" && this.subscriptionPanel === "site";
+    },
+
+    setSubscriptionOverviewSort(value) {
+      this.subscriptionOverviewSort = value;
+      localStorage.setItem("subscription_overview_sort", value);
+    },
+
+    setSubscriptionOverviewGroup(value) {
+      this.subscriptionOverviewGroup = value;
+      localStorage.setItem("subscription_overview_group", value);
+    },
+
+    subscriptionOverviewItems() {
+      const query = String(this.subscriptionSearch || "").trim().toLowerCase();
+      const items = (this.subscriptions || []).filter((item) => {
+        if (!query) return true;
+        const haystack = [
+          item.uid,
+          item.uname,
+          item.name,
+          item.slug,
+          item.status,
+          item.is_site ? "站点" : "up",
+        ].join(" ").toLowerCase();
+        return haystack.includes(query);
+      });
+      const valueFor = (item, key) => {
+        if (key === "posts") return Number(item.folder_count || item.post_count || 0);
+        if (key === "assets") return Number(item.asset_count || item.image_count || 0);
+        return String(item.uname || item.name || item.uid || "").toLowerCase();
+      };
+      return [...items].sort((left, right) => {
+        const mode = this.subscriptionOverviewSort;
+        if (mode === "posts" || mode === "assets") {
+          return valueFor(right, mode) - valueFor(left, mode);
+        }
+        return String(valueFor(left, "name")).localeCompare(String(valueFor(right, "name")), "zh-Hans-CN");
+      });
+    },
+
+    subscriptionOverviewGroups() {
+      const items = this.subscriptionOverviewItems();
+      if (this.subscriptionOverviewGroup === "status") {
+        return [
+          { key: "active", title: "订阅中", items: items.filter((item) => item.status !== "paused") },
+          { key: "paused", title: "已暂停", items: items.filter((item) => item.status === "paused") },
+        ].filter((group) => group.items.length);
+      }
+      if (this.subscriptionOverviewGroup === "none") {
+        return [{ key: "all", title: "全部订阅", items }];
+      }
+      return [
+        { key: "up", title: "UP 主动态", items: items.filter((item) => !item.is_site) },
+        { key: "site", title: "站点订阅", items: items.filter((item) => item.is_site) },
+      ].filter((group) => group.items.length);
+    },
+
+    subscriptionOverviewCountText(item) {
+      const posts = Number(item.folder_count || item.post_count || 0);
+      const assets = Number(item.asset_count || item.image_count || 0);
+      return `${posts}贴 / ${assets}张`;
+    },
+
+    openSubscriptionOverviewItem(item) {
+      const isSite = !!item?.is_site;
+      this.subscriptionPanel = isSite ? "site" : "up";
+      localStorage.setItem("subscription_panel", this.subscriptionPanel);
+      if (isSite) {
+        const sourceId = item?.source_id || item?.id;
+        if (sourceId) {
+          this.siteSourceExpanded = { ...this.siteSourceExpanded, [String(sourceId)]: true };
+        }
+        this.refreshSites();
+      } else if (item?.uid) {
+        this.subscriptionExpanded = { ...this.subscriptionExpanded, [String(item.uid)]: true };
+      }
+      this.$nextTick(() => this.scrollViewTop());
     },
 
     subscriptionIconUrl(item) {
@@ -966,7 +1090,7 @@ function galleryApp() {
         this.gallerySkeletonCount = Math.max(4, Math.min(8, pageSize));
       }
       const params = new URLSearchParams({
-        category: this.category,
+        category: this.category === "search" ? "all" : this.category,
         view_mode: this.galleryViewMode,
         sort_order: this.sortOrder,
         page: String(page),
@@ -982,6 +1106,9 @@ function galleryApp() {
         params.set("subscription_uids", this.selectedSubscriptionUids.join(","));
       } else if (this.sourceKind !== "all") {
         params.set("source_kind", this.sourceKind);
+      }
+      if (this.category === "search" && this.searchQuery) {
+        params.set("search_query", this.searchQuery);
       }
       const localCacheKey = this.galleryLocalCacheKey(params);
       if (reset && page === 1) {
@@ -1267,13 +1394,16 @@ function galleryApp() {
       if (typeof IntersectionObserver === "undefined") {
         const quality = {};
         (this.gallery.items || []).forEach((item) => {
-          quality[this.galleryItemKey(item)] = "active";
+          quality[this.galleryItemKey(item)] = "small";
         });
         this.galleryCardQuality = quality;
         return;
       }
       if (this.galleryCardObserver) {
         this.galleryCardObserver.disconnect();
+      }
+      if (this.gallerySmallObserver) {
+        this.gallerySmallObserver.disconnect();
       }
       const nextQuality = { ...this.galleryCardQuality };
       this.galleryCardObserver = new IntersectionObserver((entries) => {
@@ -1283,18 +1413,33 @@ function galleryApp() {
           if (!key || entry.target.classList.contains("deleted-placeholder-card")) {
             return;
           }
-          updates[key] = entry.isIntersecting ? "active" : "tiny";
+          const current = this.galleryCardQuality[key];
+          updates[key] = entry.isIntersecting ? (current === "small" ? "small" : "tiny") : "tiny";
         });
         if (Object.keys(updates).length) {
           this.galleryCardQuality = { ...this.galleryCardQuality, ...updates };
         }
-      }, { root: null, rootMargin: "10% 0px", threshold: 0 });
+      }, { root: null, rootMargin: "300% 0px", threshold: 0 });
+      this.gallerySmallObserver = new IntersectionObserver((entries) => {
+        const updates = {};
+        entries.forEach((entry) => {
+          const key = entry.target.getAttribute("data-gallery-key");
+          if (!key || entry.target.classList.contains("deleted-placeholder-card")) {
+            return;
+          }
+          updates[key] = entry.isIntersecting ? "small" : "tiny";
+        });
+        if (Object.keys(updates).length) {
+          this.galleryCardQuality = { ...this.galleryCardQuality, ...updates };
+        }
+      }, { root: null, rootMargin: "110% 0px", threshold: 0 });
       document.querySelectorAll(".gallery-item-card[data-gallery-key]").forEach((element) => {
         const key = element.getAttribute("data-gallery-key");
         if (key && nextQuality[key] === undefined) {
           nextQuality[key] = "tiny";
         }
         this.galleryCardObserver.observe(element);
+        this.gallerySmallObserver.observe(element);
       });
       this.galleryCardQuality = nextQuality;
     },
@@ -1350,6 +1495,9 @@ function galleryApp() {
     openGallery(category) {
       this.currentView = "gallery";
       this.category = category;
+      if (category === "search" && this.searchDraft.trim() !== this.searchQuery) {
+        this.searchQuery = this.searchDraft.trim();
+      }
       this.selectedSubscriptionUids = [];
       this.queuedCancelConfirmId = null;
       this.closeSidebarDrawer();
@@ -1363,13 +1511,17 @@ function galleryApp() {
 
     openSubscriptions(panel = null) {
       this.currentView = "subscriptions";
-      if (["up", "site"].includes(panel)) {
+      if (["overview", "up", "site"].includes(panel)) {
         this.subscriptionPanel = panel;
         localStorage.setItem("subscription_panel", panel);
       }
       this.closeSidebarDrawer();
       this.scrollViewTop();
       if (this.subscriptionPanel === "site") {
+        this.refreshSites();
+        this.refreshSidebarCounts(["subscriptions", "sites"]).catch(() => {});
+      } else if (this.subscriptionPanel === "overview") {
+        this.loadSubscriptions();
         this.refreshSites();
         this.refreshSidebarCounts(["subscriptions", "sites"]).catch(() => {});
       } else {
@@ -1703,7 +1855,7 @@ function galleryApp() {
             promote_preview: false,
           }));
       }
-      return (previewFolder?.preview_tiles || []).map((tile, index) => ({
+      const tiles = (previewFolder?.preview_tiles || []).map((tile, index) => ({
         pair_index: Number(tile.pair_index) || index + 1,
         image: {
           ...tile,
@@ -1716,6 +1868,24 @@ function galleryApp() {
         display_ratio: this.assetRatio(tile),
         promote_preview: false,
       }));
+      const expectedCount = Math.max(
+        tiles.length,
+        Number(previewFolder?.image_count || previewFolder?.asset_count || 0) || 0,
+      );
+      for (let index = tiles.length; index < expectedCount; index += 1) {
+        tiles.push({
+          pair_index: index + 1,
+          image: null,
+          livephoto: null,
+          preview_url: "",
+          preview_kind: "placeholder",
+          complete: false,
+          display_ratio: "1 / 1",
+          promote_preview: false,
+          placeholder: true,
+        });
+      }
+      return tiles;
     },
 
     normalizeDetailPairs(pairs, promote = false) {
@@ -2022,7 +2192,9 @@ function galleryApp() {
         this.bodyLockPaddingRight = body.style.paddingRight || "";
         this.bodyLockStyles = {
           htmlOverflow: html.style.overflow || "",
+          htmlScrollbarGutter: html.style.scrollbarGutter || "",
           bodyOverflow: body.style.overflow || "",
+          bodyScrollbarGutter: body.style.scrollbarGutter || "",
           bodyPosition: body.style.position || "",
           bodyTop: body.style.top || "",
           bodyLeft: body.style.left || "",
@@ -2030,6 +2202,8 @@ function galleryApp() {
           bodyWidth: body.style.width || "",
           bodyPaddingRight: body.style.paddingRight || "",
         };
+        html.style.scrollbarGutter = "stable";
+        body.style.scrollbarGutter = "stable";
         html.style.overflow = "hidden";
         body.style.overflow = "hidden";
         return;
@@ -2041,7 +2215,9 @@ function galleryApp() {
       const previousStyles = this.bodyLockStyles || {};
       html.classList.add("scroll-restore-instant");
       html.style.overflow = previousStyles.htmlOverflow || "";
+      html.style.scrollbarGutter = previousStyles.htmlScrollbarGutter || "";
       body.style.overflow = previousStyles.bodyOverflow || "";
+      body.style.scrollbarGutter = previousStyles.bodyScrollbarGutter || "";
       body.style.position = previousStyles.bodyPosition || "";
       body.style.top = previousStyles.bodyTop || "";
       body.style.left = previousStyles.bodyLeft || "";
@@ -2895,14 +3071,7 @@ function galleryApp() {
         this.resetViewerTransform();
         return;
       }
-      const stage = event.currentTarget;
-      const stageRect = stage.getBoundingClientRect();
-      const offsetX = event.clientX - (stageRect.left + stageRect.width / 2);
-      const offsetY = event.clientY - (stageRect.top + stageRect.height / 2);
-      this.viewerZoom = 2;
-      this.viewerOffsetX = -offsetX * 0.8;
-      this.viewerOffsetY = -offsetY * 0.8;
-      this.viewerTransitionEnabled = true;
+      this.setViewerZoomLevel(2, event);
     },
 
     viewerShellClick(event) {
@@ -2916,29 +3085,64 @@ function galleryApp() {
     },
 
     viewerWheel(event) {
-      if (this.viewerZoom > 1 || this.viewerGesture.active || this.viewerGesture.isPinch) {
+      if (this.viewerGesture.active || this.viewerGesture.isPinch) {
         return;
       }
-      const dominantVertical = Math.abs(event.deltaY) > Math.abs(event.deltaX) * 1.2;
-      if (!dominantVertical) {
+      const dominantZoomAxis = Math.abs(event.deltaY) >= Math.abs(event.deltaX);
+      if (!dominantZoomAxis) {
         return;
       }
       event.preventDefault();
+      const threshold = event.ctrlKey || event.metaKey ? 8 : 80;
       this.viewerWheelOffset += event.deltaY;
-      this.viewerOffsetY = Math.max(-180, Math.min(180, this.viewerWheelOffset * 0.32));
       if (this.viewerWheelTimer) {
         window.clearTimeout(this.viewerWheelTimer);
       }
       this.viewerWheelTimer = window.setTimeout(() => {
         this.viewerWheelOffset = 0;
-        if (!this.viewer.open) {
-          return;
-        }
-        this.viewerOffsetY = 0;
-      }, 180);
-      if (Math.abs(this.viewerWheelOffset) > 260) {
-        this.closeViewer();
+      }, 120);
+      if (Math.abs(this.viewerWheelOffset) < threshold) {
+        return;
       }
+      const direction = this.viewerWheelOffset < 0 ? 1 : -1;
+      this.viewerWheelOffset = 0;
+      this.stepViewerZoom(direction, event);
+    },
+
+    viewerZoomSteps() {
+      return [1, 1.25, 1.5, 2, 3];
+    },
+
+    nearestViewerZoomStep(value) {
+      return this.viewerZoomSteps().reduce((closest, step) =>
+        Math.abs(step - value) < Math.abs(closest - value) ? step : closest,
+      1);
+    },
+
+    stepViewerZoom(direction, event = null) {
+      const steps = this.viewerZoomSteps();
+      const current = this.nearestViewerZoomStep(this.viewerZoom);
+      const currentIndex = steps.indexOf(current);
+      const nextIndex = Math.max(0, Math.min(steps.length - 1, currentIndex + (direction > 0 ? 1 : -1)));
+      this.setViewerZoomLevel(steps[nextIndex], event);
+    },
+
+    setViewerZoomLevel(nextZoom, event = null) {
+      const zoom = this.nearestViewerZoomStep(Math.max(1, Math.min(3, Number(nextZoom) || 1)));
+      this.viewerTransitionEnabled = true;
+      if (zoom <= 1) {
+        this.resetViewerTransform();
+        return;
+      }
+      const previousZoom = Math.max(1, Number(this.viewerZoom) || 1);
+      const stage = event?.currentTarget?.closest?.(".viewer-media") || event?.currentTarget;
+      const rect = stage?.getBoundingClientRect?.();
+      const anchorX = rect ? event.clientX - (rect.left + rect.width / 2) : 0;
+      const anchorY = rect ? event.clientY - (rect.top + rect.height / 2) : 0;
+      const ratio = zoom / previousZoom;
+      this.viewerZoom = zoom;
+      this.viewerOffsetX = (this.viewerOffsetX * ratio) - (anchorX * (ratio - 1));
+      this.viewerOffsetY = (this.viewerOffsetY * ratio) - (anchorY * (ratio - 1));
     },
 
     viewerPointerDown(event) {
@@ -2972,7 +3176,7 @@ function galleryApp() {
       const values = Object.values(this.viewerGesture.pointers);
       if (values.length === 2 && this.viewerGesture.startDistance > 0) {
         const distance = this.pointerDistance(values[0], values[1]);
-        const zoom = Math.max(1, Math.min(4, this.viewerGesture.startZoom * (distance / this.viewerGesture.startDistance)));
+        const zoom = Math.max(1, Math.min(3, this.viewerGesture.startZoom * (distance / this.viewerGesture.startDistance)));
         this.viewerZoom = zoom;
         if (zoom === 1) {
           this.viewerOffsetX = 0;
@@ -3018,10 +3222,10 @@ function galleryApp() {
       const deltaY = event.clientY - this.viewerGesture.startY;
       const absX = Math.abs(deltaX);
       const absY = Math.abs(deltaY);
-      if (this.viewerZoom === 1 && !wasPinch) {
-        if (absY > 180 && absY > absX * 1.2) {
-          this.closeViewer();
-        } else if (absX > 120 && absX > absY * 1.2) {
+      if (wasPinch) {
+        this.setViewerZoomLevel(this.viewerZoom, null);
+      } else if (this.viewerZoom === 1) {
+        if (absX > 120 && absX > absY * 1.2) {
           if (deltaX < 0) {
             this.showNextPair();
           } else {
@@ -4035,6 +4239,7 @@ function galleryApp() {
         this.api("/api/settings/storage-stats"),
       ]);
       this.settings = settings;
+      document.title = settings.app_title || document.title;
       this.galleryIndexStatus = health.gallery_index || {};
       this.storageStats = storageStats.stats || {};
       this.keywordText = (this.settings.ad_filter_keywords || []).join("\n");
@@ -4117,6 +4322,13 @@ function galleryApp() {
         site_proxy_host: String(settingsPayload.site_proxy_host || "127.0.0.1").trim() || "127.0.0.1",
         site_proxy_port: Math.max(1, Math.min(65535, Number(settingsPayload.site_proxy_port) || 7890)),
         review_source_open_mode: settingsPayload.review_source_open_mode === "popup" ? "popup" : "browser",
+        app_title: String(settingsPayload.app_title || "BiliGalleryRC").trim() || "BiliGalleryRC",
+        thumb_edge: Math.max(128, Math.min(2048, Number(settingsPayload.thumb_edge) || 576)),
+        thumb_quality: Math.max(1, Math.min(100, Number(settingsPayload.thumb_quality) || 68)),
+        small_thumb_edge: Math.max(64, Math.min(1024, Number(settingsPayload.small_thumb_edge) || 192)),
+        small_thumb_quality: Math.max(1, Math.min(100, Number(settingsPayload.small_thumb_quality) || 48)),
+        tiny_thumb_edge: Math.max(16, Math.min(512, Number(settingsPayload.tiny_thumb_edge) || 32)),
+        tiny_thumb_quality: Math.max(1, Math.min(100, Number(settingsPayload.tiny_thumb_quality) || 28)),
         ad_filter_keywords: this.keywordText
           .split("\n")
           .map((item) => item.trim())
@@ -4128,6 +4340,7 @@ function galleryApp() {
         body: JSON.stringify(payload),
       });
       this.settings = { ...savedSettings, auth: auth || this.settings.auth };
+      document.title = this.settings.app_title || document.title;
       await Promise.all([this.refreshMeta(), this.loadSettings()]);
       this.notify("success", "设置已保存", "新的拉取和过滤参数已经生效。");
     },
@@ -4177,6 +4390,25 @@ function galleryApp() {
       this.rebuildIndexConfirmStep = 0;
       await Promise.all([this.refreshStatus(), this.refreshTasks(), this.loadSettings()]);
       this.notify("info", "索引任务已提交", result.message);
+    },
+
+    askThumbnailRebuild(level) {
+      this.thumbnailRebuildConfirmLevel = level;
+    },
+
+    cancelThumbnailRebuild() {
+      this.thumbnailRebuildConfirmLevel = null;
+    },
+
+    async confirmThumbnailRebuild(level) {
+      if (this.thumbnailRebuildConfirmLevel !== level) {
+        return;
+      }
+      this.setImmediateTaskFeedback(`正在提交 ${level} 缩略图重建任务...`);
+      const result = await this.api(`/api/settings/rebuild-thumbnails/${encodeURIComponent(level)}`, { method: "POST" });
+      this.thumbnailRebuildConfirmLevel = null;
+      await Promise.all([this.refreshStatus(), this.refreshTasks(), this.loadSettings()]);
+      this.notify("info", "缩略图任务已提交", result.message);
     },
 
     resetIconsButtonLabel() {
@@ -4836,6 +5068,7 @@ function galleryApp() {
       };
       this.sitePreviewItems = [];
       this.siteSuggestion = null;
+      this.siteSourceFormExpanded = false;
     },
 
     siteSourceDraftFromSource(source) {
@@ -5174,6 +5407,7 @@ function galleryApp() {
         this.siteSourceForm = this.applySiteSourceSuggestion(this.siteSourceForm, suggestion);
         this.sitePreviewItems = suggestion.preview || [];
         this.siteSuggestion = suggestion;
+        this.siteSourceFormExpanded = true;
         this.notify("success", "自动填写完成", suggestion.message || "已生成站点解析参数。");
       } finally {
         this.siteSuggestLoading = false;

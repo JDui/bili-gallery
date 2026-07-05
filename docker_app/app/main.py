@@ -59,6 +59,7 @@ _icon_reset_lock = threading.Lock()
 async def lifespan(app: FastAPI):
     storage.ensure()
     db.init()
+    thumbnailer.apply_settings(db.get_settings())
     scheduler.start()
     pull_manager.start_startup_sync()
     try:
@@ -74,11 +75,12 @@ app.mount("/storage", StaticFiles(directory=str(config.storage_root), check_dir=
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
+    settings = db.get_settings()
     return templates.TemplateResponse(
         "index.html",
         {
             "request": request,
-            "app_title": APP_TITLE,
+            "app_title": settings.get("app_title") or APP_TITLE,
             "app_name": APP_NAME,
             "app_version": APP_VERSION,
         },
@@ -120,6 +122,7 @@ async def get_gallery_items(
     end_month: str | None = None,
     subscription_uids: str | None = None,
     source_kind: str = "all",
+    search_query: str | None = None,
     view_mode: str = "folder",
     sort_order: str = "desc",
     page: int = 1,
@@ -133,6 +136,7 @@ async def get_gallery_items(
         end_month=end_month,
         subscription_uids=[item for item in (subscription_uids or "").split(",") if item],
         source_kind=source_kind,
+        search_query=search_query,
         page=page,
         page_size=page_size,
         view_mode=view_mode,
@@ -952,6 +956,7 @@ async def get_settings() -> dict[str, Any]:
 async def update_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     payload = {key: value for key, value in payload.items() if key not in {"auth"}}
     settings = db.save_settings(payload)
+    thumbnailer.apply_settings(settings)
     scheduler.reload()
     return settings
 
@@ -994,6 +999,14 @@ async def validate_content() -> dict[str, Any]:
 async def rebuild_gallery_index() -> dict[str, Any]:
     try:
         return pull_manager.start_gallery_index_rebuild()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/settings/rebuild-thumbnails/{level}")
+async def rebuild_thumbnails(level: str) -> dict[str, Any]:
+    try:
+        return pull_manager.start_thumbnail_rebuild(level)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
