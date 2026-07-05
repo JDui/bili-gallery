@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import random
 from contextlib import contextmanager
@@ -11,7 +12,7 @@ from app.services.utils import dumps_json, loads_json, now_iso, safe_slug
 
 DEFAULT_SETTINGS = {
     "host_mid": 31968078,
-    "app_title": "BiliGalleryRC",
+    "app_title": os.environ.get("APP_TITLE", "BiliGalleryRC"),
     "pull_images": True,
     "image_min_count": 6,
     "pull_livephoto": True,

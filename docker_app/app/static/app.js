@@ -951,10 +951,14 @@ function galleryApp() {
       ].filter((group) => group.items.length);
     },
 
-    subscriptionOverviewCountText(item) {
+    subscriptionOverviewPostText(item) {
       const posts = Number(item.folder_count || item.post_count || 0);
+      return `${posts}贴`;
+    },
+
+    subscriptionOverviewImageText(item) {
       const assets = Number(item.asset_count || item.image_count || 0);
-      return `${posts}贴 / ${assets}张`;
+      return `${assets}张`;
     },
 
     openSubscriptionOverviewItem(item) {
@@ -1839,8 +1843,10 @@ function galleryApp() {
         return (this.gallery.items || [])
           .filter((item) => item.folder_name === folderName)
           .map((item) => ({
+            use_small_preview: this.galleryQualityFor(item) === "small",
             pair_index: Number(item.pair_index) || 0,
             image: item.image || {
+              tiny_thumb_url: item.tiny_thumb_url,
               small_thumb_url: item.small_thumb_url,
               thumb_url: item.thumb_url,
               url: item.preview_url,
@@ -1848,21 +1854,29 @@ function galleryApp() {
               height: item.height,
             },
             livephoto: item.livephoto || null,
-            preview_url: item.small_thumb_url || item.tiny_thumb_url || item.preview_url || item.thumb_url,
+            preview_url: this.galleryQualityFor(item) === "small"
+              ? (item.small_thumb_url || item.tiny_thumb_url || item.preview_url || item.thumb_url)
+              : (item.tiny_thumb_url || item.preview_url || item.thumb_url),
             preview_kind: item.preview_kind || (item.has_livephoto ? "paired" : "image"),
             complete: !!(item.has_images && item.has_livephoto),
             display_ratio: item.display_ratio || "1 / 1",
             promote_preview: false,
           }));
       }
+      const useSmall = previewFolder ? this.galleryQualityFor(previewFolder) === "small" : false;
       const tiles = (previewFolder?.preview_tiles || []).map((tile, index) => ({
+        use_small_preview: useSmall,
         pair_index: Number(tile.pair_index) || index + 1,
         image: {
           ...tile,
-          url: tile.small_thumb_url || tile.tiny_thumb_url || tile.url || tile.thumb_url,
+          url: useSmall
+            ? (tile.small_thumb_url || tile.tiny_thumb_url || tile.url || tile.thumb_url)
+            : (tile.tiny_thumb_url || tile.cover_url || tile.url || tile.thumb_url),
         },
         livephoto: null,
-        preview_url: tile.small_thumb_url || tile.tiny_thumb_url || tile.cover_url || tile.url || tile.thumb_url,
+        preview_url: useSmall
+          ? (tile.small_thumb_url || tile.tiny_thumb_url || tile.cover_url || tile.url || tile.thumb_url)
+          : (tile.tiny_thumb_url || tile.cover_url || tile.url || tile.thumb_url),
         preview_kind: "image",
         complete: false,
         display_ratio: this.assetRatio(tile),
@@ -1906,6 +1920,9 @@ function galleryApp() {
       const livephoto = pair?.livephoto || {};
       if (pair?.promote_preview) {
         return image.thumb_url || livephoto.thumb_url || image.small_thumb_url || livephoto.small_thumb_url || pair.preview_url || image.url || livephoto.cover_url || livephoto.url;
+      }
+      if (!pair?.use_small_preview) {
+        return image.tiny_thumb_url || livephoto.tiny_thumb_url || pair?.preview_url || image.thumb_url || livephoto.thumb_url || image.url || livephoto.cover_url || livephoto.url;
       }
       return image.small_thumb_url || livephoto.small_thumb_url || pair?.preview_url || image.thumb_url || livephoto.thumb_url || image.url || livephoto.cover_url || livephoto.url;
     },

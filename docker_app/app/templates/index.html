@@ -850,7 +850,7 @@
                     <div class="button-row">
                         <div class="segmented-pill subscription-segmented" role="tablist" aria-label="订阅页面切换">
                             <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
-                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')">概览</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')"><span class="tab-search-icon" aria-hidden="true"></span>概览</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
                         </div>
@@ -890,7 +890,8 @@
                                         </template>
                                     </span>
                                     <strong x-text="item.uname || item.name || item.uid"></strong>
-                                    <small x-text="subscriptionOverviewCountText(item)"></small>
+                                    <small x-text="subscriptionOverviewPostText(item)"></small>
+                                    <small x-text="subscriptionOverviewImageText(item)"></small>
                                 </button>
                             </template>
                         </div>
@@ -911,7 +912,7 @@
                     <div class="button-row">
                         <div class="segmented-pill subscription-segmented" role="tablist" aria-label="订阅页面切换">
                             <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
-                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')">概览</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')"><span class="tab-search-icon" aria-hidden="true"></span>概览</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
                         </div>
@@ -1007,7 +1008,7 @@
                     <div class="button-row">
                         <div class="segmented-pill subscription-segmented" role="tablist" aria-label="订阅页面切换">
                             <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
-                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')">概览</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')"><span class="tab-search-icon" aria-hidden="true"></span>概览</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
                             <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
                         </div>
