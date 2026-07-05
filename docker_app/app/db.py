@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import random
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -2312,16 +2313,22 @@ class Database:
                 conn.execute(f"select count(*) from folder_index where {where_sql}", params).fetchone()[0]
             )
             if random_order:
-                rows = conn.execute(
-                    f"""
-                    select *
-                    from folder_index
-                    where {where_sql}
-                    order by random()
-                    limit ?
-                    """,
-                    [*params, int(page_size)],
-                ).fetchall()
+                sample_size = min(int(page_size), total)
+                offsets = sorted(random.sample(range(total), sample_size)) if sample_size > 0 else []
+                rows = [
+                    conn.execute(
+                        f"""
+                        select *
+                        from folder_index
+                        where {where_sql}
+                        order by pub_ts desc, folder_name desc
+                        limit 1 offset ?
+                        """,
+                        [*params, int(sample_offset)],
+                    ).fetchone()
+                    for sample_offset in offsets
+                ]
+                rows = [row for row in rows if row is not None]
             else:
                 rows = conn.execute(
                     f"""
@@ -2367,16 +2374,22 @@ class Database:
                 conn.execute(f"select count(*) from pair_index where {where_sql}", params).fetchone()[0]
             )
             if random_order:
-                rows = conn.execute(
-                    f"""
-                    select *
-                    from pair_index
-                    where {where_sql}
-                    order by random()
-                    limit ?
-                    """,
-                    [*params, int(page_size)],
-                ).fetchall()
+                sample_size = min(int(page_size), total)
+                offsets = sorted(random.sample(range(total), sample_size)) if sample_size > 0 else []
+                rows = [
+                    conn.execute(
+                        f"""
+                        select *
+                        from pair_index
+                        where {where_sql}
+                        order by pub_ts desc, folder_name desc, pair_index asc
+                        limit 1 offset ?
+                        """,
+                        [*params, int(sample_offset)],
+                    ).fetchone()
+                    for sample_offset in offsets
+                ]
+                rows = [row for row in rows if row is not None]
             else:
                 rows = conn.execute(
                     f"""

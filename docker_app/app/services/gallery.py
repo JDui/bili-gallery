@@ -159,8 +159,7 @@ class GalleryService:
         return self.db.gallery_meta_from_index()
 
     def get_folder_detail(self, folder_name: str) -> dict | None:
-        folders = {folder["folder_name"]: folder for folder in self.db.list_folders()}
-        folder = folders.get(folder_name)
+        folder = self.db.get_folder(folder_name)
         if not folder:
             return None
         assets = self.db.list_assets_for_folder(folder_name)

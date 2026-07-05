@@ -106,7 +106,7 @@
         </aside>
 
         <main class="workspace">
-            <header class="topbar" :class="{ covered: detail.open || viewer.open || detailClosing || viewerClosing, compact: headerCompact }">
+            <header class="topbar" :class="{ compact: headerCompact }">
                 <div class="topbar-left">
                     <button class="icon-button" @click="toggleSidebar()" aria-label="切换边栏">
                         <span></span>
@@ -234,7 +234,8 @@
                                                 :data-gallery-key="galleryItemKey(item)"
                                                 :data-year-key="item.year_key"
                                                 :data-month-key="item.month_key"
-                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder }"
+                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder, 'is-appearing': item.__appearing }"
+                                                :style="item.__deleted_placeholder ? galleryPlaceholderStyle(item) : null"
                                                 @click="item.__deleted_placeholder ? null : openFolder(item.folder_name)"
                                                 >
                                                     <template x-if="item.__deleted_placeholder">
@@ -249,7 +250,7 @@
                                                     <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
                                                         <template x-for="tile in item.preview_tiles" :key="tile.id">
                                                             <div class="photo-collage-tile" :style="tileTinyStyle(tile)">
-                                                                <img loading="lazy" decoding="async" :src="tile.small_thumb_url || tile.thumb_url || tile.cover_url || tile.url" :alt="item.title" :width="tile.width || null" :height="tile.height || null">
+                                                                <img loading="lazy" decoding="async" :src="galleryTileUrl(tile, item)" :alt="item.title" :width="tile.width || null" :height="tile.height || null">
                                                             </div>
                                                         </template>
                                                     </div>
@@ -298,7 +299,8 @@
                                                 :data-gallery-key="galleryItemKey(item)"
                                                 :data-year-key="item.year_key"
                                                 :data-month-key="item.month_key"
-                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder }"
+                                                :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder, 'is-appearing': item.__appearing }"
+                                                :style="item.__deleted_placeholder ? galleryPlaceholderStyle(item) : null"
                                                 @click="item.__deleted_placeholder ? null : openGalleryPair(item)"
                                                 @mouseenter="item.has_livephoto ? startHoverPreview($event) : null"
                                                 @mouseleave="item.has_livephoto ? stopHoverPreview($event) : null"
@@ -315,14 +317,14 @@
                                                 <template x-if="!item.__deleted_placeholder">
                                                     <div>
                                                 <div class="photo-visual asset-visual" :style="assetVisualStyle(item)">
-                                                    <img class="hover-preview-image" loading="lazy" decoding="async" :src="item.small_thumb_url || item.thumb_url || item.preview_url" :alt="item.title" :width="item.width || null" :height="item.height || null">
+                                                    <img class="hover-preview-image" loading="lazy" decoding="async" :src="galleryPairImageUrl(item)" :alt="item.title" :width="item.width || null" :height="item.height || null">
                                                     <template x-if="item.has_livephoto">
                                                         <video
                                                             class="hover-preview-video hidden"
                                                             playsinline
                                                             muted
                                                             preload="none"
-                                                            :poster="item.small_thumb_url || item.thumb_url || item.preview_url"
+                                                            :poster="galleryPairImageUrl(item)"
                                                             :data-src="item.livephoto?.url"
                                                         ></video>
                                                     </template>
@@ -358,11 +360,25 @@
                                         </template>
                             </div>
                         </template>
+                        <template x-if="gallerySkeletonCount > 0">
+                            <div class="masonry gallery-skeleton-grid" :style="galleryMasonryStyle()">
+                                <template x-for="index in gallerySkeletonItems()" :key="`gallery-skeleton-${index}`">
+                                    <article class="photo-card gallery-skeleton-card" :style="gallerySkeletonStyle(index)">
+                                        <div class="skeleton-visual"></div>
+                                        <div class="skeleton-lines">
+                                            <span></span>
+                                            <span></span>
+                                            <span></span>
+                                        </div>
+                                    </article>
+                                </template>
+                            </div>
+                        </template>
                         <div class="empty-state" x-show="gallery.items.length === 0" x-cloak>
                             <strong>这里还没有内容</strong>
                             <p>可以先去设置页完成登录，然后执行一次拉取。</p>
                         </div>
-                        <div class="load-footer" x-show="gallery.items.length > 0 && !galleryLoadFinished() && !showRandomReloadButton()" x-cloak>
+                        <div class="load-footer" data-gallery-load-sentinel x-show="gallery.items.length > 0 && !galleryLoadFinished() && !showRandomReloadButton()" x-cloak>
                             <template x-if="autoLoadEnabled()">
                                 <div class="auto-loader">
                                     <strong x-text="loadingMore ? '正在自动加载更多内容...' : '滑到底部会自动继续加载'"></strong>

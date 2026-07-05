@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 from app.db import Database
+from app.services.sidecar import SidecarRunner
 from app.services.storage import StorageService
 from app.services.thumbnailer import ThumbnailService
 from app.services.utils import dumps_json, format_pub_time, loads_json, now_iso
@@ -22,6 +23,7 @@ class MediaIndexer:
         self.db = db
         self.storage = storage
         self.thumbnailer = thumbnailer
+        self.sidecar = SidecarRunner()
 
     def index_folder(
         self,
@@ -107,7 +109,7 @@ class MediaIndexer:
         self.db.mark_gallery_index_rebuilt()
 
     def refresh_gallery_index(self, folder_name: str) -> None:
-        folder = next((item for item in self.db.list_folders() if item["folder_name"] == folder_name), None)
+        folder = self.db.get_folder(folder_name)
         if not folder:
             return
         assets = self.db.list_assets_for_folder(folder_name)
@@ -143,9 +145,10 @@ class MediaIndexer:
         thumb_target = thumb_root / f"{source.stem}.webp"
         small_thumb_target = thumb_root / "small" / f"{source.stem}.webp"
         tiny_thumb_target = thumb_root / "tiny" / f"{source.stem}.webp"
-        self.thumbnailer.ensure_image_thumbnail(source, thumb_target)
-        self.thumbnailer.ensure_small_image_thumbnail(source, small_thumb_target)
-        self.thumbnailer.ensure_tiny_image_thumbnail(source, tiny_thumb_target)
+        if media_type != "image" or not self._derive_image_with_sidecar(source, thumb_target, small_thumb_target, tiny_thumb_target):
+            self.thumbnailer.ensure_image_thumbnail(source, thumb_target)
+            self.thumbnailer.ensure_small_image_thumbnail(source, small_thumb_target)
+            self.thumbnailer.ensure_tiny_image_thumbnail(source, tiny_thumb_target)
         return (
             self.storage.relative_to_storage(thumb_target) if thumb_target.exists() else None,
             self.storage.relative_to_storage(small_thumb_target) if small_thumb_target.exists() else None,
@@ -241,15 +244,27 @@ class MediaIndexer:
             small_thumb_path = folder_path / ".thumbs" / "small" / f"{file_path.stem}.webp"
             tiny_thumb_path = folder_path / ".thumbs" / "tiny" / f"{file_path.stem}.webp"
             width = height = None
-            try:
-                with Image.open(file_path) as image:
-                    width, height = image.size
-            except Exception:
-                width = height = None
+            sidecar_result = None
             if generate_derivatives:
-                self.thumbnailer.ensure_image_thumbnail(file_path, thumb_path)
-                self.thumbnailer.ensure_small_image_thumbnail(file_path, small_thumb_path)
-                self.thumbnailer.ensure_tiny_image_thumbnail(file_path, tiny_thumb_path)
+                sidecar_result = self.sidecar.derive_image(file_path, thumb_path, small_thumb_path, tiny_thumb_path)
+                if sidecar_result:
+                    width = sidecar_result.get("width")
+                    height = sidecar_result.get("height")
+                else:
+                    self.thumbnailer.ensure_image_thumbnail(file_path, thumb_path)
+                    self.thumbnailer.ensure_small_image_thumbnail(file_path, small_thumb_path)
+                    self.thumbnailer.ensure_tiny_image_thumbnail(file_path, tiny_thumb_path)
+            if width is None or height is None:
+                probe = self.sidecar.probe_image(file_path)
+                if probe:
+                    width = probe.get("width")
+                    height = probe.get("height")
+            if width is None or height is None:
+                try:
+                    with Image.open(file_path) as image:
+                        width, height = image.size
+                except Exception:
+                    width = height = None
             assets.append(
                 {
                     "pair_index": pair_index,
@@ -267,6 +282,10 @@ class MediaIndexer:
                 }
             )
         return assets
+
+    def _derive_image_with_sidecar(self, source: Path, thumb: Path, small: Path, tiny: Path) -> bool:
+        result = self.sidecar.derive_image(source, thumb, small, tiny)
+        return bool(result and thumb.exists() and small.exists() and tiny.exists())
 
     def _index_livephotos(
         self,
