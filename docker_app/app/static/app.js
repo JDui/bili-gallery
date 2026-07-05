@@ -25,7 +25,9 @@ function galleryApp() {
     ],
     gallery: { items: [], total: 0, page: 1, page_size: 24, total_pages: 1 },
     galleryLoading: false,
+    galleryMinHeight: 0,
     galleryViewMode: localStorage.getItem("gallery_view_mode") || "folder",
+    displayedGalleryViewMode: localStorage.getItem("gallery_view_mode") || "folder",
     sortOrder: localStorage.getItem("gallery_time_sort_mode") === "random"
       ? "random"
       : (localStorage.getItem("gallery_sort_order") || "desc"),
@@ -373,6 +375,31 @@ function galleryApp() {
       document.body.scrollTop = 0;
     },
 
+    measureGalleryMinHeight() {
+      const element = document.querySelector(".gallery-main");
+      if (!element) {
+        return 0;
+      }
+      return Math.max(0, Math.ceil(element.getBoundingClientRect().height || 0));
+    },
+
+    lockGalleryMinHeight() {
+      const measured = this.measureGalleryMinHeight();
+      if (measured > 0) {
+        this.galleryMinHeight = measured;
+      }
+    },
+
+    releaseGalleryMinHeight() {
+      window.setTimeout(() => {
+        this.galleryMinHeight = 0;
+      }, 120);
+    },
+
+    galleryMainStyle() {
+      return this.galleryMinHeight > 0 ? `min-height: ${this.galleryMinHeight}px;` : "";
+    },
+
     async api(url, options = {}) {
       const response = await fetch(url, {
         headers: { "Content-Type": "application/json" },
@@ -640,8 +667,8 @@ function galleryApp() {
 
     galleryItemTinyUrl(item) {
       const tiles = item?.preview_tiles || [];
-      const firstTile = tiles.find((tile) => tile?.tiny_thumb_url || tile?.small_thumb_url || tile?.thumb_url || tile?.cover_url || tile?.url) || {};
-      return firstTile.tiny_thumb_url || item?.tiny_thumb_url || firstTile.small_thumb_url || firstTile.thumb_url || firstTile.cover_url || firstTile.url || "";
+      const firstTile = tiles.find((tile) => tile?.tiny_thumb_url || tile?.small_thumb_url || tile?.cover_url || tile?.url) || {};
+      return firstTile.tiny_thumb_url || item?.tiny_thumb_url || firstTile.small_thumb_url || firstTile.cover_url || firstTile.url || "";
     },
 
     pairTinyUrl(pair) {
@@ -654,9 +681,6 @@ function galleryApp() {
         pair?.small_thumb_url ||
         image.small_thumb_url ||
         livephoto.small_thumb_url ||
-        pair?.preview_url ||
-        image.thumb_url ||
-        livephoto.thumb_url ||
         image.url ||
         livephoto.cover_url ||
         livephoto.url ||
@@ -669,7 +693,7 @@ function galleryApp() {
     },
 
     tileTinyStyle(tile) {
-      return this.tinyThumbBackground(tile?.tiny_thumb_url || tile?.small_thumb_url || tile?.thumb_url || tile?.cover_url || tile?.url);
+      return this.tinyThumbBackground(tile?.tiny_thumb_url || tile?.small_thumb_url || tile?.cover_url || tile?.url);
     },
 
     galleryQualityFor(item) {
@@ -680,16 +704,16 @@ function galleryApp() {
     galleryTileUrl(tile, parentItem = null) {
       const active = !parentItem || this.galleryQualityFor(parentItem) === "active";
       if (active) {
-        return tile?.small_thumb_url || tile?.thumb_url || tile?.cover_url || tile?.url || tile?.tiny_thumb_url || "";
+        return tile?.small_thumb_url || tile?.tiny_thumb_url || tile?.cover_url || tile?.url || "";
       }
-      return tile?.tiny_thumb_url || tile?.small_thumb_url || tile?.thumb_url || tile?.cover_url || tile?.url || "";
+      return tile?.tiny_thumb_url || tile?.small_thumb_url || tile?.cover_url || tile?.url || "";
     },
 
     galleryPairImageUrl(item) {
       if (this.galleryQualityFor(item) === "active") {
-        return item?.small_thumb_url || item?.thumb_url || item?.preview_url || item?.tiny_thumb_url || "";
+        return item?.small_thumb_url || item?.tiny_thumb_url || "";
       }
-      return item?.tiny_thumb_url || item?.small_thumb_url || item?.thumb_url || item?.preview_url || "";
+      return item?.tiny_thumb_url || item?.small_thumb_url || "";
     },
 
     assetVisualStyle(item) {
@@ -749,7 +773,7 @@ function galleryApp() {
       }
       this.closeViewer();
       this.closeDetail();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      this.scrollViewTop();
       this.scheduleDeferredGalleryRefresh(true);
     },
 
@@ -935,7 +959,8 @@ function galleryApp() {
       const pageSize = this.gallery.page_size || 24;
       const page = Math.max(1, Number(targetPage || (reset ? 1 : this.gallery.page) || 1));
       if (reset) {
-        this.gallerySkeletonCount = Math.max(8, Math.min(12, pageSize));
+        this.lockGalleryMinHeight();
+        this.gallerySkeletonCount = (this.gallery.items || []).length ? 0 : Math.max(8, Math.min(12, pageSize));
         this.gallery = { ...this.gallery, page: 1, page_size: pageSize, total_pages: 1 };
       } else if (direction === "next") {
         this.gallerySkeletonCount = Math.max(4, Math.min(8, pageSize));
@@ -984,6 +1009,9 @@ function galleryApp() {
       } finally {
         if (requestId === this.galleryRequestId) {
           this.galleryLoading = false;
+          if (reset) {
+            this.releaseGalleryMinHeight();
+          }
           if (!this.galleryBatchQueue.length) {
             this.gallerySkeletonCount = 0;
           }
@@ -1105,6 +1133,9 @@ function galleryApp() {
         total_pages: payload.total_pages || this.gallery.total_pages || 1,
         items: nextItems,
       };
+      if (direction !== "next") {
+        this.displayedGalleryViewMode = this.galleryViewMode;
+      }
       this.gallerySkeletonCount = remaining.length ? Math.min(8, remaining.length) : 0;
       this.$nextTick(() => {
         this.observeGalleryCards();
@@ -1222,7 +1253,7 @@ function galleryApp() {
     },
 
     gallerySkeletonStyle(index) {
-      const ratios = this.galleryViewMode === "pair" ? ["1 / 1", "4 / 5", "3 / 4"] : ["4 / 5", "1 / 1", "5 / 4"];
+      const ratios = this.displayedGalleryViewMode === "pair" ? ["1 / 1", "4 / 5", "3 / 4"] : ["4 / 5", "1 / 1", "5 / 4"];
       return `aspect-ratio: ${ratios[(Number(index) - 1) % ratios.length]};`;
     },
 
@@ -1427,7 +1458,7 @@ function galleryApp() {
       this.closeViewer();
       this.closeDetail();
       this.timeFilterOpen = false;
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      this.scrollViewTop();
       this.galleryColumnCache = null;
       this.scheduleDeferredGalleryRefresh(true);
     },
@@ -1442,7 +1473,7 @@ function galleryApp() {
       localStorage.setItem("gallery_sort_order", order);
       this.closeViewer();
       this.closeDetail();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      this.scrollViewTop();
       this.scheduleDeferredGalleryRefresh(true);
     },
 
@@ -1665,7 +1696,7 @@ function galleryApp() {
               height: item.height,
             },
             livephoto: item.livephoto || null,
-            preview_url: item.small_thumb_url || item.thumb_url || item.preview_url,
+            preview_url: item.small_thumb_url || item.tiny_thumb_url || item.preview_url || item.thumb_url,
             preview_kind: item.preview_kind || (item.has_livephoto ? "paired" : "image"),
             complete: !!(item.has_images && item.has_livephoto),
             display_ratio: item.display_ratio || "1 / 1",
@@ -1676,10 +1707,10 @@ function galleryApp() {
         pair_index: Number(tile.pair_index) || index + 1,
         image: {
           ...tile,
-          url: tile.url || tile.thumb_url || tile.small_thumb_url,
+          url: tile.small_thumb_url || tile.tiny_thumb_url || tile.url || tile.thumb_url,
         },
         livephoto: null,
-        preview_url: tile.small_thumb_url || tile.thumb_url || tile.cover_url || tile.url,
+        preview_url: tile.small_thumb_url || tile.tiny_thumb_url || tile.cover_url || tile.url || tile.thumb_url,
         preview_kind: "image",
         complete: false,
         display_ratio: this.assetRatio(tile),
@@ -1987,7 +2018,6 @@ function galleryApp() {
           return;
         }
         const scrollTop = window.scrollY || window.pageYOffset || 0;
-        const scrollbarWidth = Math.max(window.innerWidth - html.clientWidth, 0);
         this.bodyLockTop = scrollTop;
         this.bodyLockPaddingRight = body.style.paddingRight || "";
         this.bodyLockStyles = {
@@ -2002,9 +2032,6 @@ function galleryApp() {
         };
         html.style.overflow = "hidden";
         body.style.overflow = "hidden";
-        if (scrollbarWidth) {
-          body.style.paddingRight = `${scrollbarWidth}px`;
-        }
         return;
       }
       if (this.bodyLockTop === null) {
@@ -2440,7 +2467,7 @@ function galleryApp() {
       this.timeFilterApplied = applyingFullRange
         ? { startMonth: null, endMonth: null }
         : { startMonth, endMonth };
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      this.scrollViewTop();
       this.scheduleDeferredGalleryRefresh(true);
     },
 
@@ -2451,7 +2478,7 @@ function galleryApp() {
       }
       this.timeFilterApplied = { startMonth: null, endMonth: null };
       this.timeFilterDraft = { startIndex: 0, endIndex: months.length - 1 };
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      this.scrollViewTop();
       this.scheduleDeferredGalleryRefresh(true);
     },
 
@@ -3391,6 +3418,10 @@ function galleryApp() {
       return `${folderName}::${pairIndex}`;
     },
 
+    pairPlaceholderKey(folderName, pairIndex) {
+      return `${folderName}:${pairIndex}`;
+    },
+
     pairDeletePending(folderName, pairIndex) {
       return this.deletePairConfirmKey === this.pairDeleteKey(folderName, pairIndex) && this.deletePairConfirmStep >= 1;
     },
@@ -3488,7 +3519,7 @@ function galleryApp() {
         this.cacheDetailPayload(folderName, this.detail);
       }
       if (this.galleryViewMode === "pair") {
-        this.removePairFromGallery(folderName, pairIndex);
+        this.removePairFromGallery(folderName, pairIndex, { placeholder: true });
       }
       if (this.detail.folder?.folder_name !== folderName) {
         this.removeCachedDetailPair(folderName, pairIndex);
@@ -3523,6 +3554,11 @@ function galleryApp() {
         ]);
         this.notify("success", "已删除", result.message);
       } catch (error) {
+        const placeholderKey = this.pairPlaceholderKey(folderName, pairIndex);
+        if (this.deletedGalleryTimers[placeholderKey]) {
+          window.clearTimeout(this.deletedGalleryTimers[placeholderKey]);
+          delete this.deletedGalleryTimers[placeholderKey];
+        }
         this.detail = previousDetail;
         if (previousCache) {
           this.cacheDetailPayload(folderName, previousCache);
@@ -4447,13 +4483,15 @@ function galleryApp() {
       });
     },
 
-    galleryDeletedPlaceholder(folderName, sourceItem, sourceRect = null) {
+    galleryDeletedPlaceholder(folderName, sourceItem, sourceRect = null, placeholderKey = folderName) {
       const ratio = sourceItem?.display_ratio || "4 / 5";
       return {
         __deleted_placeholder: true,
         __placeholder_id: `${folderName}:${Date.now()}`,
-        item_key: `deleted:${folderName}:${Date.now()}`,
+        __placeholder_key: placeholderKey,
+        item_key: `deleted:${placeholderKey}:${Date.now()}`,
         folder_name: folderName,
+        pair_index: sourceItem?.pair_index || null,
         title: sourceItem?.title || folderName,
         display_ratio: ratio,
         __placeholder_height: sourceRect?.height || null,
@@ -4465,18 +4503,18 @@ function galleryApp() {
       };
     },
 
-    removeDeletedPlaceholder(folderName) {
+    removeDeletedPlaceholder(placeholderKey) {
       this.animateGalleryReflow(() => {
         this.gallery = {
           ...this.gallery,
           items: (this.gallery.items || []).filter(
-            (item) => !(item.__deleted_placeholder && item.folder_name === folderName),
+            (item) => !(item.__deleted_placeholder && (item.__placeholder_key || item.folder_name) === placeholderKey),
           ),
         };
       });
-      if (this.deletedGalleryTimers[folderName]) {
-        window.clearTimeout(this.deletedGalleryTimers[folderName]);
-        delete this.deletedGalleryTimers[folderName];
+      if (this.deletedGalleryTimers[placeholderKey]) {
+        window.clearTimeout(this.deletedGalleryTimers[placeholderKey]);
+        delete this.deletedGalleryTimers[placeholderKey];
       }
     },
 
@@ -4604,19 +4642,35 @@ function galleryApp() {
       }
     },
 
-    removePairFromGallery(folderName, pairIndex) {
-      const nextItems = (this.gallery.items || []).filter(
+    removePairFromGallery(folderName, pairIndex, options = {}) {
+      const currentItems = this.gallery.items || [];
+      const firstIndex = currentItems.findIndex(
+        (item) => item.folder_name === folderName && Number(item.pair_index) === Number(pairIndex) && !item.__deleted_placeholder,
+      );
+      const sourceItem = firstIndex >= 0 ? currentItems[firstIndex] : null;
+      const sourceRect = sourceItem ? this.galleryCardRectFor(sourceItem) : null;
+      const nextItems = currentItems.filter(
         (item) => !(item.folder_name === folderName && Number(item.pair_index) === Number(pairIndex)),
       );
-      const removedCount = (this.gallery.items || []).length - nextItems.length;
+      const removedCount = currentItems.length - nextItems.length;
       if (removedCount <= 0) {
         return;
+      }
+      const placeholderKey = this.pairPlaceholderKey(folderName, pairIndex);
+      if (options.placeholder && firstIndex >= 0) {
+        nextItems.splice(firstIndex, 0, this.galleryDeletedPlaceholder(folderName, sourceItem, sourceRect, placeholderKey));
       }
       this.gallery = {
         ...this.gallery,
         items: nextItems,
         total: Math.max(0, (this.gallery.total || 0) - removedCount),
       };
+      if (options.placeholder) {
+        if (this.deletedGalleryTimers[placeholderKey]) {
+          window.clearTimeout(this.deletedGalleryTimers[placeholderKey]);
+        }
+        this.deletedGalleryTimers[placeholderKey] = window.setTimeout(() => this.removeDeletedPlaceholder(placeholderKey), 1500);
+      }
     },
 
     replaceSubscriptionLocally(uid, mapper) {

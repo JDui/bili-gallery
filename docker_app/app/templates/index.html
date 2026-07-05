@@ -148,7 +148,7 @@
                 </div>
             </header>
 
-            <section class="gallery-stage" data-testid="section-gallery" x-show="currentView === 'gallery'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-ref="galleryStage">
+            <section class="gallery-stage" data-testid="section-gallery" x-show="currentView === 'gallery'" x-ref="galleryStage">
                 <div class="section-heading gallery-heading">
                     <div class="section-heading-spacer"></div>
                     <div class="button-row gallery-toolbar">
@@ -224,8 +224,8 @@
                     </div>
                 </section>
                 <div class="gallery-layout">
-                    <div class="gallery-main" :class="{ 'is-loading': galleryLoading }" :key="galleryRenderKey">
-                        <template x-if="galleryViewMode === 'folder'">
+                    <div class="gallery-main" :class="{ 'is-loading': galleryLoading }" :style="galleryMainStyle()" :key="galleryRenderKey">
+                        <template x-if="displayedGalleryViewMode === 'folder'">
                             <div class="masonry gallery-page" :style="galleryMasonryStyle()">
                                 <template x-for="item in gallery.items" :key="galleryItemKey(item)">
                                             <article
@@ -291,7 +291,7 @@
                                         </template>
                             </div>
                         </template>
-                        <template x-if="galleryViewMode === 'pair'">
+                        <template x-if="displayedGalleryViewMode === 'pair'">
                             <div class="masonry asset-masonry gallery-page" :style="galleryMasonryStyle()">
                                 <template x-for="item in gallery.items" :key="galleryItemKey(item)">
                                             <article
@@ -400,7 +400,7 @@
                     </div>
             </section>
 
-            <section class="panel-view" data-testid="section-review" x-show="currentView === 'review'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
+            <section class="panel-view" data-testid="section-review" x-show="currentView === 'review'" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>审核中心</p>
@@ -432,7 +432,7 @@
                 </div>
             </section>
 
-            <section class="panel-view" data-testid="section-logs" x-show="currentView === 'logs'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
+            <section class="panel-view" data-testid="section-logs" x-show="currentView === 'logs'" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>过滤记录</p>
@@ -469,7 +469,7 @@
                 </div>
             </section>
 
-            <section class="panel-view" data-testid="section-tasks" x-show="currentView === 'tasks'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
+            <section class="panel-view" data-testid="section-tasks" x-show="currentView === 'tasks'" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>任务中心</p>
@@ -563,7 +563,7 @@
                 </template>
             </section>
 
-            <section class="panel-view" data-testid="section-trash" x-show="currentView === 'trash'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
+            <section class="panel-view" data-testid="section-trash" x-show="currentView === 'trash'" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>内容回收站</p>
@@ -625,7 +625,7 @@
                 </div>
             </section>
 
-            <section class="panel-view settings-pane" data-testid="section-settings" x-show="currentView === 'settings'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
+            <section class="panel-view settings-pane" data-testid="section-settings" x-show="currentView === 'settings'" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>同步与账号</p>
@@ -789,7 +789,7 @@
                 </div>
             </section>
 
-            <section class="panel-view" data-testid="section-subscriptions" x-show="currentView === 'subscriptions' && subscriptionPanel === 'up'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
+            <section class="panel-view" data-testid="section-subscriptions" x-show="currentView === 'subscriptions' && subscriptionPanel === 'up'" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>订阅中心</p>
@@ -884,7 +884,7 @@
                 </div>
             </section>
 
-            <section class="panel-view site-pane" data-testid="section-sites" x-show="currentView === 'subscriptions' && subscriptionPanel === 'site'" x-transition:enter="view-enter" x-transition:enter-start="view-enter-start" x-transition:enter-end="view-enter-end" x-transition:leave="view-leave" x-transition:leave-start="view-leave-start" x-transition:leave-end="view-leave-end" x-cloak>
+            <section class="panel-view site-pane" data-testid="section-sites" x-show="currentView === 'subscriptions' && subscriptionPanel === 'site'" x-cloak>
                 <div class="section-heading">
                     <div>
                         <p>订阅中心</p>

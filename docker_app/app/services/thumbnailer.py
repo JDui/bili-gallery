@@ -18,8 +18,8 @@ class ThumbnailService:
     def __init__(
         self,
         thumb_size: tuple[int, int] = (576, 576),
-        small_thumb_size: tuple[int, int] = (258, 258),
-        tiny_thumb_size: tuple[int, int] = (9, 9),
+        small_thumb_size: tuple[int, int] = (192, 192),
+        tiny_thumb_size: tuple[int, int] = (32, 32),
     ) -> None:
         self.thumb_size = thumb_size
         self.small_thumb_size = small_thumb_size
@@ -54,7 +54,7 @@ class ThumbnailService:
         return True
 
     def ensure_small_image_thumbnail(self, source: Path, target: Path) -> bool:
-        return self.ensure_image_thumbnail(source, target, size=self.small_thumb_size, quality=42)
+        return self.ensure_image_thumbnail(source, target, size=self.small_thumb_size, quality=48)
 
     def ensure_tiny_image_thumbnail(self, source: Path, target: Path) -> bool:
         try:

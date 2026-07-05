@@ -385,7 +385,7 @@ def test_new_databases_keep_site_scheduler_disabled_by_default(tmp_path: Path) -
     assert settings["site_scheduler_interval_hours"] == DEFAULT_SETTINGS["site_scheduler_interval_hours"]
 
 
-def test_gallery_thumbnails_use_576_258_and_9p_short_edge_and_rebuild_cleans_old_derivatives(tmp_path: Path) -> None:
+def test_gallery_thumbnails_use_576_192_and_32p_short_edge_and_rebuild_cleans_old_derivatives(tmp_path: Path) -> None:
     db, storage, _syncer = make_app(tmp_path)
     image_folder = storage.image_folder("thumb-demo")
     image_folder.mkdir(parents=True, exist_ok=True)
@@ -394,7 +394,7 @@ def test_gallery_thumbnails_use_576_258_and_9p_short_edge_and_rebuild_cleans_old
     indexer.index_folder("thumb-demo", 1, "Thumb Demo", "", "top", "source")
     old_marker = image_folder / ".thumbs" / "old-720.webp"
     old_small_marker = image_folder / ".thumbs" / "small" / "old-360.webp"
-    old_tiny_marker = image_folder / ".thumbs" / "tiny" / "old-9p.webp"
+    old_tiny_marker = image_folder / ".thumbs" / "tiny" / "old-32p.webp"
     old_marker.write_bytes(b"old")
     old_small_marker.write_bytes(b"old")
     old_tiny_marker.write_bytes(b"old")
@@ -411,9 +411,9 @@ def test_gallery_thumbnails_use_576_258_and_9p_short_edge_and_rebuild_cleans_old
     with Image.open(thumb) as image:
         assert min(image.size) == 576
     with Image.open(small) as image:
-        assert min(image.size) == 258
+        assert min(image.size) == 192
     with Image.open(tiny) as image:
-        assert min(image.size) == 9
+        assert min(image.size) == 32
     Image.new("RGB", (640, 480), (20, 20, 180)).save(thumb, format="WEBP")
     Image.new("RGB", (320, 240), (20, 20, 180)).save(small, format="WEBP")
     Image.new("RGB", (18, 12), (20, 20, 180)).save(tiny, format="WEBP")
@@ -421,9 +421,9 @@ def test_gallery_thumbnails_use_576_258_and_9p_short_edge_and_rebuild_cleans_old
     with Image.open(thumb) as image:
         assert min(image.size) == 576
     with Image.open(small) as image:
-        assert min(image.size) == 258
+        assert min(image.size) == 192
     with Image.open(tiny) as image:
-        assert min(image.size) == 9
+        assert min(image.size) == 32
     detail = GalleryService(db, storage).get_folder_detail("thumb-demo")
     assert "/.thumbs/small/" in detail["pairs"][0]["preview_url"]
     assert "/.thumbs/tiny/" in detail["pairs"][0]["image"]["tiny_thumb_url"]
@@ -1942,7 +1942,7 @@ def test_site_icon_refresh_caches_remote_icon_in_local_storage(tmp_path: Path, m
     assert item["icon_tiny_url"] == f"/storage/data/avatars/sites/tiny/{source['id']}.webp"
     assert cached_icon.read_bytes() == icon_bytes
     with Image.open(tiny_icon) as image:
-        assert min(image.size) == 9
+        assert min(image.size) == 32
     assert not stale_icon.exists()
     assert sessions[0].calls[0]["url"] == remote_icon_url
     assert sessions[0].calls[0]["stream"] is True
@@ -2142,7 +2142,7 @@ def test_subscription_avatar_cache_uses_local_storage(tmp_path: Path, monkeypatc
     assert tiny_url == "/storage/data/avatars/up/tiny/123.webp"
     assert (storage.config.data_dir / "avatars" / "up" / "123.jpg").read_bytes() == avatar_bytes
     with Image.open(storage.config.data_dir / "avatars" / "up" / "tiny" / "123.webp") as image:
-        assert min(image.size) == 9
+        assert min(image.size) == 32
 
 
 def test_subscription_avatar_cache_accepts_dynamic_avatar(tmp_path: Path, monkeypatch) -> None:

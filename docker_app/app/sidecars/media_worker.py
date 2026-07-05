@@ -44,8 +44,8 @@ def derive_image(args: argparse.Namespace) -> None:
         normalized = ImageOps.exif_transpose(image).convert("RGB")
         width, height = normalized.size
         save_webp(normalized, thumb, 576, 68)
-        save_webp(normalized, small, 258, 42)
-        save_webp(normalized, tiny, 9, 28)
+        save_webp(normalized, small, 192, 48)
+        save_webp(normalized, tiny, 32, 28)
     print_json(
         {
             "ok": True,

@@ -56,8 +56,8 @@ fn run() -> Result<()> {
             let image = image::open(&source).with_context(|| format!("open image {}", source.display()))?;
             let (width, height) = image.dimensions();
             write_resized_webp(&image, &thumb, 576)?;
-            write_resized_webp(&image, &small, 258)?;
-            write_resized_webp(&image, &tiny, 9)?;
+            write_resized_webp(&image, &small, 192)?;
+            write_resized_webp(&image, &tiny, 32)?;
             print_json(&ImageResult {
                 ok: true,
                 source: source.display().to_string(),

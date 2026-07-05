@@ -287,14 +287,12 @@ class GalleryService:
             "small_thumb_url": (
                 (image or {}).get("small_thumb_url")
                 or (livephoto or {}).get("small_thumb_url")
-                or item.get("thumb_url")
             ),
             "tiny_thumb_url": (
                 (image or {}).get("tiny_thumb_url")
                 or (livephoto or {}).get("tiny_thumb_url")
                 or (image or {}).get("small_thumb_url")
                 or (livephoto or {}).get("small_thumb_url")
-                or item.get("thumb_url")
             ),
             "image": image,
             "livephoto": livephoto,
@@ -465,8 +463,8 @@ class GalleryService:
                         "preview_url": pair.get("preview_url"),
                         "preview_kind": pair.get("preview_kind"),
                         "thumb_url": preview.get("thumb_url") or preview.get("cover_url") or preview.get("url"),
-                        "small_thumb_url": preview.get("small_thumb_url") or preview.get("thumb_url") or preview.get("cover_url") or preview.get("url"),
-                        "tiny_thumb_url": preview.get("tiny_thumb_url") or preview.get("small_thumb_url") or preview.get("thumb_url") or preview.get("cover_url") or preview.get("url"),
+                        "small_thumb_url": preview.get("small_thumb_url"),
+                        "tiny_thumb_url": preview.get("tiny_thumb_url") or preview.get("small_thumb_url"),
                         "image": pair.get("image"),
                         "livephoto": pair.get("livephoto"),
                         "display_ratio": pair.get("display_ratio"),
