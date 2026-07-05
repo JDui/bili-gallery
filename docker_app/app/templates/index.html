@@ -55,7 +55,7 @@
                         <button class="sidebar-link" :class="{ active: currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid }" :title="item.uname || item.uid" @click="selectSubscription(item.uid)">
                             <span class="link-badge subscription-link-badge" :class="{ image: subscriptionIconUrl(item) }" :style="subscriptionIconTinyStyle(item)">
                                 <template x-if="subscriptionIconUrl(item)">
-                                    <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
+                                    <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @load="fadeLoadedImage($event)" @error="handleSubscriptionIconError(item)">
                                 </template>
                                 <template x-if="!subscriptionIconUrl(item)">
                                     <span x-text="subscriptionBadgeText(item)"></span>
@@ -149,7 +149,7 @@
             </header>
 
             <section class="gallery-stage" data-testid="section-gallery" x-show="currentView === 'gallery'" x-ref="galleryStage">
-                <div class="section-heading gallery-heading">
+                <div class="section-heading gallery-heading" x-show="!searchActive() || searchQuery" x-cloak>
                     <div class="section-heading-spacer"></div>
                     <div class="button-row gallery-toolbar">
                         <label class="range-chip density-chip">
@@ -168,19 +168,19 @@
                         </label>
                     </div>
                 </div>
-                <section class="search-panel" x-show="searchActive()" x-cloak>
-                    <label class="search-field">
-                        <span>搜索</span>
-                        <input type="search" x-model="searchDraft" @keydown.enter.prevent="applySearch()" placeholder="输入标题、正文、订阅源或文件夹名">
-                    </label>
-                    <div class="search-tag-row">
+                <section class="search-panel search-landing" x-show="searchActive()" x-cloak>
+                    <form class="search-engine-form" @submit.prevent="applySearch()">
+                        <label class="search-engine-field">
+                            <span class="search-glyph" aria-hidden="true"></span>
+                            <input type="search" x-model="searchDraft" placeholder="搜索标题、正文、订阅源或文件夹名" autocomplete="off">
+                            <button type="button" class="search-clear-button" x-show="searchDraft || searchQuery" @click="clearSearch()" aria-label="清空搜索">×</button>
+                        </label>
+                        <button class="primary-button search-submit-button" type="submit">搜索</button>
+                    </form>
+                    <div class="search-tag-row search-tab-row">
                         <template x-for="tag in searchTags" :key="tag">
-                            <button class="chip-button subtle" :class="{ active: searchQuery === tag }" @click="applySearch(tag)" x-text="tag"></button>
+                            <button class="chip-button subtle search-tab" :class="{ active: searchQuery === tag }" @click="applySearch(tag)" x-text="tag"></button>
                         </template>
-                    </div>
-                    <div class="button-row">
-                        <button class="primary-button" @click="applySearch()">搜索</button>
-                        <button class="secondary-button" @click="clearSearch()">清空</button>
                     </div>
                 </section>
                 <section class="time-filter-panel" x-show="timeFilterOpen" x-cloak>
@@ -238,7 +238,7 @@
                         </div>
                     </div>
                 </section>
-                <div class="gallery-layout">
+                <div class="gallery-layout" x-show="!searchActive() || searchQuery" x-cloak>
                     <div class="gallery-main" :class="{ 'is-loading': galleryLoading }" :style="galleryMainStyle()" :key="galleryRenderKey">
                         <template x-if="displayedGalleryViewMode === 'folder'">
                             <div class="masonry gallery-page" :style="galleryMasonryStyle()">
@@ -265,7 +265,7 @@
                                                     <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
                                                         <template x-for="tile in item.preview_tiles" :key="tile.id">
                                                             <div class="photo-collage-tile" :style="tileTinyStyle(tile)">
-                                                                <img :loading="galleryQualityFor(item) === 'small' ? 'eager' : 'lazy'" decoding="async" :src="galleryTileUrl(tile, item)" :alt="item.title" :width="tile.width || null" :height="tile.height || null">
+                                                                <img :loading="galleryQualityFor(item) === 'small' ? 'eager' : 'lazy'" decoding="async" :src="galleryTileUrl(tile, item)" :alt="item.title" :width="tile.width || null" :height="tile.height || null" @load="fadeLoadedImage($event)">
                                                             </div>
                                                         </template>
                                                     </div>
@@ -331,7 +331,7 @@
                                                 <template x-if="!item.__deleted_placeholder">
                                                     <div>
                                                 <div class="photo-visual asset-visual" :style="assetVisualStyle(item)">
-                                                    <img class="hover-preview-image" :loading="galleryQualityFor(item) === 'small' ? 'eager' : 'lazy'" decoding="async" :src="galleryPairImageUrl(item)" :alt="item.title" :width="item.width || null" :height="item.height || null">
+                                                    <img class="hover-preview-image" :loading="galleryQualityFor(item) === 'small' ? 'eager' : 'lazy'" decoding="async" :src="galleryPairImageUrl(item)" :alt="item.title" :width="item.width || null" :height="item.height || null" @load="fadeLoadedImage($event)">
                                                     <template x-if="item.has_livephoto">
                                                         <video
                                                             class="hover-preview-video hidden"
@@ -591,7 +591,7 @@
                             <div class="panel-card-main subscription-card-main">
                                 <span class="link-badge subscription-link-badge trash-group-icon" :class="{ image: trashGroupIconUrl(group) }">
                                     <template x-if="trashGroupIconUrl(group)">
-                                        <img :src="trashGroupIconUrl(group)" :alt="group.name" loading="lazy" decoding="async">
+                                        <img :src="trashGroupIconUrl(group)" :alt="group.name" loading="lazy" decoding="async" @load="fadeLoadedImage($event)">
                                     </template>
                                     <template x-if="!trashGroupIconUrl(group)">
                                         <span x-text="group.is_site ? '站' : 'UP'"></span>
@@ -765,7 +765,7 @@
                             <button class="secondary-button" @click="logout()">退出登录</button>
                         </div>
                         <div class="qr-box" x-show="qr.image_data_url" x-cloak>
-                            <img :src="qr.image_data_url" alt="登录二维码">
+                            <img :src="qr.image_data_url" alt="登录二维码" @load="fadeLoadedImage($event)">
                             <p x-text="qr.message || '请使用哔哩哔哩客户端扫码登录'"></p>
                         </div>
                     </article>
@@ -883,7 +883,7 @@
                                 <button class="subscription-icon-tile" @click="openSubscriptionOverviewItem(item)">
                                     <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: subscriptionIconUrl(item) }" :style="subscriptionIconTinyStyle(item)">
                                         <template x-if="subscriptionIconUrl(item)">
-                                            <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.name || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
+                                            <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.name || item.uid" loading="lazy" decoding="async" @load="fadeLoadedImage($event)" @error="handleSubscriptionIconError(item)">
                                         </template>
                                         <template x-if="!subscriptionIconUrl(item)">
                                             <span x-text="subscriptionBadgeText(item)"></span>
@@ -926,7 +926,7 @@
                             <div class="panel-card-main subscription-card-main">
                                 <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: subscriptionIconUrl(item) }" :style="subscriptionIconTinyStyle(item)">
                                     <template x-if="subscriptionIconUrl(item)">
-                                        <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @error="handleSubscriptionIconError(item)">
+                                            <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @load="fadeLoadedImage($event)" @error="handleSubscriptionIconError(item)">
                                     </template>
                                     <template x-if="!subscriptionIconUrl(item)">
                                         <span x-text="subscriptionBadgeText(item)"></span>
@@ -1063,8 +1063,8 @@
                                 <label>标题选择器<input x-model="siteSourceForm.title_selector" placeholder="h1"></label>
                                 <label>日期选择器<input x-model="siteSourceForm.date_selector" placeholder="time"></label>
                                 <label>tag 选择器<input x-model="siteSourceForm.tag_selector" placeholder=".tag"></label>
-                                <label>正文选择器<input x-model="siteSourceForm.body_selector" placeholder="article, .content"></label>
-                                <label>媒体选择器<input x-model="siteSourceForm.media_selector" placeholder=".content img, video source"></label>
+                                <label>正文选择器<input x-model="siteSourceForm.body_selector" placeholder="article, .library-content, .content"></label>
+                                <label>媒体选择器<input x-model="siteSourceForm.media_selector" placeholder=".library-content img, .content img"></label>
                                 <label>跳过头部图片数<input type="number" min="0" x-model.number="siteSourceForm.skip_head_images"></label>
                                 <label>跳过尾部图片数<input type="number" min="0" x-model.number="siteSourceForm.skip_tail_images"></label>
                                 <label>起始日期<input type="date" x-model="siteSourceForm.start_date"></label>
@@ -1099,7 +1099,7 @@
                                 <div class="panel-card-main subscription-card-main">
                                     <span class="link-badge subscription-link-badge subscription-card-icon" :class="{ image: siteSourceIconUrl(source) }" :style="siteSourceIconTinyStyle(source)">
                                         <template x-if="siteSourceIconUrl(source)">
-                                            <img :src="siteSourceIconUrl(source)" :alt="source.name" loading="lazy" decoding="async" @error="iconLoadFailures = { ...iconLoadFailures, [`site:${source.id}`]: true }">
+                                            <img :src="siteSourceIconUrl(source)" :alt="source.name" loading="lazy" decoding="async" @load="fadeLoadedImage($event)" @error="iconLoadFailures = { ...iconLoadFailures, [`site:${source.id}`]: true }">
                                         </template>
                                         <template x-if="!siteSourceIconUrl(source)">
                                             <span>站</span>
@@ -1138,8 +1138,8 @@
                                     <label>标题选择器<input :value="siteSourceDraftValue(source.id, 'title_selector')" @input="updateSiteSourceDraft(source.id, 'title_selector', $event.target.value)" placeholder="h1"></label>
                                     <label>日期选择器<input :value="siteSourceDraftValue(source.id, 'date_selector')" @input="updateSiteSourceDraft(source.id, 'date_selector', $event.target.value)" placeholder="time"></label>
                                     <label>tag 选择器<input :value="siteSourceDraftValue(source.id, 'tag_selector')" @input="updateSiteSourceDraft(source.id, 'tag_selector', $event.target.value)" placeholder=".tag"></label>
-                                    <label>正文选择器<input :value="siteSourceDraftValue(source.id, 'body_selector')" @input="updateSiteSourceDraft(source.id, 'body_selector', $event.target.value)" placeholder="article, .content"></label>
-                                    <label>媒体选择器<input :value="siteSourceDraftValue(source.id, 'media_selector')" @input="updateSiteSourceDraft(source.id, 'media_selector', $event.target.value)" placeholder=".content img, video source"></label>
+                                    <label>正文选择器<input :value="siteSourceDraftValue(source.id, 'body_selector')" @input="updateSiteSourceDraft(source.id, 'body_selector', $event.target.value)" placeholder="article, .library-content, .content"></label>
+                                    <label>媒体选择器<input :value="siteSourceDraftValue(source.id, 'media_selector')" @input="updateSiteSourceDraft(source.id, 'media_selector', $event.target.value)" placeholder=".library-content img, .content img"></label>
                                     <label>跳过头部图片数<input type="number" min="0" :value="siteSourceDraftValue(source.id, 'skip_head_images')" @input="updateSiteSourceDraft(source.id, 'skip_head_images', $event.target.value)"></label>
                                     <label>跳过尾部图片数<input type="number" min="0" :value="siteSourceDraftValue(source.id, 'skip_tail_images')" @input="updateSiteSourceDraft(source.id, 'skip_tail_images', $event.target.value)"></label>
                                     <label>起始日期<input type="date" :value="siteSourceDraftValue(source.id, 'start_date')" @input="updateSiteSourceDraft(source.id, 'start_date', $event.target.value)"></label>
@@ -1328,9 +1328,10 @@
                         <article
                             class="detail-card"
                             data-testid="detail-card"
+                            :data-detail-key="detailPairKey(pair)"
                             role="button"
                             tabindex="0"
-                            :class="{ live: pair.livephoto, placeholder: pair.placeholder }"
+                            :class="{ live: pair.livephoto, placeholder: pair.placeholder, 'is-appearing': pair.__appearing }"
                             @click="pair.placeholder ? null : openPair(pair.pair_index)"
                             @keydown.enter.prevent="pair.placeholder ? null : openPair(pair.pair_index)"
                             @keydown.space.prevent="pair.placeholder ? null : openPair(pair.pair_index)"
@@ -1342,7 +1343,7 @@
                         >
                             <div class="detail-thumb" :style="detailThumbStyle(pair)">
                                 <template x-if="!pair.placeholder">
-                                    <img class="hover-preview-image detail-preview-image" decoding="async" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`">
+                                    <img class="hover-preview-image detail-preview-image" decoding="async" loading="eager" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`" @load="fadeLoadedImage($event)">
                                 </template>
                                 <template x-if="pair.placeholder">
                                     <div class="detail-placeholder-wash"></div>
@@ -1446,11 +1447,11 @@
                         @pointercancel="viewerPointerUp($event)"
                     >
                         <template x-if="viewer.pair?.image">
-                            <img class="viewer-stage-preview" :style="viewerMediaStyle()" :class="{ hidden: (viewer.showVideo && viewer.pair?.livephoto) || viewerImageReady }" :src="viewerPreviewUrl()" :alt="viewer.pair ? `图片 ${viewer.pair.pair_index}` : '图片预览'">
+                            <img class="viewer-stage-preview" :style="viewerMediaStyle()" :class="{ hidden: (viewer.showVideo && viewer.pair?.livephoto) || viewerImageReady }" :src="viewerPreviewUrl()" :alt="viewer.pair ? `图片 ${viewer.pair.pair_index}` : '图片预览'" decoding="async" loading="eager" draggable="false" @load="fadeLoadedImage($event)">
                         </template>
                         <div class="viewer-stage-loading-wash" :class="{ hidden: !viewerShouldShowImageWash() }" :style="viewerMediaStyle()"></div>
                         <template x-if="viewer.pair?.image">
-                            <img class="viewer-stage-image" :style="viewerMediaStyle()" :class="{ hidden: (viewer.showVideo && viewer.pair?.livephoto) || !viewerImageReady }" :src="viewer.pair?.image?.url" :alt="viewer.pair ? `图片 ${viewer.pair.pair_index}` : '图片'" :data-viewer-token="viewerToken" @load="viewerMediaLoaded('image', $event)" @error="viewerMediaFailed('image', $event)">
+                            <img class="viewer-stage-image" :style="viewerMediaStyle()" :class="{ hidden: (viewer.showVideo && viewer.pair?.livephoto) || !viewerImageReady }" :src="viewer.pair?.image?.url" :alt="viewer.pair ? `图片 ${viewer.pair.pair_index}` : '图片'" :data-viewer-token="viewerToken" decoding="async" loading="eager" fetchpriority="high" draggable="false" @load="viewerMediaLoaded('image', $event)" @error="viewerMediaFailed('image', $event)">
                         </template>
                         <template x-if="viewer.pair?.livephoto">
                             <video

@@ -909,6 +909,78 @@ def test_site_parser_handles_foamgirl_style_cards_external_ads_and_asset_dates(t
     assert len(posts[0].assets) == 2
 
 
+def test_site_parser_handles_library_tag_gallery_structure(tmp_path: Path) -> None:
+    site_dir = tmp_path / "library-tag-site"
+    site_dir.mkdir(parents=True)
+    (site_dir / "tag17.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>Library Tag - Example</title></head>
+          <body>
+            <main class="library-page">
+              <ul class="library-list">
+                <li class="library-item">
+                  <a class="library-cover" href="library/post.html">
+                    <img data-src="uploads/2026/07/05/cover.jpg" alt="Mika Summer Set">
+                  </a>
+                  <a class="library-title" href="library/post.html">Mika Summer Set</a>
+                  <span class="library-date">2026-07-05</span>
+                </li>
+                <li class="library-item">
+                  <a class="library-cover" href="library/post2.html">
+                    <img data-original="uploads/2026/07/04/cover2.jpg" alt="Aya Room Set">
+                  </a>
+                  <a class="library-title" href="library/post2.html">Aya Room Set</a>
+                  <span class="library-date">2026-07-04</span>
+                </li>
+              </ul>
+              <nav class="pagination"><a href="library/tag/17/page/2">2</a></nav>
+            </main>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "library").mkdir()
+    (site_dir / "library" / "post.html").write_text(
+        """
+        <!doctype html>
+        <article class="library-detail">
+          <h1>Mika Summer Set</h1>
+          <time datetime="2026-07-05">2026-07-05</time>
+          <div class="library-content">
+            <img data-src="../uploads/2026/07/05/001.jpg">
+            <img data-original="../uploads/2026/07/05/002.jpg">
+          </div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (site_dir / "library" / "post2.html").write_text(
+        """
+        <!doctype html>
+        <article class="library-detail">
+          <h1>Aya Room Set</h1>
+          <time datetime="2026-07-04">2026-07-04</time>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+
+    parser = SourceParser(PageFetcher())
+    suggestion = parser.suggest((site_dir / "tag17.html").resolve().as_uri())
+    posts = parser.discover(suggestion, limit=1)
+
+    assert suggestion["list_item_selector"] in {".library-list .library-item", ".library-item"}
+    assert suggestion["preview"][0]["title"] == "Mika Summer Set"
+    assert suggestion["preview"][0]["pub_date"] == "2026-07-05"
+    assert suggestion["page_url_template"].endswith("/library/tag/17/page/{page}")
+    assert posts[0].title == "Mika Summer Set"
+    assert posts[0].pub_date == "2026-07-05"
+    assert len(posts[0].assets) == 2
+
+
 def test_site_parser_handles_foamgirl_category_list_items(tmp_path: Path) -> None:
     site_dir = tmp_path / "foamgirl-category-site"
     site_dir.mkdir(parents=True)

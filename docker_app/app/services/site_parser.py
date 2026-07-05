@@ -41,13 +41,15 @@ DEFAULT_SITE_USER_AGENT = (
 )
 DEFAULT_DATE_SELECTOR = (
     "time, .entry-date, .date, .updated, .published, .posted-on, .post-date, "
-    ".entry-meta, .post-meta, .meta-date, .image-info-time, .item_images_info, [datetime]"
+    ".entry-meta, .post-meta, .meta-date, .image-info-time, .item_images_info, "
+    ".library-date, .library-time, .card-date, .item-date, [datetime]"
 )
 DEFAULT_TAG_SELECTOR = ".tag, .tags a, .cat-name, .category a, .post-categories a"
-DEFAULT_BODY_SELECTOR = "article, .entry-content, .post-content, .post-page-content, .content, main"
+DEFAULT_BODY_SELECTOR = "article, .entry-content, .post-content, .post-page-content, .library-content, .gallery-content, .content, main"
 DEFAULT_MEDIA_SELECTOR = (
     "article img, article video, article source, .entry-content img, .post-content img, "
-    ".post-page-content img, .content img, .content video, .content source, main img"
+    ".post-page-content img, .library-content img, .gallery-content img, .content img, "
+    ".content video, .content source, main img"
 )
 
 
@@ -438,6 +440,12 @@ class SourceParser:
     def _html_source_hint(self, soup: Any, entry_url: str) -> dict[str, Any]:
         candidates = []
         for selector in [
+            ".library-list .library-item",
+            ".library-list li",
+            ".library-item",
+            ".library-card",
+            ".gallery-list .gallery-item",
+            ".gallery-item",
             ".content-post",
             ".post-list",
             ".post-card",
@@ -528,7 +536,28 @@ class SourceParser:
         score += media
         if selector == "li" and dated == 0 and media < max(2, valid_links // 3):
             return 0, []
-        if selector in {".content-post", ".post-list", ".post-card", ".post-item", ".posts-item", ".grid-item", ".ajax-item", ".i_list", ".update_area_lists li", ".cxudy-list-formatimage", "article", ".hentry", ".post", ".item"}:
+        if selector in {
+            ".library-list .library-item",
+            ".library-list li",
+            ".library-item",
+            ".library-card",
+            ".gallery-list .gallery-item",
+            ".gallery-item",
+            ".content-post",
+            ".post-list",
+            ".post-card",
+            ".post-item",
+            ".posts-item",
+            ".grid-item",
+            ".ajax-item",
+            ".i_list",
+            ".update_area_lists li",
+            ".cxudy-list-formatimage",
+            "article",
+            ".hentry",
+            ".post",
+            ".item",
+        }:
             score += 18
         elif "." in selector or "[" in selector:
             score += 8
@@ -556,7 +585,7 @@ class SourceParser:
         return None
 
     def _node_title_hint(self, node: Any) -> str:
-        for selector in [".meta-title", ".entry-title", ".post-title", ".title", "h1", "h2", "h3", "a"]:
+        for selector in [".library-title", ".gallery-title", ".card-title", ".item-title", ".meta-title", ".entry-title", ".post-title", ".title", "h1", "h2", "h3", "a"]:
             title = self._selector_text(node, selector)
             title = re.sub(r"\s+", " ", title).strip()
             if title and not parse_date(title):
@@ -610,6 +639,8 @@ class SourceParser:
                 continue
             if re.search(r"/page/2/?$", parsed.path):
                 return absolute.replace("/page/2", "/page/{page}").rstrip("/")
+            if re.search(r"/2/?$", parsed.path) and parsed.path.rstrip("/").rsplit("/", 1)[-1] == "2":
+                return re.sub(r"/2/?$", "/{page}", absolute).rstrip("/")
             if "page=2" in parsed.query:
                 return absolute.replace("page=2", "page={page}")
             if "paged=2" in parsed.query:
@@ -682,7 +713,7 @@ class SourceParser:
         score = 1
         if text:
             score += 1
-        if any(token in path for token in ("/post", "/posts", "/article", "/entry", "/archives", "/blog", "/news")):
+        if any(token in path for token in ("/post", "/posts", "/article", "/entry", "/archives", "/blog", "/news", "/library", "/gallery", "/photo")):
             score += 4
         if any(token in path for token in ("/20", "date=", "p=", "id=")):
             score += 2

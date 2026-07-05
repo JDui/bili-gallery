@@ -379,6 +379,7 @@ video {
 }
 
 .link-badge {
+    position: relative;
     width: 38px;
     height: 38px;
     display: grid;
@@ -400,6 +401,8 @@ video {
 }
 
 .subscription-link-badge img {
+    position: relative;
+    z-index: 1;
     width: 100%;
     height: 100%;
     display: block;
@@ -909,6 +912,85 @@ html.is-interacting .detail-backdrop {
     opacity: 0.94;
 }
 
+.search-landing {
+    min-height: min(54vh, 560px);
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    gap: 18px;
+    padding: clamp(36px, 7vw, 84px) 18px 42px;
+    animation: page-in var(--duration-base) var(--ease-fluid);
+}
+
+.search-engine-form {
+    display: grid;
+    grid-template-columns: minmax(260px, 680px) auto;
+    gap: 12px;
+    width: min(820px, 100%);
+    align-items: center;
+}
+
+.search-engine-field {
+    position: relative;
+    display: block;
+    min-width: 0;
+}
+
+.search-engine-field input {
+    width: 100%;
+    min-height: 58px;
+    padding: 0 54px 0 52px;
+    border: 1px solid rgba(113, 132, 158, 0.22);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.96);
+    color: var(--text);
+    font-size: 17px;
+    box-shadow: 0 18px 44px rgba(54, 68, 88, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    transition: border-color var(--duration-fast) var(--ease-soft), box-shadow var(--duration-base) var(--ease-fluid), transform var(--duration-base) var(--ease-fluid);
+}
+
+.search-engine-field input:focus {
+    outline: none;
+    border-color: rgba(45, 108, 223, 0.32);
+    box-shadow: 0 22px 52px rgba(45, 108, 223, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.96);
+    transform: translate3d(0, -1px, 0);
+}
+
+.search-engine-field .search-glyph {
+    left: 21px;
+    width: 17px;
+    height: 17px;
+}
+
+.search-clear-button {
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    transform: translateY(-50%);
+    background: rgba(230, 236, 245, 0.86);
+    color: #586779;
+    font-size: 20px;
+    line-height: 1;
+}
+
+.search-submit-button {
+    min-width: 94px;
+    min-height: 54px;
+}
+
+.search-tab-row {
+    width: min(820px, 100%);
+    justify-content: center;
+}
+
+.search-tab {
+    min-height: 38px;
+    padding-inline: 14px;
+}
+
 .gallery-item-card {
     scroll-margin-top: 118px;
 }
@@ -1373,6 +1455,7 @@ html.is-interacting .detail-backdrop {
 }
 
 .photo-collage-tile {
+    position: relative;
     overflow: hidden;
     border-radius: 5px;
     min-width: 0;
@@ -1382,7 +1465,28 @@ html.is-interacting .detail-backdrop {
     background-size: cover;
 }
 
+.photo-visual::before,
+.photo-collage-tile::before,
+.asset-visual::before,
+.detail-thumb::before,
+.link-badge.image::before {
+    content: "";
+    position: absolute;
+    inset: -18px;
+    z-index: 0;
+    pointer-events: none;
+    background: inherit;
+    background-position: center;
+    background-size: cover;
+    filter: blur(18px) saturate(0.92);
+    opacity: 0.58;
+    transform: scale(1.08);
+    transition: opacity var(--duration-slow) var(--ease-soft), filter var(--duration-slow) var(--ease-soft), transform var(--duration-slow) var(--ease-fluid);
+}
+
 .photo-collage-tile img {
+    position: relative;
+    z-index: 1;
     display: block;
     width: 100%;
     height: 100%;
@@ -1405,6 +1509,13 @@ html.is-interacting .detail-backdrop {
     opacity: 1;
     filter: none;
     transform: scale(1);
+}
+
+.photo-card.small-quality .photo-collage-tile::before,
+.photo-card.small-quality .asset-visual::before {
+    opacity: 0.2;
+    filter: blur(12px) saturate(0.98);
+    transform: scale(1.04);
 }
 
 .photo-badges {
@@ -1468,11 +1579,17 @@ html.is-interacting .detail-backdrop {
 
 .asset-visual img,
 .asset-visual video {
+    position: relative;
+    z-index: 1;
     display: block;
     width: 100%;
     height: 100%;
     object-fit: cover;
     object-position: center center;
+}
+
+.image-loaded {
+    animation: image-soft-in 320ms var(--ease-soft);
 }
 
 .gallery-skeleton-grid {
@@ -2561,6 +2678,10 @@ html.is-interacting .detail-backdrop {
     box-shadow: none;
 }
 
+.detail-card.is-appearing {
+    animation: card-fade-in 260ms var(--ease-soft);
+}
+
 .detail-card.placeholder:hover {
     transform: none;
     border-color: rgba(214, 223, 235, 0.9);
@@ -2568,6 +2689,7 @@ html.is-interacting .detail-backdrop {
 
 .detail-thumb {
     position: relative;
+    overflow: hidden;
     background: rgba(223, 232, 243, 0.9);
     background-position: center;
     background-size: cover;
@@ -2580,6 +2702,8 @@ html.is-interacting .detail-backdrop {
 
 .detail-thumb img,
 .detail-thumb video {
+    position: relative;
+    z-index: 1;
     display: block;
     width: 100%;
     height: 100%;
@@ -2790,6 +2914,8 @@ html.is-interacting .detail-backdrop {
     object-fit: contain;
     transition: transform var(--duration-base) var(--ease-fluid), opacity var(--duration-fast) var(--ease-soft);
     will-change: transform;
+    user-select: none;
+    -webkit-user-drag: none;
 }
 
 .viewer-stage-preview {
@@ -3076,6 +3202,12 @@ html.is-interacting .detail-backdrop {
     }
 }
 
+@keyframes image-soft-in {
+    from {
+        opacity: 0;
+    }
+}
+
 @keyframes skeleton-sheen {
     0% {
         background-position: 160% 0;
@@ -3227,6 +3359,14 @@ html.is-interacting .detail-backdrop {
 
 @media (max-width: 1240px) {
     .settings-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .thumbnail-settings-card {
+        grid-column: auto;
+    }
+
+    .thumbnail-level-grid {
         grid-template-columns: 1fr;
     }
 
@@ -3710,6 +3850,24 @@ html.is-interacting .detail-backdrop {
         flex: 0 1 auto;
     }
 
+    .search-landing {
+        min-height: 44vh;
+        padding: 28px 0 34px;
+    }
+
+    .search-engine-form {
+        grid-template-columns: 1fr;
+    }
+
+    .search-engine-field input {
+        min-height: 52px;
+        font-size: 15px;
+    }
+
+    .search-submit-button {
+        width: 100%;
+    }
+
     .subscription-card-head {
         flex-direction: column;
         align-items: stretch;
@@ -4030,35 +4188,40 @@ html.is-interacting .detail-backdrop {
 
 .subscription-icon-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+    gap: 18px 14px;
 }
 
 .subscription-icon-tile {
     display: grid;
     justify-items: center;
-    gap: 6px;
-    min-height: 146px;
-    padding: 14px 10px;
+    align-content: start;
+    gap: 5px;
+    min-height: 154px;
+    padding: 12px 8px 14px;
     border-radius: var(--radius-card);
-    border: 1px solid rgba(213, 222, 234, 0.9);
-    background: rgba(255, 255, 255, 0.78);
+    border: 1px solid rgba(213, 222, 234, 0);
+    background: transparent;
     color: var(--text);
     text-align: center;
-    box-shadow: 0 10px 22px rgba(55, 70, 91, 0.08);
+    box-shadow: none;
     transition: transform var(--duration-base) var(--ease-fluid), border-color var(--duration-fast) var(--ease-soft), box-shadow var(--duration-base) var(--ease-fluid);
 }
 
 .subscription-icon-tile:hover {
     transform: translate3d(0, -2px, 0);
-    border-color: rgba(45, 108, 223, 0.2);
-    box-shadow: var(--shadow-card);
+    border-color: rgba(45, 108, 223, 0.12);
+    background: rgba(255, 255, 255, 0.44);
+    box-shadow: 0 12px 26px rgba(55, 70, 91, 0.09);
 }
 
 .subscription-icon-tile .subscription-card-icon {
-    width: 56px;
-    height: 56px;
+    width: 68px;
+    height: 68px;
     grid-row: auto;
+    margin-bottom: 4px;
+    border-radius: 16px;
+    box-shadow: 0 12px 24px rgba(55, 70, 91, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .subscription-icon-tile strong,
@@ -4071,10 +4234,12 @@ html.is-interacting .detail-backdrop {
 
 .subscription-icon-tile strong {
     font-size: 13px;
+    line-height: 1.25;
 }
 
 .subscription-icon-tile small {
     color: var(--muted);
+    line-height: 1.25;
 }
 
 .site-source-card-list,
@@ -4106,36 +4271,49 @@ html.is-interacting .detail-backdrop {
 }
 
 .thumbnail-settings-card {
-    gap: 18px;
+    grid-column: span 2;
 }
 
 .thumbnail-level-grid {
     display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
 }
 
 .thumbnail-level-row {
     display: grid;
-    grid-template-columns: minmax(56px, 0.42fr) minmax(112px, 1fr) minmax(112px, 1fr) minmax(136px, auto);
-    gap: 10px;
-    align-items: end;
-    padding: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+    align-items: stretch;
+    min-width: 0;
+    padding: 14px;
     border-radius: var(--radius-card);
-    background: rgba(246, 249, 253, 0.82);
+    background: rgba(246, 249, 253, 0.9);
     border: 1px solid rgba(45, 58, 75, 0.08);
 }
 
 .thumbnail-level-row strong {
+    grid-column: 1 / -1;
     align-self: center;
+    color: var(--text);
+    font-size: 16px;
 }
 
 .thumbnail-level-row label {
     display: grid;
     gap: 6px;
+    min-width: 0;
+    margin: 0;
 }
 
 .thumbnail-level-row .confirm-row {
+    grid-column: 1 / -1;
     margin: 0;
+}
+
+.thumbnail-level-row > .secondary-button {
+    grid-column: 1 / -1;
+    width: 100%;
 }
 
 .site-source-row,
