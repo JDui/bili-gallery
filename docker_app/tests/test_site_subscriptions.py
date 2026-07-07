@@ -13,7 +13,7 @@ from app.services.bilibili import BilibiliAuthService
 from app.services.media_indexer import MediaIndexer
 from app.services.puller import PullManager
 from app.services.site_downloader import MediaDownloader
-from app.services.site_parser import PageFetcher, SourceParser, site_request_timeout
+from app.services.site_parser import DEFAULT_BODY_SELECTOR, DEFAULT_DATE_SELECTOR, DEFAULT_MEDIA_SELECTOR, DEFAULT_TAG_SELECTOR, PageFetcher, SourceParser, site_request_timeout
 from app.services.site_filtering import RuleEngine
 from app.services.scheduler import SchedulerService
 from app.services.site_syncer import SiteSyncManager
@@ -71,6 +71,54 @@ def html_source() -> dict:
         "body_selector": ".body",
         "media_selector": ".content img, .content video source",
     }
+
+
+def test_gallery_epic_next_stream_is_discovered_and_parsed(tmp_path: Path) -> None:
+    site_dir = tmp_path / "gallery-epic"
+    detail_dir = site_dir / "zh" / "cosplay"
+    detail_dir.mkdir(parents=True)
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <title>Cosplays | Gallery Epic</title>
+        <a class="space-y-3" href="zh/cosplay/10122.html">Cosplay 10122</a>
+        <script>self.__next_f.push([1,"\\"href\\":\\"/zh/cosplay/10122\\""])</script>
+        """,
+        encoding="utf-8",
+    )
+    (detail_dir / "10122.html").write_text(
+        """
+        <!doctype html>
+        <title>Kafka | Gallery Epic</title>
+        <script>self.__next_f.push([1,"\\"createdAt\\":\\"$D2026-07-04T11:25:39.096Z\\",\\"character\\":\\"卡芙卡\\""])</script>
+        <link rel="preload" as="image" href="https://static.galleryepic.xyz/image/99f03f55-743f-4727-a73c-30189ef2523e"/>
+        <img src="https://static.galleryepic.xyz/image/683b3426-7734-4973-bf77-9c8b4bb84e0f">
+        <img src="https://static.galleryepic.xyz/image/ab752ee7-a537-4785-8326-1f3be7ffde0d">
+        <a href="/zh/cosplay/10080">Related</a>
+        <img src="https://static.galleryepic.xyz/image/related-should-not-be-needed">
+        """,
+        encoding="utf-8",
+    )
+    parser = SourceParser(PageFetcher())
+    source = {
+        "source_type": "html",
+        "entry_url": (site_dir / "index.html").resolve().as_uri(),
+        "max_pages": 1,
+        "list_item_selector": "",
+        "detail_link_selector": "a",
+        "title_selector": "h1",
+        "date_selector": DEFAULT_DATE_SELECTOR,
+        "tag_selector": DEFAULT_TAG_SELECTOR,
+        "body_selector": DEFAULT_BODY_SELECTOR,
+        "media_selector": DEFAULT_MEDIA_SELECTOR,
+    }
+
+    posts = parser.discover(source, limit=1, parse_assets=True)
+
+    assert len(posts) == 1
+    assert posts[0].pub_date == "2026-07-04"
+    assert len(posts[0].assets) >= 3
+    assert all(asset.url.startswith("https://static.galleryepic.xyz/image/") for asset in posts[0].assets)
 
 
 def create_fixture_source(db: Database) -> dict:

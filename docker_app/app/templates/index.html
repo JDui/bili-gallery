@@ -1293,14 +1293,14 @@
                     </div>
                 </header>
                 <div class="detail-grid" x-ref="detailGrid" :style="detailGridStyle()">
-                    <template x-for="pair in detail.pairs" :key="pair.pair_index">
+                    <template x-for="pair in detail.pairs" :key="detailPairKey(pair)">
                         <article
                             class="detail-card"
                             data-testid="detail-card"
                             :data-detail-key="detailPairKey(pair)"
                             role="button"
                             tabindex="0"
-                            :class="{ live: pair.livephoto, placeholder: pair.placeholder, 'is-appearing': pair.__appearing }"
+                            :class="{ live: pair.livephoto, placeholder: pair.placeholder, 'is-appearing': pair.__appearing, 'tiny-quality': !pair.promote_preview && pair.initial_quality !== 'small', 'small-quality': !pair.promote_preview && pair.initial_quality === 'small', 'thumb-quality': pair.promote_preview }"
                             @click="pair.placeholder ? null : openPair(pair.pair_index)"
                             @keydown.enter.prevent="pair.placeholder ? null : openPair(pair.pair_index)"
                             @keydown.space.prevent="pair.placeholder ? null : openPair(pair.pair_index)"

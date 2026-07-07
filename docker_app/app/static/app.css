@@ -634,6 +634,36 @@ html.is-interacting .detail-backdrop {
     font-size: 12px;
 }
 
+@media (min-width: 1101px) and (min-aspect-ratio: 11/10) {
+    .sidebar {
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        width: var(--sidebar-width);
+        height: calc(100vh - 40px);
+    }
+
+    .shell.sidebar-collapsed .sidebar {
+        width: var(--sidebar-collapsed);
+    }
+
+    .workspace {
+        padding-top: 92px;
+    }
+
+    .topbar {
+        position: fixed;
+        top: 20px;
+        left: calc(20px + var(--sidebar-width) + 20px);
+        right: 20px;
+        z-index: 16;
+    }
+
+    .shell.sidebar-collapsed .topbar {
+        left: calc(20px + var(--sidebar-collapsed) + 20px);
+    }
+}
+
 .meta-chip {
     display: inline-flex;
     align-items: center;
@@ -1503,21 +1533,26 @@ html.is-interacting .detail-backdrop {
 }
 
 .photo-card.tiny-quality .photo-collage-tile img,
-.photo-card.tiny-quality .asset-visual img {
+.photo-card.tiny-quality .asset-visual img,
+.detail-card.tiny-quality .detail-thumb img {
     opacity: 0.92;
     filter: blur(9px) saturate(0.92);
     transform: scale(1.045);
 }
 
 .photo-card.small-quality .photo-collage-tile img,
-.photo-card.small-quality .asset-visual img {
+.photo-card.small-quality .asset-visual img,
+.detail-card.small-quality .detail-thumb img,
+.detail-card.thumb-quality .detail-thumb img {
     opacity: 1;
     filter: none;
     transform: scale(1);
 }
 
 .photo-card.small-quality .photo-collage-tile::before,
-.photo-card.small-quality .asset-visual::before {
+.photo-card.small-quality .asset-visual::before,
+.detail-card.small-quality .detail-thumb::before,
+.detail-card.thumb-quality .detail-thumb::before {
     opacity: 0.2;
     filter: blur(12px) saturate(0.98);
     transform: scale(1.04);
@@ -2665,7 +2700,7 @@ html.is-interacting .detail-backdrop {
     box-shadow: var(--shadow-card);
     contain: layout paint style;
     content-visibility: auto;
-    contain-intrinsic-size: 260px;
+    contain-intrinsic-size: 240px;
     transition: transform var(--duration-base) var(--ease-fluid), border-color var(--duration-fast) var(--ease-soft), box-shadow var(--duration-base) var(--ease-fluid);
 }
 
@@ -2699,9 +2734,11 @@ html.is-interacting .detail-backdrop {
 .detail-thumb {
     position: relative;
     overflow: hidden;
+    aspect-ratio: 1 / 1;
     background: rgba(223, 232, 243, 0.9);
     background-position: center;
     background-size: cover;
+    transition: transform var(--duration-base) var(--ease-fluid), opacity var(--duration-base) var(--ease-soft);
 }
 
 .detail-card-trash {

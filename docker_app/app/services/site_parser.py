@@ -406,9 +406,57 @@ class SourceParser:
             tags = self._selector_texts(fallback_node, source.get("tag_selector"))
         excerpt = self._selector_text(soup, source.get("body_selector")) or ""
         assets = self._media_assets(soup, source.get("media_selector"), url) if parse_assets else []
+        if self._looks_like_gallery_epic(url, text):
+            if not title or title == "未命名贴文":
+                title = self._gallery_epic_title(text, soup)
+            pub_date = pub_date or self._gallery_epic_date(text)
+            if parse_assets:
+                assets = self._dedupe_assets([*assets, *self._gallery_epic_assets(text)])
         if not pub_date and assets:
             pub_date = self._asset_date_fallback(assets)
         return ParsedPost(url=url, title=title.strip(), pub_date=pub_date, tags=tags, excerpt=excerpt.strip(), assets=assets)
+
+    def _looks_like_gallery_epic(self, url: str, text: str) -> bool:
+        host = urlparse(url).netloc.lower()
+        return "galleryepic." in host or "static.galleryepic.xyz/image/" in text or "Gallery Epic" in text
+
+    def _gallery_epic_title(self, text: str, soup: Any) -> str:
+        title = self._selector_text(soup, "h1") or self._selector_text(soup, "title")
+        title = re.sub(r"\s+", " ", title).strip()
+        if title:
+            return re.split(r"\s*[|｜]\s*", title, maxsplit=1)[0].strip() or title
+        for key in ("character", "characterEnglish", "name", "nameEnglish"):
+            match = re.search(rf'\\"{key}\\":\\"([^\\"]+)\\"', text) or re.search(rf'"{key}"\s*:\s*"([^"]+)"', text)
+            if match:
+                return match.group(1).strip()
+        return "Gallery Epic"
+
+    def _gallery_epic_date(self, text: str) -> str | None:
+        for pattern in (
+            r'\\"createdAt\\":\\"\$D([^\\"]+)\\"',
+            r'"createdAt"\s*:\s*"\$D([^"]+)"',
+            r'\\"updatedAt\\":\\"\$D([^\\"]+)\\"',
+            r'"updatedAt"\s*:\s*"\$D([^"]+)"',
+        ):
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            parsed = parse_date(match.group(1))
+            if parsed:
+                return parsed.isoformat()
+        return None
+
+    def _gallery_epic_assets(self, text: str) -> list[ParsedAsset]:
+        cutoff_candidates = [
+            text.find('href="/zh/cosplay/'),
+            text.find('\\"href\\":\\"/zh/cosplay/'),
+        ]
+        cutoff_candidates = [index for index in cutoff_candidates if index > 0]
+        detail_text = text[: min(cutoff_candidates)] if cutoff_candidates else text
+        urls = re.findall(r"https://static\.galleryepic\.xyz/image/[A-Za-z0-9-]+", detail_text)
+        if len(urls) < 2:
+            urls = re.findall(r"https://static\.galleryepic\.xyz/image/[A-Za-z0-9-]+", text)
+        return [ParsedAsset(url, "image") for url in urls if not url.rstrip("/").endswith("/avatar")]
 
     def _xml_source_hint(self, text: str) -> tuple[str | None, str | None]:
         try:
@@ -440,6 +488,7 @@ class SourceParser:
     def _html_source_hint(self, soup: Any, entry_url: str) -> dict[str, Any]:
         candidates = []
         for selector in [
+            "a[href*='/cosplay/']",
             ".library-list .library-item",
             ".library-list li",
             ".library-item",
