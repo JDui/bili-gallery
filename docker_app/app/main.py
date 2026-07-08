@@ -55,6 +55,18 @@ AVATAR_CACHE_MAX_BYTES = 5 * 1024 * 1024
 _icon_reset_lock = threading.Lock()
 
 
+class CacheControlStaticFiles(StaticFiles):
+    def __init__(self, *args: Any, cache_control: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.cache_control = cache_control
+
+    async def get_response(self, path: str, scope: dict[str, Any]):
+        response = await super().get_response(path, scope)
+        if response.status_code in {200, 304}:
+            response.headers.setdefault("Cache-Control", self.cache_control)
+        return response
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     storage.ensure()
@@ -70,7 +82,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=APP_TITLE, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(config.app_root / "static")), name="static")
-app.mount("/storage", StaticFiles(directory=str(config.storage_root), check_dir=False), name="storage")
+app.mount(
+    "/storage",
+    CacheControlStaticFiles(
+        directory=str(config.storage_root),
+        check_dir=False,
+        cache_control="public, max-age=900",
+    ),
+    name="storage",
+)
 
 
 @app.get("/", response_class=HTMLResponse)

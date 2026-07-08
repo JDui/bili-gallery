@@ -265,7 +265,9 @@
                                                     <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
                                                         <template x-for="tile in item.preview_tiles" :key="tile.id">
                                                             <div class="photo-collage-tile" :style="tileTinyStyle(tile)">
-                                                                <img :loading="galleryQualityFor(item) === 'small' ? 'eager' : 'lazy'" decoding="async" :src="galleryTileUrl(tile, item)" :alt="item.title" :width="tile.width || null" :height="tile.height || null" @load="fadeLoadedImage($event)">
+                                                                <template x-if="galleryQualityFor(item) === 'small'">
+                                                                    <img loading="eager" decoding="async" :src="galleryTileUrl(tile, item)" :alt="item.title" :width="tile.width || null" :height="tile.height || null" @load="fadeLoadedImage($event)">
+                                                                </template>
                                                             </div>
                                                         </template>
                                                     </div>
@@ -330,14 +332,16 @@
                                                 <template x-if="!item.__deleted_placeholder">
                                                     <div>
                                                 <div class="photo-visual asset-visual" :style="assetVisualStyle(item)">
-                                                    <img class="hover-preview-image" :loading="galleryQualityFor(item) === 'small' ? 'eager' : 'lazy'" decoding="async" :src="galleryPairImageUrl(item)" :alt="item.title" :width="item.width || null" :height="item.height || null" @load="fadeLoadedImage($event)">
+                                                    <template x-if="galleryQualityFor(item) === 'small'">
+                                                        <img class="hover-preview-image" loading="eager" decoding="async" :src="galleryPairImageUrl(item)" :alt="item.title" :width="item.width || null" :height="item.height || null" @load="fadeLoadedImage($event)">
+                                                    </template>
                                                     <template x-if="item.has_livephoto">
                                                         <video
                                                             class="hover-preview-video hidden"
                                                             playsinline
                                                             muted
                                                             preload="none"
-                                                            :poster="galleryPairImageUrl(item)"
+                                                            :poster="galleryQualityFor(item) === 'small' ? galleryPairImageUrl(item) : ''"
                                                             :data-src="item.livephoto?.url"
                                                         ></video>
                                                     </template>

@@ -49,6 +49,10 @@ function galleryApp() {
     galleryCardObserver: null,
     gallerySmallObserver: null,
     galleryTinyPreloadCache: {},
+    gallerySmallPreloadQueue: [],
+    gallerySmallPreloadActive: 0,
+    gallerySmallPreloadPending: {},
+    gallerySmallPreloadCache: {},
     galleryLoadObserver: null,
     galleryLoadTimer: null,
     galleryScrollSettling: false,
@@ -976,6 +980,101 @@ function galleryApp() {
       return item?.tiny_thumb_url || item?.small_thumb_url || "";
     },
 
+    gallerySmallUrlsForItem(item) {
+      const urls = new Set();
+      const tiles = item?.preview_tiles || [];
+      if (tiles.length) {
+        for (const tile of tiles.slice(0, 4)) {
+          if (tile?.small_thumb_url) {
+            urls.add(tile.small_thumb_url);
+          }
+        }
+      } else {
+        const image = item?.image || {};
+        const livephoto = item?.livephoto || {};
+        const url = item?.small_thumb_url || image.small_thumb_url || livephoto.small_thumb_url;
+        if (url) {
+          urls.add(url);
+        }
+      }
+      return Array.from(urls);
+    },
+
+    gallerySmallPreloadKey(key, urls) {
+      return `${key}::${urls.join("|")}`;
+    },
+
+    queueGallerySmallItem(item) {
+      const key = this.galleryItemKey(item);
+      if (!key || this.galleryQualityRank(this.galleryCardQuality[key] || "tiny") >= this.galleryQualityRank("small")) {
+        return false;
+      }
+      const urls = this.gallerySmallUrlsForItem(item);
+      if (!urls.length) {
+        return false;
+      }
+      const preloadKey = this.gallerySmallPreloadKey(key, urls);
+      if (this.gallerySmallPreloadCache[preloadKey]) {
+        this.promoteGalleryQuality(key, "small");
+        return true;
+      }
+      if (this.gallerySmallPreloadPending[preloadKey]) {
+        return false;
+      }
+      this.gallerySmallPreloadPending = { ...this.gallerySmallPreloadPending, [preloadKey]: true };
+      this.gallerySmallPreloadQueue.push({ key, preloadKey, urls });
+      this.pumpGallerySmallPreloadQueue();
+      return true;
+    },
+
+    gallerySmallPreloadLimit() {
+      return this.compactViewport ? 3 : 5;
+    },
+
+    pumpGallerySmallPreloadQueue() {
+      const limit = this.gallerySmallPreloadLimit();
+      while (this.gallerySmallPreloadActive < limit && this.gallerySmallPreloadQueue.length) {
+        const task = this.gallerySmallPreloadQueue.shift();
+        if (!task || this.galleryQualityRank(this.galleryCardQuality[task.key] || "tiny") >= this.galleryQualityRank("small")) {
+          if (task?.preloadKey) {
+            const { [task.preloadKey]: _removed, ...rest } = this.gallerySmallPreloadPending;
+            this.gallerySmallPreloadPending = rest;
+          }
+          continue;
+        }
+        this.gallerySmallPreloadActive += 1;
+        this.loadGallerySmallTask(task)
+          .catch(() => {})
+          .finally(() => {
+            this.gallerySmallPreloadActive = Math.max(0, this.gallerySmallPreloadActive - 1);
+            const { [task.preloadKey]: _removed, ...rest } = this.gallerySmallPreloadPending;
+            this.gallerySmallPreloadPending = rest;
+            this.pumpGallerySmallPreloadQueue();
+          });
+      }
+    },
+
+    async loadGallerySmallTask(task) {
+      const loads = task.urls.map((url) => new Promise((resolve) => {
+        const image = new Image();
+        const finish = (ok) => {
+          window.clearTimeout(timeout);
+          resolve(ok);
+        };
+        const timeout = window.setTimeout(() => finish(false), 8000);
+        image.decoding = "async";
+        image.onload = () => finish(true);
+        image.onerror = () => finish(false);
+        image.src = url;
+        if (image.complete) {
+          finish(true);
+        }
+      }));
+      await Promise.allSettled(loads);
+      this.gallerySmallPreloadCache = { ...this.gallerySmallPreloadCache, [task.preloadKey]: true };
+      this.promoteGalleryQuality(task.key, "small");
+    },
+
     preloadGalleryTinyItem(item) {
       const key = this.galleryItemKey(item);
       if (!key || this.galleryTinyPreloadCache[key]) {
@@ -1519,7 +1618,6 @@ function galleryApp() {
         this.observeGalleryCards();
         this.observeGalleryLoadSentinel();
       });
-      this.queueGalleryBatch([], token);
     },
 
     galleryLocalCacheKey(params) {
@@ -1678,7 +1776,7 @@ function galleryApp() {
         this.galleryCardObserver.observe(element);
       });
       this.galleryCardQuality = nextQuality;
-      this.scheduleGallerySmallPromotion(160);
+      this.scheduleGallerySmallPromotion(80);
     },
 
     scheduleGallerySmallPromotion(delay = 220) {
@@ -1700,7 +1798,9 @@ function galleryApp() {
       const viewportHeight = window.innerHeight || 720;
       const topLimit = -viewportHeight * 1.1;
       const bottomLimit = viewportHeight * 2.1;
-      const updates = {};
+      const itemsByKey = new Map(
+        (this.gallery.items || []).map((item) => [this.galleryItemKey(item), item]),
+      );
       document.querySelectorAll(".gallery-item-card[data-gallery-key]").forEach((element) => {
         const key = element.getAttribute("data-gallery-key");
         if (!key || element.classList.contains("deleted-placeholder-card")) {
@@ -1710,13 +1810,10 @@ function galleryApp() {
         if (rect.bottom >= topLimit && rect.top <= bottomLimit) {
           const current = this.galleryCardQuality[key] || "tiny";
           if (this.galleryQualityRank(current) < this.galleryQualityRank("small")) {
-            updates[key] = "small";
+            this.queueGallerySmallItem(itemsByKey.get(key));
           }
         }
       });
-      if (Object.keys(updates).length) {
-        this.galleryCardQuality = { ...this.galleryCardQuality, ...updates };
-      }
     },
 
     observeGalleryLoadSentinel() {
