@@ -94,6 +94,7 @@ def test_gallery_epic_next_stream_is_discovered_and_parsed(tmp_path: Path) -> No
         <link rel="preload" as="image" href="https://static.galleryepic.xyz/image/99f03f55-743f-4727-a73c-30189ef2523e"/>
         <img src="https://static.galleryepic.xyz/image/683b3426-7734-4973-bf77-9c8b4bb84e0f">
         <img src="https://static.galleryepic.xyz/image/ab752ee7-a537-4785-8326-1f3be7ffde0d">
+        <img src="https://static.galleryepic.xyz/image/avatar/e885942a-cc43-4086-be02-fae6530bc750">
         <a href="/zh/cosplay/10080">Related</a>
         <img src="https://static.galleryepic.xyz/image/related-should-not-be-needed">
         """,
@@ -119,6 +120,75 @@ def test_gallery_epic_next_stream_is_discovered_and_parsed(tmp_path: Path) -> No
     assert posts[0].pub_date == "2026-07-04"
     assert len(posts[0].assets) >= 3
     assert all(asset.url.startswith("https://static.galleryepic.xyz/image/") for asset in posts[0].assets)
+    assert all("image/avatar" not in asset.url for asset in posts[0].assets)
+
+
+def test_gallery_epic_cosplay_grid_anchor_cards_parse_with_fallback(tmp_path: Path, monkeypatch) -> None:
+    from app.services import site_parser
+
+    site_dir = tmp_path / "gallery-epic-grid"
+    detail_dir = site_dir / "zh" / "cosplay"
+    detail_dir.mkdir(parents=True)
+    (site_dir / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>Cosplays | Gallery Epic</title></head>
+          <body>
+            <div class="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
+              <a class="space-y-3" href="zh/cosplay/10122.html" target="_blank" rel="noreferrer">
+                <img src="https://static.galleryepic.xyz/image/list-cover-10122" alt="10122">
+                <h3>信浓</h3>
+                <p>碧蓝航线</p>
+              </a>
+              <a href="zh/download/cosplay/10122.html">Download</a>
+              <a class="space-y-3" href="zh/cosplay/10121.html" target="_blank" rel="noreferrer">
+                <img src="https://static.galleryepic.xyz/image/list-cover-10121" alt="10121">
+                <h3>妮姬</h3>
+                <p>胜利女神</p>
+              </a>
+            </div>
+            <a href="zh/cosplays/2">2</a>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+    (detail_dir / "10122.html").write_text(
+        """
+        <!doctype html>
+        <title>信浓 | Gallery Epic</title>
+        <h1>信浓</h1>
+        <script>self.__next_f.push([1,"\\"createdAt\\":\\"$D2026-07-04T11:25:39.096Z\\""])</script>
+        <img src="https://static.galleryepic.xyz/image/99f03f55-743f-4727-a73c-30189ef2523e">
+        <img src="https://static.galleryepic.xyz/image/683b3426-7734-4973-bf77-9c8b4bb84e0f">
+        """,
+        encoding="utf-8",
+    )
+    (detail_dir / "10121.html").write_text(
+        """
+        <!doctype html>
+        <title>妮姬 | Gallery Epic</title>
+        <h1>妮姬</h1>
+        <script>self.__next_f.push([1,"\\"createdAt\\":\\"$D2026-07-03T09:10:11.012Z\\""])</script>
+        <img src="https://static.galleryepic.xyz/image/ab752ee7-a537-4785-8326-1f3be7ffde0d">
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(site_parser, "BeautifulSoup", None)
+
+    parser = SourceParser(PageFetcher())
+    suggestion = parser.suggest((site_dir / "index.html").resolve().as_uri())
+    posts = parser.discover(suggestion, limit=3, parse_assets=True)
+
+    assert suggestion["list_item_selector"] == "a[href*='/cosplay/']"
+    assert suggestion["preview"][0]["title"] == "信浓"
+    assert suggestion["page_url_template"].endswith("/zh/cosplays/{page}")
+    assert all("/download/" not in item["url"] for item in suggestion["preview"])
+    assert [post.title for post in posts] == ["信浓", "妮姬"]
+    assert [post.pub_date for post in posts] == ["2026-07-04", "2026-07-03"]
+    assert all("/download/" not in post.url for post in posts)
+    assert posts[0].assets[0].url.startswith("https://static.galleryepic.xyz/image/")
 
 
 def create_fixture_source(db: Database) -> dict:

@@ -93,6 +93,9 @@ function galleryApp() {
     viewerCloseTimer: null,
     headerCompact: false,
     headerScrollRaf: null,
+    layoutResizeObserver: null,
+    layoutMetricRaf: null,
+    layoutTopbarReserve: 0,
     lastScrollTop: 0,
     scrollDirection: "down",
     reviewItems: [],
@@ -251,6 +254,7 @@ function galleryApp() {
       window.addEventListener("resize", () => this.updateViewportMode(), { passive: true });
       window.addEventListener("orientationchange", () => this.updateViewportMode(), { passive: true });
       document.documentElement.style.setProperty("--sidebar-state", this.sidebarCollapsed ? "collapsed" : "expanded");
+      this.$nextTick(() => this.installFixedLayoutObservers());
       window.addEventListener("pointermove", (event) => this.timeFilterPointerMove(event));
       window.addEventListener("pointerup", () => this.finishTimeFilterDrag());
       window.addEventListener("pointercancel", () => this.finishTimeFilterDrag());
@@ -403,6 +407,7 @@ function galleryApp() {
       this.sidebarCollapsed = !this.sidebarCollapsed;
       localStorage.setItem("gallery_sidebar_collapsed", this.sidebarCollapsed ? "1" : "0");
       document.documentElement.style.setProperty("--sidebar-state", this.sidebarCollapsed ? "collapsed" : "expanded");
+      this.$nextTick(() => this.scheduleFixedLayoutMetrics());
     },
 
     updateViewportMode() {
@@ -416,6 +421,7 @@ function galleryApp() {
       this.$nextTick(() => {
         this.observeGalleryCards();
         this.observeGalleryLoadSentinel();
+        this.scheduleFixedLayoutMetrics();
       });
     },
 
@@ -431,6 +437,8 @@ function galleryApp() {
       window.scrollTo({ top: 0, behavior: "auto" });
       document.documentElement.scrollTop = 0;
       document.body.scrollTop = 0;
+      this.updateHeaderState(0);
+      this.scheduleFixedLayoutMetrics();
     },
 
     measureGalleryMinHeight() {
@@ -750,14 +758,112 @@ function galleryApp() {
       }, 1200);
     },
 
+    installFixedLayoutObservers() {
+      if (this.layoutResizeObserver) {
+        this.layoutResizeObserver.disconnect();
+        this.layoutResizeObserver = null;
+      }
+      const targets = [this.$refs.shell, this.$refs.sidebar, this.$refs.workspace, this.$refs.topbar].filter(Boolean);
+      if (typeof ResizeObserver === "function") {
+        this.layoutResizeObserver = new ResizeObserver(() => this.scheduleFixedLayoutMetrics());
+        targets.forEach((target) => this.layoutResizeObserver.observe(target));
+      }
+      this.scheduleFixedLayoutMetrics();
+    },
+
+    scheduleFixedLayoutMetrics() {
+      if (this.layoutMetricRaf) {
+        return;
+      }
+      this.layoutMetricRaf = window.requestAnimationFrame(() => {
+        this.layoutMetricRaf = null;
+        this.updateFixedLayoutMetrics();
+      });
+    },
+
+    setRootStyleVar(name, value) {
+      const root = document.documentElement;
+      if (root.style.getPropertyValue(name) !== value) {
+        root.style.setProperty(name, value);
+      }
+    },
+
+    updateFixedLayoutMetrics() {
+      const root = document.documentElement;
+      const pinned = window.matchMedia("(min-width: 1101px) and (min-aspect-ratio: 11/10)").matches;
+      if (!pinned) {
+        root.classList.remove("layout-pinned");
+        this.layoutTopbarReserve = 0;
+        [
+          "--layout-sidebar-left",
+          "--layout-sidebar-top",
+          "--layout-sidebar-width",
+          "--layout-sidebar-height",
+          "--layout-topbar-left",
+          "--layout-topbar-top",
+          "--layout-topbar-width",
+          "--layout-topbar-reserve",
+        ].forEach((name) => root.style.removeProperty(name));
+        return;
+      }
+
+      const shell = this.$refs.shell || document.querySelector(".shell");
+      const workspace = this.$refs.workspace || document.querySelector(".workspace");
+      const topbar = this.$refs.topbar || document.querySelector(".topbar");
+      if (!shell || !workspace || !topbar) {
+        return;
+      }
+
+      const lengthValue = (value, fallback = 0) => {
+        const parsed = Number.parseFloat(value);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
+      const rootStyle = getComputedStyle(root);
+      const shellStyle = getComputedStyle(shell);
+      const shellRect = shell.getBoundingClientRect();
+      const sidebarFallback = lengthValue(
+        rootStyle.getPropertyValue(this.sidebarCollapsed ? "--sidebar-collapsed" : "--sidebar-width"),
+        this.sidebarCollapsed ? 88 : 292,
+      );
+      const sidebarWidth = lengthValue((shellStyle.gridTemplateColumns || "").split(" ")[0], sidebarFallback);
+      const insetTop = Math.round(Math.max(12, lengthValue(shellStyle.paddingTop, 20)));
+      const insetLeft = Math.round(shellRect.left + lengthValue(shellStyle.paddingLeft, 20));
+      const insetRight = Math.round(Math.max(12, lengthValue(shellStyle.paddingRight, 20)));
+      const columnGap = lengthValue(shellStyle.columnGap, 20);
+      const sidebarHeight = Math.max(240, Math.round(window.innerHeight - insetTop * 2));
+      const topbarLeft = Math.round(insetLeft + sidebarWidth + columnGap);
+      const topbarWidth = Math.max(320, Math.round(window.innerWidth - topbarLeft - insetRight));
+
+      this.setRootStyleVar("--layout-sidebar-left", `${insetLeft}px`);
+      this.setRootStyleVar("--layout-sidebar-top", `${insetTop}px`);
+      this.setRootStyleVar("--layout-sidebar-width", `${Math.round(sidebarWidth)}px`);
+      this.setRootStyleVar("--layout-sidebar-height", `${sidebarHeight}px`);
+      this.setRootStyleVar("--layout-topbar-left", `${topbarLeft}px`);
+      this.setRootStyleVar("--layout-topbar-top", `${insetTop}px`);
+      this.setRootStyleVar("--layout-topbar-width", `${topbarWidth}px`);
+      root.classList.add("layout-pinned");
+
+      const topbarHeight = Math.ceil(topbar.getBoundingClientRect().height || 0);
+      const measuredReserve = Math.max(88, topbarHeight + 18);
+      const reserve = this.headerCompact && this.layoutTopbarReserve
+        ? Math.max(this.layoutTopbarReserve, measuredReserve)
+        : measuredReserve;
+      this.layoutTopbarReserve = reserve;
+      this.setRootStyleVar("--layout-topbar-reserve", `${reserve}px`);
+    },
+
     updateHeaderState(scrollTop = window.scrollY || window.pageYOffset || 0) {
+      const previous = this.headerCompact;
       const compactEnter = 112;
       const compactExit = 18;
       if (this.headerCompact) {
         this.headerCompact = scrollTop > compactExit;
-        return;
+      } else {
+        this.headerCompact = scrollTop > compactEnter;
       }
-      this.headerCompact = scrollTop > compactEnter;
+      if (previous !== this.headerCompact) {
+        this.scheduleFixedLayoutMetrics();
+      }
     },
 
     resolveGalleryColumns() {
@@ -2614,10 +2720,16 @@ function galleryApp() {
       }
       video.onended = () => this.stopHoverPreviewByCard(card);
       video.onerror = () => this.stopHoverPreviewByCard(card);
+      video.onpause = () => {
+        if (video.ended && this.hoverPreviewLoadCard === card) {
+          this.stopHoverPreviewByCard(card);
+        }
+      };
       const play = () => {
         if (this.hoverPreviewLoadCard !== card) {
           return;
         }
+        video.currentTime = 0;
         video.play().catch(() => this.stopHoverPreviewByCard(card));
       };
       if (video.readyState >= 2) {
@@ -2633,9 +2745,6 @@ function galleryApp() {
         this.hoverPreviewTimer = null;
       }
       this.hoverPreviewCard = null;
-      if (this.hoverPreviewLoadCard === event.currentTarget) {
-        this.hoverPreviewLoadCard = null;
-      }
       this.stopHoverPreviewByCard(event.currentTarget);
     },
 
@@ -2662,24 +2771,27 @@ function galleryApp() {
         this.hoverPreviewTimer = null;
       }
       this.hoverPreviewCard = null;
-      if (this.hoverPreviewLoadCard === card) {
-        this.hoverPreviewLoadCard = null;
-      }
       this.stopHoverPreviewByCard(card);
     },
 
     stopHoverPreviewByCard(card) {
       const video = card.querySelector(".hover-preview-video");
       const image = card.querySelector(".hover-preview-image");
+      const wasActive = this.hoverPreviewLoadCard === card;
+      if (wasActive) {
+        this.hoverPreviewLoadCard = null;
+      }
       if (video) {
+        video.onloadeddata = null;
+        video.onended = null;
+        video.onerror = null;
+        video.onpause = null;
         video.pause();
         try {
           video.currentTime = 0;
         } catch (_error) {
           // Metadata may not have loaded yet.
         }
-        video.onloadeddata = null;
-        video.onerror = null;
         video.classList.add("hidden");
       }
       if (image) {
@@ -5716,7 +5828,7 @@ function galleryApp() {
       const key = String(sourceId);
       this.siteIconRefreshingById = { ...this.siteIconRefreshingById, [key]: true };
       this.iconLoadFailures = { ...this.iconLoadFailures, [subscriptionUid]: false };
-      this.notify("info", "正在刷新站点图标", "正在重新探测并缓存站点 icon。");
+      this.notify("info", "开始刷新站点图标", "开始重新获取该站点的网站 icon，并下载更新本地图标。");
       try {
         const result = await this.api(`/api/site-sources/${encodeURIComponent(sourceId)}/refresh-icon`, { method: "POST" });
         if (result.item) {

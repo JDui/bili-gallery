@@ -179,15 +179,20 @@ def parse_html(text: str) -> Any:
 
 
 def _matches_selector(node: HtmlNode, selector: str) -> bool:
-    attr_name = attr_suffix = None
+    attr_name = attr_operator = attr_value = None
     if "[" in selector and selector.endswith("]"):
         selector, attr_part = selector.split("[", 1)
         attr_part = attr_part[:-1]
-        if "$=" in attr_part:
-            attr_name, attr_suffix = attr_part.split("$=", 1)
-            attr_suffix = attr_suffix.strip("'\"")
-        else:
+        for operator in ("*=", "$=", "^=", "="):
+            if operator in attr_part:
+                attr_name, attr_value = attr_part.split(operator, 1)
+                attr_operator = operator
+                attr_name = attr_name.strip().lower()
+                attr_value = attr_value.strip().strip("'\"")
+                break
+        if not attr_name:
             attr_name = attr_part.strip().lower()
+            attr_operator = "exists"
     tag = ""
     class_name = ""
     element_id = ""
@@ -206,11 +211,19 @@ def _matches_selector(node: HtmlNode, selector: str) -> bool:
             return False
     if element_id and node.get("id") != element_id:
         return False
-    if attr_name and attr_suffix is None:
+    if attr_name and attr_operator == "exists":
         return node.get(attr_name.lower()) is not None
-    if attr_name and attr_suffix is not None:
+    if attr_name and attr_operator:
         value = node.get(attr_name.lower()) or ""
-        if not value.lower().endswith(attr_suffix.lower()):
+        lower_value = value.lower()
+        lower_attr_value = (attr_value or "").lower()
+        if attr_operator == "*=" and lower_attr_value not in lower_value:
+            return False
+        if attr_operator == "$=" and not lower_value.endswith(lower_attr_value):
+            return False
+        if attr_operator == "^=" and not lower_value.startswith(lower_attr_value):
+            return False
+        if attr_operator == "=" and lower_value != lower_attr_value:
             return False
     return True
 
@@ -411,7 +424,11 @@ class SourceParser:
                 title = self._gallery_epic_title(text, soup)
             pub_date = pub_date or self._gallery_epic_date(text)
             if parse_assets:
-                assets = self._dedupe_assets([*assets, *self._gallery_epic_assets(text)])
+                gallery_assets = self._gallery_epic_assets(text)
+                if gallery_assets:
+                    assets = gallery_assets
+                else:
+                    assets = [asset for asset in assets if "galleryepic" not in urlparse(asset.url).netloc.lower()]
         if not pub_date and assets:
             pub_date = self._asset_date_fallback(assets)
         return ParsedPost(url=url, title=title.strip(), pub_date=pub_date, tags=tags, excerpt=excerpt.strip(), assets=assets)
@@ -456,7 +473,13 @@ class SourceParser:
         urls = re.findall(r"https://static\.galleryepic\.xyz/image/[A-Za-z0-9-]+", detail_text)
         if len(urls) < 2:
             urls = re.findall(r"https://static\.galleryepic\.xyz/image/[A-Za-z0-9-]+", text)
-        return [ParsedAsset(url, "image") for url in urls if not url.rstrip("/").endswith("/avatar")]
+        assets = []
+        for url in urls:
+            path = urlparse(url).path.lower().rstrip("/")
+            if path == "/image/avatar" or path.startswith("/image/avatar/"):
+                continue
+            assets.append(ParsedAsset(url, "image"))
+        return assets
 
     def _xml_source_hint(self, text: str) -> tuple[str | None, str | None]:
         try:
@@ -706,7 +729,9 @@ class SourceParser:
 
     def _detail_url(self, item: Any, base_url: str, source: dict[str, Any]) -> str | None:
         selector = source.get("detail_link_selector") or "a"
-        link = item.select_one(selector)
+        link = item if self._item_matches_own_link(item, selector) else None
+        if not link:
+            link = item.select_one(selector)
         if not link:
             return None
         href = link.get("href") or link.get("src")
@@ -718,6 +743,12 @@ class SourceParser:
         detail_url = urljoin(base_url, href).split("#", 1)[0]
         link_text = link.get_text(" ", strip=True)
         return detail_url if self._detail_url_score(base_url, detail_url, link_text) > 0 else None
+
+    def _item_matches_own_link(self, item: Any, selector: str) -> bool:
+        if getattr(item, "name", "") != "a" or not item.get("href"):
+            return False
+        normalized = (selector or "a").strip()
+        return normalized in {"a", "a[href]"} or normalized.startswith("a[")
 
     def _sniff_detail_urls(self, soup: Any, base_url: str) -> list[str]:
         candidates: list[tuple[int, str]] = []
@@ -758,6 +789,8 @@ class SourceParser:
             return 0
 
         path = parsed_candidate.path.lower()
+        if any(token in path for token in ("/download/", "/downloads/")):
+            return 0
         text = (link_text or "").strip()
         score = 1
         if text:

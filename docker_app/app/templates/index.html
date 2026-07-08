@@ -9,9 +9,9 @@
     <script defer src="/static/vendor/alpinejs.min.js?v={{ app_version }}"></script>
 </head>
 <body x-data="galleryApp()" x-init="init()">
-    <div class="shell" :class="{ 'sidebar-collapsed': sidebarCollapsed && !compactViewport, 'compact-layout': compactViewport, 'sidebar-drawer-open': sidebarDrawerOpen }">
+    <div class="shell" x-ref="shell" :class="{ 'sidebar-collapsed': sidebarCollapsed && !compactViewport, 'compact-layout': compactViewport, 'sidebar-drawer-open': sidebarDrawerOpen }">
         <div class="sidebar-backdrop" x-show="compactViewport && sidebarDrawerOpen" x-transition.opacity @click="closeSidebarDrawer()" x-cloak></div>
-        <aside class="sidebar" :class="{ collapsed: sidebarCollapsed && !compactViewport, open: sidebarDrawerOpen, compact: compactViewport }">
+        <aside class="sidebar" x-ref="sidebar" :class="{ collapsed: sidebarCollapsed && !compactViewport, open: sidebarDrawerOpen, compact: compactViewport }">
             <div class="sidebar-head">
                 <button class="icon-button mobile-only" @click="toggleSidebar()" aria-label="切换边栏">
                     <span></span>
@@ -105,8 +105,8 @@
 
         </aside>
 
-        <main class="workspace">
-            <header class="topbar" :class="{ compact: headerCompact }">
+        <main class="workspace" x-ref="workspace">
+            <header class="topbar" x-ref="topbar" :class="{ compact: headerCompact }">
                 <div class="topbar-left">
                     <button class="icon-button" @click="toggleSidebar()" aria-label="切换边栏">
                         <span></span>
@@ -410,6 +410,7 @@
                             </div>
                         </div>
                     </div>
+                </div>
             </section>
 
             <section class="panel-view" data-testid="section-review" x-show="currentView === 'review'" x-cloak>
@@ -1327,10 +1328,6 @@
                                         :data-src="pair.livephoto?.url"
                                     ></video>
                                 </template>
-                                <div class="detail-badges">
-                                    <span class="photo-badge" x-text="`第 ${pair.pair_index} 组`"></span>
-                                    <span class="photo-badge live" x-show="pair.livephoto">Live Photo</span>
-                                </div>
                                 <div class="card-trash-zone detail-card-trash" @click.stop>
                                     <template x-if="!pairDeletePending(detail.folder?.folder_name, pair.pair_index)">
                                         <button class="mini-trash-button" @click="askDeletePair(detail.folder?.folder_name, pair.pair_index)" aria-label="删除图片">
