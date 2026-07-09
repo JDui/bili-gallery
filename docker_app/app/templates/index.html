@@ -878,6 +878,7 @@
                                             <span x-text="subscriptionBadgeText(item)"></span>
                                         </template>
                                     </span>
+                                    <small class="subscription-overview-date" :style="subscriptionOverviewDateStyle(item)" x-text="subscriptionOverviewDateText(item)"></small>
                                     <strong x-text="item.uname || item.name || item.uid"></strong>
                                     <small x-text="subscriptionOverviewPostText(item)"></small>
                                     <small x-text="subscriptionOverviewImageText(item)"></small>

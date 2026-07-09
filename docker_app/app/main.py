@@ -27,7 +27,7 @@ from app.services.scheduler import SchedulerService
 from app.services.site_syncer import SiteSyncManager
 from app.services.storage import StorageService
 from app.services.thumbnailer import ThumbnailService
-from app.services.utils import loads_json
+from app.services.utils import format_pub_time, loads_json
 from app.version import APP_NAME, APP_TITLE, APP_VERSION
 
 config = load_config()
@@ -383,6 +383,45 @@ async def clear_site_filter_logs() -> dict[str, Any]:
     return {"ok": True, "message": f"已清理 {removed} 条站点过滤日志", "removed": removed}
 
 
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _latest_subscription_pull_at() -> str | None:
+    latest_at: str | None = None
+    for task_type in ("pull", "site-sync"):
+        task = db.last_task_run(task_type)
+        if not task:
+            continue
+        candidate = str(task.get("finished_at") or task.get("created_at") or "")
+        if candidate and (latest_at is None or candidate > latest_at):
+            latest_at = candidate
+    return latest_at
+
+
+def _latest_content_fields(*stats: dict[str, Any]) -> dict[str, Any]:
+    latest_ts = 0
+    latest_at = ""
+    for stat in stats:
+        if not stat:
+            continue
+        candidate_ts = _safe_int(stat.get("latest_content_ts"))
+        candidate_at = str(stat.get("latest_content_at") or "")
+        if candidate_ts > latest_ts:
+            latest_ts = candidate_ts
+            latest_at = candidate_at or format_pub_time(candidate_ts)
+            continue
+        if not latest_ts and candidate_at and candidate_at > latest_at:
+            latest_at = candidate_at
+    return {
+        "latest_content_at": latest_at or None,
+        "latest_content_ts": latest_ts,
+    }
+
+
 def _subscription_stats() -> list[dict[str, Any]]:
     if db.gallery_index_ready():
         stats_by_uid = {
@@ -393,6 +432,8 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "image_count": int(item.get("image_count") or 0),
                 "livephoto_count": int(item.get("livephoto_count") or 0),
                 "asset_count": int(item.get("asset_count") or 0),
+                "latest_content_ts": int(item.get("latest_content_ts") or 0),
+                "latest_content_at": item.get("latest_content_at"),
             }
             for item in db.subscription_stats_from_index()
         }
@@ -420,12 +461,18 @@ def _subscription_stats() -> list[dict[str, Any]]:
                     "image_count": 0,
                     "livephoto_count": 0,
                     "asset_count": 0,
+                    "latest_content_ts": 0,
+                    "latest_content_at": None,
                 },
             )
             entry["folder_count"] += 1
             entry["image_count"] += int(folder_assets.get("image_count") or int(bool(folder.get("has_images"))))
             entry["livephoto_count"] += int(folder_assets.get("livephoto_count") or int(bool(folder.get("has_livephoto"))))
             entry["asset_count"] += int(folder_assets.get("asset_count") or 0)
+            folder_pub_ts = _safe_int(folder.get("pub_ts"))
+            if folder_pub_ts >= _safe_int(entry.get("latest_content_ts")):
+                entry["latest_content_ts"] = folder_pub_ts
+                entry["latest_content_at"] = folder.get("pub_time") or (format_pub_time(folder_pub_ts) if folder_pub_ts else None)
     site_stats_by_uid = {
         db.site_subscription_uid(source_id): stat
         for source_id, stat in db.site_source_content_stats().items()
@@ -433,7 +480,9 @@ def _subscription_stats() -> list[dict[str, Any]]:
     output = []
     for item in db.list_subscriptions(include_paused=True):
         stat = stats_by_uid.get(str(item["uid"]), {})
+        site_stat = site_stats_by_uid.get(str(item["uid"]), {})
         image_total = int(stat.get("image_count") or 0)
+        latest_content = _latest_content_fields(stat, site_stat)
         output.append(
             {
                 **item,
@@ -445,6 +494,7 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "image_total": image_total,
                 "livephoto_count": stat.get("livephoto_count", 0),
                 "asset_count": stat.get("asset_count", 0),
+                **latest_content,
                 "is_site": str(item["uid"]).startswith("site:"),
             }
         )
@@ -456,6 +506,7 @@ def _subscription_stats() -> list[dict[str, Any]]:
         stat = stats_by_uid.get(uid, {})
         site_stat = site_stats_by_uid.get(uid, {})
         image_total = int(stat.get("image_count") or 0) or int(site_stat.get("asset_count") or 0)
+        latest_content = _latest_content_fields(stat, site_stat)
         output.append(
             {
                 "uid": uid,
@@ -478,6 +529,7 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "image_total": image_total,
                 "livephoto_count": stat.get("livephoto_count", 0),
                 "asset_count": stat.get("asset_count", 0) or site_stat.get("asset_count", 0),
+                **latest_content,
                 "is_site": True,
             }
         )
@@ -487,6 +539,7 @@ def _subscription_stats() -> list[dict[str, Any]]:
             continue
         site_stat = site_stats_by_uid.get(uid, {})
         image_total = int(stat.get("image_count") or 0) or int(site_stat.get("asset_count") or 0)
+        latest_content = _latest_content_fields(stat, site_stat)
         output.append(
             {
                 "uid": uid,
@@ -504,6 +557,7 @@ def _subscription_stats() -> list[dict[str, Any]]:
                 "image_total": image_total,
                 "livephoto_count": stat.get("livephoto_count", 0),
                 "asset_count": stat.get("asset_count", 0) or site_stat.get("asset_count", 0),
+                **latest_content,
                 "is_site": True,
             }
         )
@@ -667,7 +721,7 @@ def _looks_like_avatar_refresh_risk(message: str | None) -> bool:
 
 @app.get("/api/subscriptions")
 async def get_subscriptions() -> dict[str, Any]:
-    return {"items": _subscription_stats()}
+    return {"items": _subscription_stats(), "latest_pull_at": _latest_subscription_pull_at()}
 
 
 @app.post("/api/subscriptions")

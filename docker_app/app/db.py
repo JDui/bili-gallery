@@ -1129,14 +1129,15 @@ class Database:
             rows = conn.execute(sql, tuple(params)).fetchall()
         return [self._site_post_row(row) for row in rows]
 
-    def site_source_content_stats(self) -> dict[int, dict[str, int]]:
+    def site_source_content_stats(self) -> dict[int, dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
                 """
                 select
                     source_id,
                     count(*) as post_count,
-                    coalesce(sum(asset_count), 0) as asset_count
+                    coalesce(sum(asset_count), 0) as asset_count,
+                    max(coalesce(pub_date, '')) as latest_content_at
                 from site_posts
                 group by source_id
                 """
@@ -1145,6 +1146,7 @@ class Database:
             int(row["source_id"]): {
                 "post_count": int(row["post_count"] or 0),
                 "asset_count": int(row["asset_count"] or 0),
+                "latest_content_at": row["latest_content_at"] or None,
             }
             for row in rows
         }
@@ -2500,15 +2502,23 @@ class Database:
             rows = conn.execute(
                 """
                 select
-                    subscription_uid as uid,
-                    max(subscription_name) as uname,
+                    folder_index.subscription_uid as uid,
+                    max(folder_index.subscription_name) as uname,
                     count(*) as folder_count,
-                    sum(image_count) as image_count,
-                    sum(livephoto_count) as livephoto_count,
-                    sum(asset_count) as asset_count
+                    sum(folder_index.image_count) as image_count,
+                    sum(folder_index.livephoto_count) as livephoto_count,
+                    sum(folder_index.asset_count) as asset_count,
+                    max(folder_index.pub_ts) as latest_content_ts,
+                    (
+                        select latest.pub_time
+                        from folder_index as latest
+                        where latest.subscription_uid = folder_index.subscription_uid
+                        order by latest.pub_ts desc, latest.folder_name desc
+                        limit 1
+                    ) as latest_content_at
                 from folder_index
-                where coalesce(subscription_uid, '') != ''
-                group by subscription_uid
+                where coalesce(folder_index.subscription_uid, '') != ''
+                group by folder_index.subscription_uid
                 """
             ).fetchall()
         return [dict(row) for row in rows]

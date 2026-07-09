@@ -2463,6 +2463,55 @@ def test_avatar_refresh_risk_detection() -> None:
     assert app_main._looks_like_avatar_refresh_risk("普通网络错误") is False
 
 
+def test_subscriptions_api_includes_latest_content_and_pull_time(tmp_path: Path, monkeypatch) -> None:
+    from app import main as app_main
+
+    db, _storage, _syncer = make_app(tmp_path)
+    db.upsert_subscription("123", "测试 UP")
+    db.upsert_folder(
+        {
+            "folder_name": "older-folder",
+            "title": "旧动态",
+            "text_prefix": "",
+            "pub_ts": 1000,
+            "pub_time": "2026-07-01 08:00:00",
+            "top_dynamic_id": "top-old",
+            "source_dynamic_id": "source-old",
+            "subscription_uid": "123",
+            "subscription_name": "测试 UP",
+            "has_images": True,
+            "has_livephoto": False,
+        }
+    )
+    db.upsert_folder(
+        {
+            "folder_name": "latest-folder",
+            "title": "新动态",
+            "text_prefix": "",
+            "pub_ts": 2000,
+            "pub_time": "2026-07-02 10:30:00",
+            "top_dynamic_id": "top-new",
+            "source_dynamic_id": "source-new",
+            "subscription_uid": "123",
+            "subscription_name": "测试 UP",
+            "has_images": True,
+            "has_livephoto": False,
+        }
+    )
+    task_id = db.create_task_run("pull", "running", "开始拉取")
+    db.finish_task_run(task_id, "success", "拉取完成")
+
+    monkeypatch.setattr(app_main, "db", db)
+    client = TestClient(app_main.app)
+
+    payload = client.get("/api/subscriptions").json()
+    item = next(entry for entry in payload["items"] if entry["uid"] == "123")
+
+    assert payload["latest_pull_at"]
+    assert item["latest_content_at"] == "2026-07-02 10:30:00"
+    assert item["latest_content_ts"] == 2000
+
+
 def test_site_sync_skips_head_and_tail_images_but_keeps_video(tmp_path: Path) -> None:
     db, _storage, syncer = make_app(tmp_path)
     source = create_skip_source(db, 1, 2)

@@ -12,6 +12,7 @@ function galleryApp() {
     sidebarCounts: {},
     sidebarCountUpdatedAt: {},
     subscriptions: [],
+    latestSubscriptionPullAt: "",
     subscriptionPanel: ["overview", "up", "site"].includes(localStorage.getItem("subscription_panel"))
       ? localStorage.getItem("subscription_panel")
       : "overview",
@@ -443,6 +444,17 @@ function galleryApp() {
       document.body.scrollTop = 0;
       this.updateHeaderState(0);
       this.scheduleFixedLayoutMetrics();
+    },
+
+    scrollDetailTop() {
+      const detailShell = this.$refs?.detailShell || document.querySelector(".detail-shell");
+      if (!detailShell) {
+        return;
+      }
+      detailShell.scrollTop = 0;
+      if (typeof detailShell.scrollTo === "function") {
+        detailShell.scrollTo({ top: 0, behavior: "auto" });
+      }
     },
 
     measureGalleryMinHeight() {
@@ -1183,6 +1195,7 @@ function galleryApp() {
     async loadSubscriptions() {
       const payload = await this.api("/api/subscriptions");
       const previousExpanded = { ...(this.subscriptionExpanded || {}) };
+      this.latestSubscriptionPullAt = payload.latest_pull_at || this.latestSubscriptionPullAt || "";
       this.subscriptions = (payload.items || []).map((item) => this.normalizeSubscriptionItem(item));
       this.sidebarCounts = { ...this.sidebarCounts, subscriptions: this.subscriptions.length };
       this.subscriptionExpanded = Object.fromEntries(
@@ -1307,6 +1320,24 @@ function galleryApp() {
 
     subscriptionOverviewImageText(item) {
       return `${this.subscriptionImageTotal(item)}张`;
+    },
+
+    subscriptionOverviewDateText(item) {
+      return this.formatDateYMD(item?.latest_content_at || item?.latest_content_ts) || "----/--/--";
+    },
+
+    subscriptionOverviewDateStyle(item) {
+      const contentDate = this.parseDateValue(item?.latest_content_at || item?.latest_content_ts);
+      const pullDate = this.parseDateValue(this.latestSubscriptionPullAt || item?.latest_pull_at || item?.updated_at);
+      if (!contentDate || !pullDate) {
+        return "color: rgba(102, 115, 134, 0.48);";
+      }
+      const dayMs = 24 * 60 * 60 * 1000;
+      const contentDay = new Date(contentDate.getFullYear(), contentDate.getMonth(), contentDate.getDate()).getTime();
+      const pullDay = new Date(pullDate.getFullYear(), pullDate.getMonth(), pullDate.getDate()).getTime();
+      const ageDays = Math.max(0, (pullDay - contentDay) / dayMs);
+      const alpha = Math.max(0.3, 0.92 - Math.min(ageDays / 180, 1) * 0.62);
+      return `color: rgba(21, 29, 42, ${alpha.toFixed(2)});`;
     },
 
     subscriptionImageTotal(item) {
@@ -2113,6 +2144,7 @@ function galleryApp() {
         window.clearTimeout(this.detailCloseTimer);
         this.detailCloseTimer = null;
       }
+      const resetDetailScroll = () => this.$nextTick(() => this.scrollDetailTop());
       this.setInteracting(360);
       this.cancelDeleteViewerPair();
       this.pauseCurrentViewerMedia(true);
@@ -2129,6 +2161,7 @@ function galleryApp() {
           folder: previewFolder ? { ...cached.folder, ...previewFolder } : cached.folder,
         };
         this.syncBodyLock();
+        resetDetailScroll();
         this.scheduleDetailThumbnailPromotion(folderName, requestId);
         return;
       }
@@ -2141,6 +2174,7 @@ function galleryApp() {
         videos: this.detail.folder?.folder_name === folderName ? (this.detail.videos || []) : [],
       };
       this.syncBodyLock();
+      resetDetailScroll();
       if (requestId !== this.detailRequestId) {
         return;
       }
@@ -2159,6 +2193,7 @@ function galleryApp() {
             videos: payload.videos || [],
           };
           this.syncBodyLock();
+          resetDetailScroll();
         };
         if ((this.detail.pairs || []).length) {
           this.animateDetailReflow(applyDetailPayload);
@@ -4916,6 +4951,52 @@ function galleryApp() {
         return String(value || "");
       }
       return date.toLocaleString("zh-CN", { hour12: false });
+    },
+
+    formatDateYMD(value) {
+      const date = this.parseDateValue(value);
+      if (!date) {
+        return "";
+      }
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      return `${year}/${month}/${day}`;
+    },
+
+    parseDateValue(value) {
+      if (value === null || value === undefined || value === "") {
+        return null;
+      }
+      if (typeof value === "number" && Number.isFinite(value)) {
+        if (value <= 0) {
+          return null;
+        }
+        const timestamp = value > 100000000000 ? value : value * 1000;
+        const date = new Date(timestamp);
+        return Number.isNaN(date.getTime()) ? null : date;
+      }
+      const raw = String(value).trim();
+      if (!raw) {
+        return null;
+      }
+      if (/^\d+$/.test(raw)) {
+        return this.parseDateValue(Number(raw));
+      }
+      const match = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+      if (match) {
+        const date = new Date(
+          Number(match[1]),
+          Number(match[2]) - 1,
+          Number(match[3]),
+          Number(match[4] || 0),
+          Number(match[5] || 0),
+          Number(match[6] || 0),
+        );
+        return Number.isNaN(date.getTime()) ? null : date;
+      }
+      const date = new Date(raw);
+      return Number.isNaN(date.getTime()) ? null : date;
     },
 
     async refreshStorageStats(force = false) {

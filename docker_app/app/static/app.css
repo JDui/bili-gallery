@@ -4243,7 +4243,7 @@ html.is-interacting .detail-backdrop {
     justify-items: center;
     align-content: start;
     gap: 5px;
-    min-height: 154px;
+    min-height: 176px;
     padding: 12px 8px 14px;
     border-radius: var(--radius-card);
     border: 1px solid rgba(213, 222, 234, 0);
@@ -4286,6 +4286,12 @@ html.is-interacting .detail-backdrop {
 .subscription-icon-tile small {
     color: var(--muted);
     line-height: 1.25;
+}
+
+.subscription-icon-tile .subscription-overview-date {
+    font-size: 12px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
 }
 
 .site-source-card-list,
