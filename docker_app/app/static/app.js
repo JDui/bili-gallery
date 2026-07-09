@@ -31,7 +31,7 @@ function galleryApp() {
       { key: "site", label: "站点订阅" },
     ],
     searchTags: ["九图", "Live Photo", "收藏", "站点订阅", "COS", "写真", "视频", "转发"],
-    gallery: { items: [], total: 0, page: 1, page_size: 48, total_pages: 1 },
+    gallery: { items: [], total: 0, page: 1, page_size: 36, total_pages: 1 },
     galleryLoading: false,
     galleryMinHeight: 0,
     galleryViewMode: localStorage.getItem("gallery_view_mode") || "folder",
@@ -233,8 +233,10 @@ function galleryApp() {
     taskInspectorLoading: false,
     toast: { open: false, tone: "info", title: "", message: "" },
     toastTimer: null,
+    statusRefreshTimer: null,
     lastTaskId: null,
     lastRunning: false,
+    taskHistoryExpanded: false,
     viewerSyntheticTapUntil: 0,
     bodyLockTop: null,
     bodyLockPaddingRight: "",
@@ -265,12 +267,8 @@ function galleryApp() {
       window.addEventListener("pointercancel", () => this.finishTimeFilterDrag());
       this.updateHeaderState();
       this.refreshGallery(true).catch(() => {});
-      this.scheduleIdleWork(() => this.loadSidebarCounts().catch(() => {}), 500);
-      this.scheduleIdleWork(() => this.refreshSidebarCounts().catch(() => {}), 1800);
-      this.scheduleIdleWork(() => this.refreshStatus().catch(() => {}), 400);
-      this.scheduleIdleWork(() => this.refreshMeta().catch(() => {}), 900);
-      this.scheduleIdleWork(() => this.loadSubscriptions().catch(() => {}), 1100);
-      window.setInterval(() => this.refreshStatus(), 5000);
+      this.loadBootstrap().catch(() => {});
+      this.scheduleStatusRefresh();
       window.setInterval(() => {
         if (this.qr.image_data_url && this.currentView === "settings") {
           this.pollQrStatus();
@@ -737,6 +735,30 @@ function galleryApp() {
     async loadSidebarCounts() {
       const payload = await this.api("/api/sidebar-counts");
       this.applySidebarCounts(payload);
+    },
+
+    async loadBootstrap() {
+      await Promise.all([
+        this.refreshStatus(),
+        this.refreshMeta(),
+        this.loadSubscriptions(),
+      ]);
+    },
+
+    scheduleStatusRefresh() {
+      if (this.statusRefreshTimer) {
+        window.clearTimeout(this.statusRefreshTimer);
+      }
+      const running = !!this.pullStatus?.running || !!this.siteStatus?.running;
+      const delay = running ? 3000 : 20000;
+      this.statusRefreshTimer = window.setTimeout(async () => {
+        this.statusRefreshTimer = null;
+        try {
+          await this.refreshStatus();
+        } finally {
+          this.scheduleStatusRefresh();
+        }
+      }, delay);
     },
 
     async refreshSidebarCounts(keys = null) {
@@ -1604,7 +1626,7 @@ function galleryApp() {
     },
 
     preferredGalleryPageSize() {
-      return Math.max(24, this.visibleGalleryBatchSize() * 4);
+      return Math.max(24, this.visibleGalleryBatchSize() * 3);
     },
 
     cancelGalleryBatchWork() {
@@ -1787,6 +1809,9 @@ function galleryApp() {
         this.gallerySmallObserver = null;
       }
       const nextQuality = { ...this.galleryCardQuality };
+      const itemsByKey = new Map(
+        (this.gallery.items || []).map((item) => [this.galleryItemKey(item), item]),
+      );
       this.galleryCardObserver = new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
           const key = entry.target.getAttribute("data-gallery-key");
@@ -1794,23 +1819,40 @@ function galleryApp() {
             return;
           }
           if (entry.isIntersecting) {
-            const item = (this.gallery.items || []).find((candidate) => this.galleryItemKey(candidate) === key);
-            this.preloadGalleryTinyItem(item);
+            this.preloadGalleryTinyItem(itemsByKey.get(key));
           }
         });
-      }, { root: null, rootMargin: "300% 0px", threshold: 0 });
+      }, { root: null, rootMargin: "180% 0px", threshold: 0 });
+      this.gallerySmallObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) {
+            return;
+          }
+          const key = entry.target.getAttribute("data-gallery-key");
+          if (!key || entry.target.classList.contains("deleted-placeholder-card")) {
+            return;
+          }
+          const current = this.galleryCardQuality[key] || "tiny";
+          if (this.galleryQualityRank(current) < this.galleryQualityRank("small")) {
+            this.queueGallerySmallItem(itemsByKey.get(key));
+          }
+        });
+      }, { root: null, rootMargin: "100% 0px", threshold: 0 });
       document.querySelectorAll(".gallery-item-card[data-gallery-key]").forEach((element) => {
         const key = element.getAttribute("data-gallery-key");
         if (key && nextQuality[key] === undefined) {
           nextQuality[key] = "tiny";
         }
         this.galleryCardObserver.observe(element);
+        this.gallerySmallObserver.observe(element);
       });
       this.galleryCardQuality = nextQuality;
-      this.scheduleGallerySmallPromotion(80);
     },
 
     scheduleGallerySmallPromotion(delay = 220) {
+      if (typeof IntersectionObserver !== "undefined") {
+        return;
+      }
       if (this.gallerySmallPromotionTimer) {
         window.clearTimeout(this.gallerySmallPromotionTimer);
       }
@@ -1823,6 +1865,9 @@ function galleryApp() {
     },
 
     promoteVisibleGallerySmall() {
+      if (typeof IntersectionObserver !== "undefined") {
+        return;
+      }
       if (this.currentView !== "gallery" || this.detail.open || this.viewer.open) {
         return;
       }
@@ -3895,6 +3940,33 @@ function galleryApp() {
       }
     },
 
+    visibleTaskRuns() {
+      const runs = this.taskRuns || [];
+      if (this.taskHistoryExpanded) {
+        return runs;
+      }
+      const attention = runs.filter((item) => item.status !== "success");
+      const recentSuccess = runs.filter((item) => item.status === "success").slice(0, 3);
+      return [...attention, ...recentSuccess]
+        .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index)
+        .sort((left, right) => Number(right.id || 0) - Number(left.id || 0));
+    },
+
+    hasHiddenTaskRuns() {
+      return !this.taskHistoryExpanded && this.visibleTaskRuns().length < (this.taskRuns || []).length;
+    },
+
+    taskSummary(item) {
+      const message = String(item?.message || item?.status || "");
+      if (item?.status === "success" || item?.status === "running") {
+        return message;
+      }
+      if (/timed out|timeout|超时/i.test(message)) {
+        return "请求超时，请检查网络或提高超时设置。";
+      }
+      return "任务未完成，请查看日志与细节后重试。";
+    },
+
     formatInspectorJson(payload) {
       try {
         return JSON.stringify(payload || {}, null, 2);
@@ -5283,6 +5355,7 @@ function galleryApp() {
       }
       const result = await this.api(url, { method: "POST" });
       this.clearLocalGalleryCaches();
+      this.scheduleStatusRefresh();
       await Promise.all([
         this.refreshStatus(),
         this.refreshTasks(),
@@ -5292,6 +5365,9 @@ function galleryApp() {
     },
 
     runPullButtonLabel() {
+      if (this.compactViewport) {
+        return "拉取";
+      }
       if (this.currentView === "gallery" && this.selectedSubscriptionUids.length === 1) {
         return "拉取当前订阅";
       }
@@ -5303,11 +5379,14 @@ function galleryApp() {
       const previousTaskId = this.lastTaskId;
       const previousSiteRunning = this.lastSiteRunning;
       const previousSiteTaskId = this.lastSiteTaskId;
-      const [pullStatus, health] = await Promise.all([this.api("/api/pull/status"), this.api("/api/health")]);
-      this.pullStatus = pullStatus;
+      const health = await this.api("/api/health");
+      this.pullStatus = health.status || {};
       this.siteStatus = health.site_status || {};
       this.siteStats = health.site_stats || {};
       this.galleryIndexStatus = health.gallery_index || this.galleryIndexStatus || {};
+      if (health.sidebar_counts) {
+        this.applySidebarCounts(health.sidebar_counts);
+      }
       const currentTaskId = this.pullStatus.last_run?.id || null;
       const currentSiteTaskId = this.siteStatus.last_run?.id || null;
       this.lastRunning = !!this.pullStatus.running;

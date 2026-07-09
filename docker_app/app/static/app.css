@@ -2119,6 +2119,12 @@ html.is-interacting .detail-backdrop {
     color: var(--muted);
 }
 
+.task-history-toggle {
+    display: flex;
+    justify-content: center;
+    padding: 6px 0 18px;
+}
+
 .inline-tags {
     display: flex;
     gap: 8px;
@@ -3692,7 +3698,8 @@ html.is-interacting .detail-backdrop {
 
     .topbar {
         top: 12px;
-        flex-direction: row;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
         gap: 8px;
         padding: 8px 10px;
@@ -3755,17 +3762,31 @@ html.is-interacting .detail-backdrop {
         font-size: 11px;
     }
 
-    .topbar-actions {
-        flex-wrap: nowrap;
-        gap: 6px;
-        margin-left: auto;
+    .topbar-left {
+        grid-column: 1;
         min-width: 0;
-        overflow-x: auto;
-        scrollbar-width: none;
     }
 
-    .topbar-actions::-webkit-scrollbar {
+    .topbar-actions {
+        display: contents;
+    }
+
+    .topbar .status-pill {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        width: 100%;
+        min-width: 0;
+        justify-content: flex-start;
+    }
+
+    .topbar-actions .secondary-button {
         display: none;
+    }
+
+    .topbar-actions .primary-button {
+        grid-column: 2;
+        grid-row: 1;
+        min-width: 52px;
     }
 
     .topbar .status-pill {
@@ -3998,7 +4019,7 @@ html.is-interacting .detail-backdrop {
     }
 
     .topbar .status-pill {
-        max-width: 88px;
+        max-width: none;
         overflow: hidden;
         white-space: nowrap;
         text-overflow: ellipsis;

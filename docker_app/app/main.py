@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -81,7 +82,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=APP_TITLE, lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(config.app_root / "static")), name="static")
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.mount(
+    "/static",
+    CacheControlStaticFiles(
+        directory=str(config.app_root / "static"),
+        cache_control="public, max-age=31536000, immutable",
+    ),
+    name="static",
+)
 app.mount(
     "/storage",
     CacheControlStaticFiles(

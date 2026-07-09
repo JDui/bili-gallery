@@ -139,12 +139,12 @@
                     </div>
                 </div>
                 <div class="topbar-actions">
-                    <div class="status-pill">
+                    <div class="status-pill" role="status" aria-live="polite">
                         <span class="status-dot" :class="{ running: pullStatus.running }"></span>
                         <span x-text="pullStatus.message || '空闲'"></span>
                     </div>
                     <button class="secondary-button" @click="openSettings()">设置</button>
-                    <button class="primary-button" @click="runPull()" x-text="runPullButtonLabel()"></button>
+                    <button class="primary-button" @click="runPull()" :aria-label="runPullButtonLabel()" :title="runPullButtonLabel()" x-text="runPullButtonLabel()"></button>
                 </div>
             </header>
 
@@ -172,7 +172,7 @@
                     <form class="search-engine-form" @submit.prevent="applySearch()">
                         <label class="search-engine-field">
                             <span class="search-glyph" aria-hidden="true"></span>
-                            <input type="search" x-model="searchDraft" placeholder="搜索标题、正文、订阅源或文件夹名" autocomplete="off">
+                            <input type="search" x-model="searchDraft" placeholder="搜索标题、正文、订阅源或文件夹名" aria-label="搜索标题、正文、订阅源或文件夹名" autocomplete="off">
                             <button type="button" class="search-clear-button" x-show="searchDraft || searchQuery" @click="clearSearch()" aria-label="清空搜索">×</button>
                         </label>
                         <button class="primary-button search-submit-button" type="submit">搜索</button>
@@ -555,11 +555,11 @@
                         </div>
                     </div>
                 </article>
-                <template x-for="item in taskRuns" :key="item.id">
+                <template x-for="item in visibleTaskRuns()" :key="item.id">
                     <article class="panel-card">
                         <div class="panel-card-main">
                             <h4 x-text="`${item.task_type} #${item.id}`"></h4>
-                            <p x-text="item.message || item.status"></p>
+                            <p x-text="taskSummary(item)"></p>
                             <div class="inline-tags">
                                 <span class="inline-tag" x-text="item.status"></span>
                                 <span class="inline-tag" x-text="item.created_at"></span>
@@ -575,6 +575,12 @@
                         </div>
                     </article>
                 </template>
+                <div class="task-history-toggle" x-show="hasHiddenTaskRuns()" x-cloak>
+                    <button class="secondary-button" @click="taskHistoryExpanded = true" x-text="`展开全部 ${taskRuns.length} 条历史`"></button>
+                </div>
+                <div class="task-history-toggle" x-show="taskHistoryExpanded && taskRuns.length > 3" x-cloak>
+                    <button class="secondary-button" @click="taskHistoryExpanded = false">仅显示待处理与最近成功任务</button>
+                </div>
             </section>
 
             <section class="panel-view" data-testid="section-trash" x-show="currentView === 'trash'" x-cloak>
@@ -680,8 +686,8 @@
                                 <option value="popup">站内小浮窗</option>
                             </select>
                         </label>
-                        <label>关键词列表</label>
-                        <textarea rows="10" x-model="keywordText"></textarea>
+                        <label for="ad-filter-keywords">关键词列表</label>
+                        <textarea id="ad-filter-keywords" rows="10" x-model="keywordText" aria-label="推广过滤关键词列表"></textarea>
                         <p class="field-copy">每行一个关键词，命中后动态进入待审核列表。</p>
                     </article>
 
@@ -1442,7 +1448,7 @@
             </div>
         </div>
 
-        <div class="toast-stack" x-show="toast.open" x-transition.opacity x-cloak>
+        <div class="toast-stack" x-show="toast.open" x-transition.opacity x-cloak aria-live="polite" aria-atomic="true">
             <article class="toast" :class="toast.tone">
                 <div class="toast-head">
                     <strong x-text="toast.title"></strong>
