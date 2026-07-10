@@ -464,6 +464,15 @@ class SourceParser:
         return None
 
     def _gallery_epic_assets(self, text: str) -> list[ParsedAsset]:
+        serialized_image_ids = self._gallery_epic_serialized_image_ids(text)
+        if serialized_image_ids:
+            static_origin_match = re.search(
+                r"(https://static\.galleryepic\.[A-Za-z.]+/image)/[A-Za-z0-9_-]+",
+                text,
+            )
+            static_origin = static_origin_match.group(1) if static_origin_match else "https://static.galleryepic.xyz/image"
+            return [ParsedAsset(f"{static_origin}/{image_id}", "image") for image_id in serialized_image_ids]
+
         cutoff_candidates = [
             text.find('href="/zh/cosplay/'),
             text.find('\\"href\\":\\"/zh/cosplay/'),
@@ -480,6 +489,21 @@ class SourceParser:
                 continue
             assets.append(ParsedAsset(url, "image"))
         return assets
+
+    def _gallery_epic_serialized_image_ids(self, text: str) -> list[str]:
+        image_lists: list[list[str]] = []
+        pattern = re.compile(
+            r"(?:\\+)?[\"']images(?:\\+)?[\"']\s*:\s*(?:\\+)?[\"'](?P<images>\[.*?\])(?:\\+)?[\"']",
+            re.DOTALL,
+        )
+        for match in pattern.finditer(text):
+            image_ids = re.findall(
+                r"(?<![A-Za-z0-9_-])([A-Za-z0-9][A-Za-z0-9_-]{7,})(?![A-Za-z0-9_-])",
+                match.group("images"),
+            )
+            if image_ids:
+                image_lists.append(list(dict.fromkeys(image_ids)))
+        return max(image_lists, key=len, default=[])
 
     def _xml_source_hint(self, text: str) -> tuple[str | None, str | None]:
         try:

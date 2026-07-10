@@ -123,6 +123,40 @@ def test_gallery_epic_next_stream_is_discovered_and_parsed(tmp_path: Path) -> No
     assert all("image/avatar" not in asset.url for asset in posts[0].assets)
 
 
+def test_gallery_epic_load_more_uses_complete_serialized_image_list(tmp_path: Path) -> None:
+    image_ids = [f"00000000-0000-4000-8000-{index:012d}" for index in range(1, 23)]
+    encoded_images = dumps_json(image_ids).replace('"', r'\\\"')
+    detail_file = tmp_path / "gallery-epic-load-more.html"
+    detail_file.write_text(
+        f"""
+        <!doctype html>
+        <title>Complete Gallery | Gallery Epic</title>
+        <script>self.__next_f.push([1,"\\\"id\\\":5753,\\\"images\\\":\\\"{encoded_images}\\\""])</script>
+        <img src="https://static.galleryepic.xyz/image/{image_ids[0]}">
+        <img src="https://static.galleryepic.xyz/image/{image_ids[1]}">
+        <a class="moreImages">加载更多</a>
+        <a href="/zh/cosplay/9999">Related</a>
+        <img src="https://static.galleryepic.xyz/image/related-should-not-be-included">
+        """,
+        encoding="utf-8",
+    )
+
+    post = SourceParser(PageFetcher()).parse_detail(
+        detail_file.resolve().as_uri(),
+        {
+            "title_selector": "h1",
+            "date_selector": DEFAULT_DATE_SELECTOR,
+            "tag_selector": DEFAULT_TAG_SELECTOR,
+            "body_selector": DEFAULT_BODY_SELECTOR,
+            "media_selector": DEFAULT_MEDIA_SELECTOR,
+        },
+    )
+
+    assert [asset.url for asset in post.assets] == [
+        f"https://static.galleryepic.xyz/image/{image_id}" for image_id in image_ids
+    ]
+
+
 def test_gallery_epic_cosplay_grid_anchor_cards_parse_with_fallback(tmp_path: Path, monkeypatch) -> None:
     from app.services import site_parser
 
