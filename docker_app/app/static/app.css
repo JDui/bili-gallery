@@ -456,7 +456,6 @@ video {
     flex-direction: column;
     gap: 18px;
     overflow-x: clip;
-    transition: padding-top var(--duration-base) var(--ease-fluid);
 }
 
 .topbar,
@@ -611,7 +610,13 @@ html.is-interacting .detail-backdrop {
     gap: 10px;
     flex-wrap: wrap;
     margin-top: 12px;
+    min-height: 32px;
     transition: opacity var(--duration-fast) var(--ease-soft), transform var(--duration-base) var(--ease-fluid);
+}
+
+.topbar-meta-placeholder {
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .topbar.compact {
@@ -914,9 +919,9 @@ html.is-interacting .detail-backdrop {
 .settings-pane,
 .gallery-stage {
     min-width: 0;
-    animation: page-in var(--duration-base) var(--ease-fluid);
+    animation: view-fade-in var(--duration-fast) var(--ease-soft);
     backface-visibility: hidden;
-    transform: translateZ(0);
+    transform: none;
 }
 
 .view-enter,
@@ -939,6 +944,72 @@ html.is-interacting .detail-backdrop {
 
 .gallery-layout {
     position: relative;
+}
+
+.gallery-virtual-page {
+    position: relative;
+}
+
+.gallery-virtual-spacer {
+    width: 100%;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+html[data-performance-mode="low"] .sidebar,
+html[data-performance-mode="low"] .sidebar-backdrop,
+html[data-performance-mode="low"] .topbar,
+html[data-performance-mode="low"] .detail-shell,
+html[data-performance-mode="low"] .inspector-shell,
+html[data-performance-mode="low"] .source-preview-shell,
+html[data-performance-mode="low"] .viewer-shell,
+html[data-performance-mode="low"] .photo-badge,
+html[data-performance-mode="low"] .photo-count-badge,
+html[data-performance-mode="low"] .mini-trash-button,
+html[data-performance-mode="low"] .mini-confirm-row,
+html[data-performance-mode="low"] .detail-post-nav,
+html[data-performance-mode="low"] .viewer-floating-left,
+html[data-performance-mode="low"] .viewer-floating .secondary-button {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+html[data-performance-mode="low"] .photo-visual::before,
+html[data-performance-mode="low"] .photo-collage-tile::before,
+html[data-performance-mode="low"] .asset-visual::before,
+html[data-performance-mode="low"] .detail-thumb::before,
+html[data-performance-mode="low"] .link-badge.image::before {
+    content: none;
+    filter: none;
+    transform: none;
+}
+
+html[data-performance-mode="low"] .photo-card,
+html[data-performance-mode="low"] .detail-card,
+html[data-performance-mode="low"] .sidebar,
+html[data-performance-mode="low"] .topbar {
+    box-shadow: 0 1px 6px rgba(45, 58, 75, 0.08);
+    transition: none;
+}
+
+html[data-performance-mode="low"] .photo-card.tiny-quality .photo-collage-tile img,
+html[data-performance-mode="low"] .photo-card.tiny-quality .asset-visual img,
+html[data-performance-mode="low"] .detail-card.tiny-quality .detail-thumb img {
+    filter: none;
+    transform: none;
+}
+
+html.is-interacting .photo-card,
+html.is-interacting .detail-card {
+    box-shadow: none;
+}
+
+html.is-interacting .photo-visual::before,
+html.is-interacting .photo-collage-tile::before,
+html.is-interacting .asset-visual::before,
+html.is-interacting .detail-thumb::before {
+    opacity: 0;
+    filter: none;
 }
 
 .gallery-main {
@@ -2450,6 +2521,7 @@ html.is-interacting .detail-backdrop {
     backface-visibility: hidden;
     overscroll-behavior: contain;
     scroll-behavior: smooth;
+    overflow-anchor: none;
     transition: transform var(--duration-base) var(--ease-fluid), opacity var(--duration-fast) var(--ease-soft);
 }
 
@@ -2699,6 +2771,14 @@ html.is-interacting .detail-backdrop {
     grid-template-columns: repeat(var(--detail-columns, 4), minmax(0, 1fr));
     justify-content: start;
     gap: 14px;
+    overflow-anchor: none;
+}
+
+.detail-virtual-spacer {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-height: 0;
+    pointer-events: none;
 }
 
 .detail-card {
@@ -3238,6 +3318,15 @@ html.is-interacting .detail-backdrop {
     100% {
         opacity: 1;
         transform: translate3d(0, 0, 0);
+    }
+}
+
+@keyframes view-fade-in {
+    0% {
+        opacity: 0.96;
+    }
+    100% {
+        opacity: 1;
     }
 }
 

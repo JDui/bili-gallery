@@ -8,7 +8,7 @@
     <script defer src="/static/app.js?v={{ app_version }}"></script>
     <script defer src="/static/vendor/alpinejs.min.js?v={{ app_version }}"></script>
 </head>
-<body x-data="galleryApp()" x-init="init()">
+<body x-data="galleryApp()">
     <div class="shell" x-ref="shell" :class="{ 'sidebar-collapsed': sidebarCollapsed && !compactViewport, 'compact-layout': compactViewport, 'sidebar-drawer-open': sidebarDrawerOpen }">
         <div class="sidebar-backdrop" x-show="compactViewport && sidebarDrawerOpen" x-transition.opacity @click="closeSidebarDrawer()" x-cloak></div>
         <aside class="sidebar" x-ref="sidebar" :class="{ collapsed: sidebarCollapsed && !compactViewport, open: sidebarDrawerOpen, compact: compactViewport }">
@@ -128,7 +128,7 @@
                                 </template>
                             </div>
                         </div>
-                        <div class="topbar-meta" x-show="currentView === 'gallery'">
+                        <div class="topbar-meta" :class="{ 'topbar-meta-placeholder': currentView !== 'gallery' }" :aria-hidden="currentView !== 'gallery'">
                             <template x-for="item in compactStats()" :key="item.label">
                                 <span class="meta-chip">
                                     <strong x-text="item.value"></strong>
@@ -241,12 +241,15 @@
                 <div class="gallery-layout" x-show="!searchActive() || searchQuery" x-cloak>
                     <div class="gallery-main" :class="{ 'is-loading': galleryLoading }" :style="galleryMainStyle()" :key="galleryRenderKey">
                         <template x-if="displayedGalleryViewMode === 'folder'">
-                            <div class="masonry gallery-page" :style="galleryMasonryStyle()">
-                                <template x-for="item in gallery.items" :key="galleryItemKey(item)">
+                            <div class="gallery-virtual-page">
+                                <div class="gallery-virtual-spacer" data-gallery-virtual-top :style="galleryVirtualSpacerStyle('top')"></div>
+                                <div class="masonry gallery-page" :style="galleryMasonryStyle()">
+                                <template x-for="item in galleryWindowItems()" :key="galleryItemKey(item)">
                                             <article
                                                 class="photo-card gallery-item-card"
                                                 data-testid="photo-card"
                                                 :data-gallery-key="galleryItemKey(item)"
+                                                :data-gallery-index="item.__gallery_index ?? ''"
                                                 :data-year-key="item.year_key"
                                                 :data-month-key="item.month_key"
                                                 :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder, 'is-appearing': item.__appearing, 'tiny-quality': galleryQualityFor(item) !== 'small', 'small-quality': galleryQualityFor(item) === 'small' }"
@@ -265,8 +268,8 @@
                                                     <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
                                                         <template x-for="tile in item.preview_tiles" :key="tile.id">
                                                             <div class="photo-collage-tile" :style="tileTinyStyle(tile)">
-                                                                <template x-if="galleryQualityFor(item) === 'small'">
-                                                                    <img loading="eager" decoding="async" :src="galleryTileUrl(tile, item)" :alt="item.title" :width="tile.width || null" :height="tile.height || null" @load="fadeLoadedImage($event)">
+                                                                <template x-if="galleryQualityFor(item) === 'small' && galleryTileUrl(tile, item)">
+                                                                    <img loading="lazy" decoding="async" :src="galleryTileUrl(tile, item)" :alt="item.title" :width="tile.width || null" :height="tile.height || null" @load="fadeLoadedImage($event)">
                                                                 </template>
                                                             </div>
                                                         </template>
@@ -304,14 +307,19 @@
                                                     </template>
                                             </article>
                                         </template>
+                                </div>
+                                <div class="gallery-virtual-spacer" data-gallery-virtual-bottom :style="galleryVirtualSpacerStyle('bottom')"></div>
                             </div>
                         </template>
                         <template x-if="displayedGalleryViewMode === 'pair'">
-                            <div class="masonry asset-masonry gallery-page" :style="galleryMasonryStyle()">
-                                <template x-for="item in gallery.items" :key="galleryItemKey(item)">
+                            <div class="gallery-virtual-page">
+                                <div class="gallery-virtual-spacer" data-gallery-virtual-top :style="galleryVirtualSpacerStyle('top')"></div>
+                                <div class="masonry asset-masonry gallery-page" :style="galleryMasonryStyle()">
+                                <template x-for="item in galleryWindowItems()" :key="galleryItemKey(item)">
                                             <article
                                                 class="photo-card asset-card gallery-item-card"
                                                 :data-gallery-key="galleryItemKey(item)"
+                                                :data-gallery-index="item.__gallery_index ?? ''"
                                                 :data-year-key="item.year_key"
                                                 :data-month-key="item.month_key"
                                                 :class="{ live: item.has_livephoto, 'deleted-placeholder-card': item.__deleted_placeholder, 'is-appearing': item.__appearing, 'tiny-quality': galleryQualityFor(item) !== 'small', 'small-quality': galleryQualityFor(item) === 'small' }"
@@ -332,8 +340,8 @@
                                                 <template x-if="!item.__deleted_placeholder">
                                                     <div>
                                                 <div class="photo-visual asset-visual" :style="assetVisualStyle(item)">
-                                                    <template x-if="galleryQualityFor(item) === 'small'">
-                                                        <img class="hover-preview-image" loading="eager" decoding="async" :src="galleryPairImageUrl(item)" :alt="item.title" :width="item.width || null" :height="item.height || null" @load="fadeLoadedImage($event)">
+                                                    <template x-if="galleryQualityFor(item) === 'small' && galleryPairImageUrl(item)">
+                                                        <img class="hover-preview-image" loading="lazy" decoding="async" :src="galleryPairImageUrl(item)" :alt="item.title" :width="item.width || null" :height="item.height || null" @load="fadeLoadedImage($event)">
                                                     </template>
                                                     <template x-if="item.has_livephoto">
                                                         <video
@@ -374,6 +382,8 @@
                                                 </template>
                                             </article>
                                         </template>
+                                </div>
+                                <div class="gallery-virtual-spacer" data-gallery-virtual-bottom :style="galleryVirtualSpacerStyle('bottom')"></div>
                             </div>
                         </template>
                         <template x-if="gallerySkeletonCount > 0">
@@ -708,6 +718,14 @@
                     <article class="settings-card thumbnail-settings-card">
                         <h4>界面与缩略图</h4>
                         <label>应用标题 <input type="text" x-model="settings.app_title" placeholder="BiliGalleryRC"></label>
+                        <label>显示性能模式
+                            <select x-model="performanceMode" @change="setPerformanceMode($event.target.value)">
+                                <option value="auto">自动</option>
+                                <option value="full">完整视觉</option>
+                                <option value="low">低功耗</option>
+                            </select>
+                        </label>
+                        <p class="field-copy" x-text="resolvedPerformanceMode === 'low' ? '当前已降低模糊和阴影，媒体功能不受影响。' : '当前保留完整视觉效果。'"></p>
                         <div class="thumbnail-level-grid">
                             <div class="thumbnail-level-row">
                                 <strong>tiny</strong>
@@ -1263,7 +1281,7 @@
         <div class="detail-backdrop" data-testid="detail-backdrop" x-show="detail.open || detailClosing" :class="{ open: detail.open && !detailClosing, closing: detailClosing }" @click.self="closeDetail()" @wheel.prevent.stop @touchmove.prevent.self x-cloak>
             <button class="detail-post-nav detail-post-nav-left" x-show="canShowPreviousFolder()" @click.stop="showPreviousFolder()" aria-label="上一篇动态">&lt;</button>
             <button class="detail-post-nav detail-post-nav-right" x-show="canShowNextFolder()" @click.stop="showNextFolder()" aria-label="下一篇动态">&gt;</button>
-            <section class="detail-shell" x-ref="detailShell" x-show="detail.open || detailClosing" :class="{ open: detail.open && !detailClosing, closing: detailClosing }" @wheel.stop @touchmove.stop>
+            <section class="detail-shell" x-ref="detailShell" x-show="detail.open || detailClosing" :class="{ open: detail.open && !detailClosing, closing: detailClosing }" @wheel.stop @touchmove.stop @scroll="scheduleDetailWindowShift()">
                 <header class="detail-head">
                     <div class="detail-head-copy">
                         <p class="viewer-kicker" x-text="detail.folder?.pub_time || ''"></p>
@@ -1305,7 +1323,8 @@
                     </div>
                 </header>
                 <div class="detail-grid" x-ref="detailGrid" :style="detailGridStyle()">
-                    <template x-for="pair in detail.pairs" :key="detailPairKey(pair)">
+                    <div class="detail-virtual-spacer" :style="detailVirtualSpacerStyle('top')" aria-hidden="true"></div>
+                    <template x-for="pair in detailWindowItems()" :key="detailPairKey(pair)">
                         <article
                             class="detail-card"
                             data-testid="detail-card"
@@ -1324,7 +1343,7 @@
                         >
                             <div class="detail-thumb" :style="detailThumbStyle(pair)">
                                 <template x-if="!pair.placeholder">
-                                    <img class="hover-preview-image detail-preview-image" decoding="async" loading="eager" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`" @load="fadeLoadedImage($event)">
+                                    <img class="hover-preview-image detail-preview-image" decoding="async" loading="lazy" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`" @load="fadeLoadedImage($event)">
                                 </template>
                                 <template x-if="pair.placeholder">
                                     <div class="detail-placeholder-wash"></div>
@@ -1354,11 +1373,12 @@
                             </div>
                         </article>
                     </template>
+                    <div class="detail-virtual-spacer" :style="detailVirtualSpacerStyle('bottom')" aria-hidden="true"></div>
                 </div>
                 <div class="site-asset-grid detail-video-grid" x-show="detail.videos?.length" x-cloak>
                     <template x-for="video in detail.videos" :key="video.id">
                         <article class="site-asset-card">
-                            <video :src="video.url" controls preload="metadata"></video>
+                            <video :src="video.url" controls preload="none"></video>
                             <small x-text="video.filename"></small>
                         </article>
                     </template>
