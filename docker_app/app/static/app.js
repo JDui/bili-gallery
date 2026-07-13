@@ -56,6 +56,7 @@ function galleryApp() {
     galleryCardQuality: {},
     galleryQualityUpdateQueue: {},
     galleryQualityUpdateRaf: null,
+    galleryQualityUpdateTimer: null,
     galleryCardObserver: null,
     gallerySmallObserver: null,
     galleryObservedCardElements: {},
@@ -1382,14 +1383,25 @@ function galleryApp() {
       if (this.galleryQualityUpdateRaf) {
         return;
       }
-      this.galleryQualityUpdateRaf = window.requestAnimationFrame(() => {
+      const flush = () => this.flushGalleryQualityUpdates();
+      this.galleryQualityUpdateRaf = window.requestAnimationFrame(flush);
+      this.galleryQualityUpdateTimer = window.setTimeout(flush, 120);
+    },
+
+    flushGalleryQualityUpdates() {
+      if (this.galleryQualityUpdateRaf) {
+        window.cancelAnimationFrame(this.galleryQualityUpdateRaf);
         this.galleryQualityUpdateRaf = null;
-        const updates = this.galleryQualityUpdateQueue;
-        this.galleryQualityUpdateQueue = {};
-        if (Object.keys(updates).length) {
-          this.galleryCardQuality = { ...this.galleryCardQuality, ...updates };
-        }
-      });
+      }
+      if (this.galleryQualityUpdateTimer) {
+        window.clearTimeout(this.galleryQualityUpdateTimer);
+        this.galleryQualityUpdateTimer = null;
+      }
+      const updates = this.galleryQualityUpdateQueue;
+      this.galleryQualityUpdateQueue = {};
+      if (Object.keys(updates).length) {
+        this.galleryCardQuality = { ...this.galleryCardQuality, ...updates };
+      }
     },
 
     galleryTileUrl(tile, parentItem = null) {
@@ -2299,27 +2311,24 @@ function galleryApp() {
       });
       this.galleryObservedCardElements = nextObserved;
       this.galleryCardQuality = nextQuality;
+      this.scheduleGallerySmallPromotion(160);
     },
 
     scheduleGallerySmallPromotion(delay = 220) {
-      if (typeof IntersectionObserver !== "undefined") {
-        return;
-      }
       if (this.gallerySmallPromotionTimer) {
-        window.clearTimeout(this.gallerySmallPromotionTimer);
+        return;
       }
       this.gallerySmallPromotionTimer = window.setTimeout(() => {
         this.gallerySmallPromotionTimer = null;
-        if (!this.galleryScrollSettling) {
-          this.promoteVisibleGallerySmall();
+        if (this.galleryScrollSettling) {
+          this.scheduleGallerySmallPromotion(80);
+          return;
         }
+        this.promoteVisibleGallerySmall();
       }, delay);
     },
 
     promoteVisibleGallerySmall() {
-      if (typeof IntersectionObserver !== "undefined") {
-        return;
-      }
       if (this.currentView !== "gallery" || this.detail.open || this.viewer.open) {
         return;
       }
@@ -2661,6 +2670,7 @@ function galleryApp() {
         this.resetDetailWindow();
         this.syncBodyLock();
         resetDetailScroll();
+        this.scheduleDetailThumbnailPromotion(folderName, requestId);
         return;
       }
       this.detailLoading = false;
@@ -2701,6 +2711,7 @@ function galleryApp() {
         } else {
           applyDetailPayload();
         }
+        this.scheduleDetailThumbnailPromotion(folderName, requestId);
         this.preloadDetailPairImages(detailPairs);
       } catch (error) {
         if (requestId !== this.detailRequestId) {
@@ -2893,6 +2904,30 @@ function galleryApp() {
         }
       };
       this.scheduleIdleWork(() => loadBatch(0), 500);
+    },
+
+    scheduleDetailThumbnailPromotion(folderName, requestId) {
+      const promoteNext = (index = 0) => {
+        if (requestId !== this.detailRequestId || this.detail.folder?.folder_name !== folderName) {
+          return;
+        }
+        const pairs = this.detail.pairs || [];
+        if (index >= pairs.length) {
+          this.cacheDetailPayload(folderName, this.detail);
+          return;
+        }
+        const end = Math.min(index + 6, pairs.length);
+        this.detail = {
+          ...this.detail,
+          pairs: pairs.map((pair, pairIndex) => (
+            pairIndex >= index && pairIndex < end && !pair.placeholder
+              ? { ...pair, promote_preview: true }
+              : pair
+          )),
+        };
+        this.scheduleIdleWork(() => promoteNext(end), 240);
+      };
+      window.setTimeout(() => promoteNext(0), 80);
     },
 
     openPair(pairIndex) {
