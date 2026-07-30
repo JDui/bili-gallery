@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -69,6 +70,57 @@ def site_request_timeout(read_timeout: int | float) -> tuple[float, float]:
     return (connect_seconds, read_seconds)
 
 
+def decode_site_response(response: requests.Response) -> str:
+    content = response.content
+    if not content:
+        return ""
+
+    bom_encodings = (
+        (codecs.BOM_UTF8, "utf-8-sig"),
+        (codecs.BOM_UTF32_LE, "utf-32"),
+        (codecs.BOM_UTF32_BE, "utf-32"),
+        (codecs.BOM_UTF16_LE, "utf-16"),
+        (codecs.BOM_UTF16_BE, "utf-16"),
+    )
+    for bom, encoding in bom_encodings:
+        if content.startswith(bom):
+            return content.decode(encoding, errors="replace")
+
+    head = content[:8192].decode("ascii", errors="ignore")
+    meta_match = re.search(
+        r"""<meta\b[^>]*\bcharset\s*=\s*["']?\s*([a-zA-Z0-9._-]+)""",
+        head,
+        re.IGNORECASE,
+    )
+    if not meta_match:
+        meta_match = re.search(
+            r"""<meta\b[^>]*\bcontent\s*=\s*["'][^"']*charset\s*=\s*([a-zA-Z0-9._-]+)""",
+            head,
+            re.IGNORECASE,
+        )
+
+    content_type = str(response.headers.get("content-type") or "")
+    header_match = re.search(r"charset\s*=\s*[\"']?\s*([a-zA-Z0-9._-]+)", content_type, re.IGNORECASE)
+    candidates = [
+        meta_match.group(1) if meta_match else None,
+        header_match.group(1) if header_match else None,
+        "utf-8",
+        response.apparent_encoding,
+        "gb18030",
+    ]
+    seen: set[str] = set()
+    for encoding in candidates:
+        normalized = str(encoding or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            return content.decode(normalized)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return content.decode("utf-8", errors="replace")
+
+
 class PageFetcher:
     def __init__(
         self,
@@ -87,8 +139,7 @@ class PageFetcher:
             return Path(urlparse(url).path).read_text(encoding="utf-8")
         response = self.session.get(url, timeout=self.timeout)
         response.raise_for_status()
-        response.encoding = response.encoding or response.apparent_encoding
-        return response.text
+        return decode_site_response(response)
 
 
 class HtmlNode:

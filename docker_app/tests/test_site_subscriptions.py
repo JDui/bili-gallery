@@ -5,6 +5,7 @@ from io import BytesIO
 from types import SimpleNamespace
 from pathlib import Path
 
+import requests
 from app.config import AppConfig
 from app.db import Database, DEFAULT_SETTINGS
 from app.services.cleanup import CleanupService
@@ -13,7 +14,7 @@ from app.services.bilibili import BilibiliAuthService
 from app.services.media_indexer import MediaIndexer
 from app.services.puller import PullManager
 from app.services.site_downloader import MediaDownloader
-from app.services.site_parser import DEFAULT_BODY_SELECTOR, DEFAULT_DATE_SELECTOR, DEFAULT_MEDIA_SELECTOR, DEFAULT_TAG_SELECTOR, PageFetcher, SourceParser, site_request_timeout
+from app.services.site_parser import DEFAULT_BODY_SELECTOR, DEFAULT_DATE_SELECTOR, DEFAULT_MEDIA_SELECTOR, DEFAULT_TAG_SELECTOR, PageFetcher, SourceParser, decode_site_response, site_request_timeout
 from app.services.site_filtering import RuleEngine
 from app.services.scheduler import SchedulerService
 from app.services.site_syncer import SiteSyncManager
@@ -474,6 +475,30 @@ def test_site_requests_use_browser_like_headers() -> None:
         assert session.headers["Connection"] == "close"
     assert proxied_fetcher.session.proxies["http"] == "http://127.0.0.1:7890"
     assert proxied_downloader.session.proxies["https"] == "http://127.0.0.1:7890"
+
+
+def test_site_response_decoder_prefers_html_charset_over_requests_default() -> None:
+    response = requests.Response()
+    response.status_code = 200
+    response.headers["Content-Type"] = "text/html"
+    response._content = (
+        '<!doctype html><meta charset="UTF-8"><title>神探火狸狸 COS套图合集</title>'
+    ).encode("utf-8")
+    response.encoding = "ISO-8859-1"
+
+    text = decode_site_response(response)
+
+    assert "神探火狸狸 COS套图合集" in text
+    assert "ç¥žæŽ¢" not in text
+
+
+def test_site_response_decoder_supports_declared_gb18030() -> None:
+    response = requests.Response()
+    response.status_code = 200
+    response.headers["Content-Type"] = "text/html; charset=gb18030"
+    response._content = "<title>中文站点标题</title>".encode("gb18030")
+
+    assert "中文站点标题" in decode_site_response(response)
 
 
 def test_site_scheduler_settings_migrate_from_legacy_global_scheduler(tmp_path: Path) -> None:

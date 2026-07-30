@@ -162,10 +162,6 @@
                             <button class="chip-button" :class="{ active: galleryViewMode === 'folder' }" @click="setGalleryViewMode('folder')">动态视图</button>
                             <button class="chip-button" :class="{ active: galleryViewMode === 'pair' }" @click="setGalleryViewMode('pair')">图片视图</button>
                         </div>
-                        <label class="toggle-chip" x-show="galleryViewMode === 'pair' && !compactViewport">
-                            <input type="checkbox" :checked="hoverPreviewEnabled" @change="setHoverPreviewEnabled($event.target.checked)">
-                            <span>自动预览 Live Photo</span>
-                        </label>
                     </div>
                 </div>
                 <section class="search-panel search-landing" x-show="searchActive()" x-cloak>
@@ -220,10 +216,6 @@
                             <button class="chip-button" :class="{ active: galleryViewMode === 'folder' }" @click="setGalleryViewMode('folder')">动态视图</button>
                             <button class="chip-button" :class="{ active: galleryViewMode === 'pair' }" @click="setGalleryViewMode('pair')">图片视图</button>
                         </div>
-                        <label class="toggle-chip" x-show="compactViewport && galleryViewMode === 'pair'" x-cloak>
-                            <input type="checkbox" :checked="hoverPreviewEnabled" @change="setHoverPreviewEnabled($event.target.checked)">
-                            <span>自动预览 Live Photo</span>
-                        </label>
                         <div class="filter-subscriptions" x-show="subscriptions.length" x-cloak>
                             <template x-for="item in subscriptions" :key="`filter-${item.uid}`">
                                 <label class="filter-check">
@@ -725,6 +717,7 @@
                                 <option value="low">低功耗</option>
                             </select>
                         </label>
+                        <label class="toggle-row"><input type="checkbox" :checked="hoverPreviewEnabled" @change="setHoverPreviewEnabled($event.target.checked)"> 自动预览 Live Photo</label>
                         <p class="field-copy" x-text="resolvedPerformanceMode === 'low' ? '当前已降低模糊和阴影，媒体功能不受影响。' : '当前保留完整视觉效果。'"></p>
                         <div class="thumbnail-level-grid">
                             <div class="thumbnail-level-row">
@@ -1285,41 +1278,42 @@
                 <header class="detail-head">
                     <div class="detail-head-copy">
                         <p class="viewer-kicker" x-text="detail.folder?.pub_time || ''"></p>
-                        <h3 x-text="detail.folder?.title || '动态内容'"></h3>
+                        <button
+                            type="button"
+                            class="detail-content-toggle"
+                            :class="{ expanded: detailTextExpanded }"
+                            @click="detailTextExpandable() ? toggleDetailText() : null"
+                            :aria-expanded="detailTextExpanded"
+                        >
+                            <span x-text="detailContentText()"></span>
+                            <small x-show="detailTextExpandable()" x-text="detailTextExpanded ? '收起' : '查看全部'"></small>
+                        </button>
                     </div>
-                    <div class="detail-head-actions">
+                    <div class="detail-head-actions detail-action-bar">
                         <div class="detail-head-metrics">
                             <span class="meta-chip accent" x-text="`${detail.folder?.image_count || 0} 张照片`"></span>
                             <span class="meta-chip accent" x-text="`${detail.folder?.livephoto_count || 0} 条 Live Photo`"></span>
                         </div>
-                        <div class="detail-head-controls">
-                            <label class="range-chip detail-range-chip density-chip">
-                                <span class="range-label">网格密度 / 每行数量</span>
-                                <input type="range" min="1" max="8" step="1" :value="detailColumnCount" @input="setDetailColumnCount($event.target.value)">
-                                <small class="range-caption" x-text="detailDensityCaption()"></small>
-                            </label>
-                            <label class="toggle-chip detail-toggle-chip" x-show="detail.folder?.livephoto_count">
-                                <input type="checkbox" :checked="hoverPreviewEnabled" @change="setHoverPreviewEnabled($event.target.checked)">
-                                <span>自动预览 Live Photo</span>
-                            </label>
+                        <label class="detail-density-control">
+                            <span>每行数量</span>
+                            <input type="range" min="1" max="8" step="1" :value="detailColumnCount" @input="setDetailColumnCount($event.target.value)">
+                            <strong x-text="resolveDetailColumns()"></strong>
+                        </label>
+                        <button class="favorite-button detail-favorite-button" :class="{ active: detail.folder?.is_favorite }" @click.stop="toggleFavorite(detail.folder, $event)" aria-label="收藏">
+                            <span>❤</span>
+                        </button>
+                        <button class="secondary-button detail-source-button" @click="openReviewSource(detail.folder)">查看原始动态</button>
+                        <div class="detail-trash-slot">
+                            <template x-if="pendingTrashFolder !== detail.folder?.folder_name">
+                                <button class="secondary-button danger-button detail-trash-button" @click="askTrashCurrentFolder()">不喜欢</button>
+                            </template>
+                            <template x-if="pendingTrashFolder === detail.folder?.folder_name">
+                                <div class="button-row confirm-row detail-trash-confirm">
+                                    <button class="primary-button danger-confirm confirm-anchor" @click="trashCurrentFolder()">确认不喜欢</button>
+                                </div>
+                            </template>
                         </div>
-                        <div class="detail-head-buttons detail-action-bar">
-                            <button class="favorite-button detail-favorite-button" :class="{ active: detail.folder?.is_favorite }" @click.stop="toggleFavorite(detail.folder, $event)" aria-label="收藏">
-                                <span>❤</span>
-                            </button>
-                            <button class="secondary-button detail-source-button" @click="openReviewSource(detail.folder)">查看原始动态</button>
-                            <div class="detail-trash-slot">
-                                <template x-if="pendingTrashFolder !== detail.folder?.folder_name">
-                                    <button class="secondary-button danger-button detail-trash-button" @click="askTrashCurrentFolder()">不喜欢</button>
-                                </template>
-                                <template x-if="pendingTrashFolder === detail.folder?.folder_name">
-                                    <div class="button-row confirm-row detail-trash-confirm">
-                                        <button class="primary-button danger-confirm confirm-anchor" @click="trashCurrentFolder()">确认不喜欢</button>
-                                    </div>
-                                </template>
-                            </div>
-                            <button class="secondary-button detail-close-button" @click="closeDetail()">关闭</button>
-                        </div>
+                        <button class="secondary-button detail-close-button" @click="closeDetail()">关闭</button>
                     </div>
                 </header>
                 <div class="detail-grid" x-ref="detailGrid" :style="detailGridStyle()">

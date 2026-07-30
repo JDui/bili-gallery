@@ -111,6 +111,7 @@ function galleryApp() {
     detailRequestId: 0,
     detailClosing: false,
     detailCloseTimer: null,
+    detailTextExpanded: false,
     viewerClosing: false,
     viewerCloseTimer: null,
     headerCompact: false,
@@ -153,6 +154,7 @@ function galleryApp() {
     siteSourceSaving: false,
     siteSourceSavingById: {},
     siteIconRefreshingById: {},
+    iconRefreshVersions: {},
     siteRulesExpanded: false,
     siteLogsExpanded: false,
     siteLogsClearConfirm: false,
@@ -1564,8 +1566,23 @@ function galleryApp() {
         : `每行约显示 ${count} 个动态，系统会按可用宽度自适应排布`;
     },
 
-    detailDensityCaption() {
-      return `每行约显示 ${this.resolveDetailColumns()} 组缩略图，系统会按可用宽度自适应排布`;
+    detailContentText() {
+      const folder = this.detail?.folder || {};
+      if (this.isSiteGalleryItem(folder)) {
+        return String(folder.title || folder.text_prefix || "动态内容").trim();
+      }
+      return String(folder.text_prefix || folder.title || "动态内容").trim();
+    },
+
+    detailTextExpandable() {
+      return this.detailContentText().length > 36;
+    },
+
+    toggleDetailText() {
+      if (!this.detailTextExpandable()) {
+        return;
+      }
+      this.detailTextExpanded = !this.detailTextExpanded;
     },
 
     setGalleryColumnCount(value) {
@@ -1799,7 +1816,10 @@ function galleryApp() {
       if (!key || this.iconLoadFailures[key]) {
         return "";
       }
-      return this.versionedIconUrl(item?.icon_url || item?.avatar_url || item?.site_icon_url || "", item?.updated_at);
+      return this.versionedIconUrl(
+        item?.icon_url || item?.avatar_url || item?.site_icon_url || "",
+        this.iconRefreshVersions[key] || item?.updated_at,
+      );
     },
 
     subscriptionIconTinyUrl(item) {
@@ -1807,7 +1827,10 @@ function galleryApp() {
       if (!key || this.iconLoadFailures[key]) {
         return "";
       }
-      return this.versionedIconUrl(item?.icon_tiny_url || item?.avatar_tiny_url || item?.site_icon_tiny_url || "", item?.updated_at);
+      return this.versionedIconUrl(
+        item?.icon_tiny_url || item?.avatar_tiny_url || item?.site_icon_tiny_url || "",
+        this.iconRefreshVersions[key] || item?.updated_at,
+      );
     },
 
     subscriptionIconTinyStyle(item) {
@@ -1827,7 +1850,7 @@ function galleryApp() {
       if (!source?.icon_url || this.iconLoadFailures[key]) {
         return "";
       }
-      return this.versionedIconUrl(source.icon_url, source.updated_at);
+      return this.versionedIconUrl(source.icon_url, this.iconRefreshVersions[key] || source.updated_at);
     },
 
     siteSourceIconTinyUrl(source) {
@@ -1835,7 +1858,7 @@ function galleryApp() {
       if (!source?.icon_tiny_url || this.iconLoadFailures[key]) {
         return "";
       }
-      return this.versionedIconUrl(source.icon_tiny_url, source.updated_at);
+      return this.versionedIconUrl(source.icon_tiny_url, this.iconRefreshVersions[key] || source.updated_at);
     },
 
     siteSourceIconTinyStyle(source) {
@@ -2652,6 +2675,7 @@ function galleryApp() {
         this.detailCloseTimer = null;
       }
       const resetDetailScroll = () => this.$nextTick(() => this.scrollDetailTop());
+      this.detailTextExpanded = false;
       this.setInteracting(360);
       this.cancelDeleteViewerPair();
       this.pauseCurrentViewerMedia(true);
@@ -3131,6 +3155,7 @@ function galleryApp() {
         });
         this.detailClosing = false;
         this.detail = { open: false, pairs: [], folder: null, videos: [] };
+        this.detailTextExpanded = false;
         this.resetDetailWindow();
         this.detailCloseTimer = null;
         this.syncBodyLock();
@@ -3191,7 +3216,7 @@ function galleryApp() {
           return;
         }
         const scrollTop = window.scrollY || window.pageYOffset || 0;
-        const scrollbarGap = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
+        const layoutWidth = body.getBoundingClientRect().width;
         this.bodyLockTop = scrollTop;
         this.bodyLockPaddingRight = body.style.paddingRight || "";
         this.bodyLockStyles = {
@@ -3206,20 +3231,14 @@ function galleryApp() {
           bodyWidth: body.style.width || "",
           bodyPaddingRight: body.style.paddingRight || "",
         };
-        html.style.setProperty("--overlay-scrollbar-gap", `${scrollbarGap}px`);
         html.style.scrollbarGutter = "stable";
-        body.style.scrollbarGutter = "stable";
-        html.style.overflow = "hidden";
+        body.style.scrollbarGutter = "auto";
         body.style.overflow = "hidden";
-        if (scrollbarGap > 0) {
-          const currentPaddingRight = Number.parseFloat(window.getComputedStyle(body).paddingRight) || 0;
-          body.style.paddingRight = `${currentPaddingRight + scrollbarGap}px`;
-        }
         body.style.position = "fixed";
         body.style.top = `-${scrollTop}px`;
         body.style.left = "0";
-        body.style.right = "0";
-        body.style.width = "100%";
+        body.style.right = "auto";
+        body.style.width = `${layoutWidth}px`;
         return;
       }
       if (this.bodyLockTop === null) {
@@ -3228,7 +3247,6 @@ function galleryApp() {
       const scrollTop = this.bodyLockTop;
       const previousStyles = this.bodyLockStyles || {};
       html.classList.add("scroll-restore-instant");
-      html.style.removeProperty("--overlay-scrollbar-gap");
       html.style.overflow = previousStyles.htmlOverflow || "";
       html.style.scrollbarGutter = previousStyles.htmlScrollbarGutter || "";
       body.style.overflow = previousStyles.bodyOverflow || "";
@@ -6602,6 +6620,11 @@ function galleryApp() {
       try {
         const result = await this.api(`/api/site-sources/${encodeURIComponent(sourceId)}/refresh-icon`, { method: "POST" });
         if (result.item) {
+          const refreshVersion = Date.now();
+          this.iconRefreshVersions = {
+            ...this.iconRefreshVersions,
+            [subscriptionUid]: refreshVersion,
+          };
           this.siteSources = (this.siteSources || []).map((item) =>
             Number(item.id) === sourceId ? { ...item, ...result.item } : item,
           );
