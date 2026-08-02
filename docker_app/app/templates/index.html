@@ -45,17 +45,17 @@
                 </template>
             </section>
 
-            <section class="nav-section" x-show="subscriptions.length">
+            <section class="nav-section">
                 <button type="button" class="section-label section-label-button" x-show="!sidebarCollapsed" @click="toggleSubscriptionSection()" :aria-expanded="!subscriptionSectionCollapsed">
                     <span>订阅</span>
                     <span class="section-label-chevron" :class="{ open: !subscriptionSectionCollapsed }"></span>
                 </button>
+                <button class="sidebar-link subscription-manage-link" data-testid="nav-subscriptions-inline" :class="{ active: currentView === 'subscriptions' }" title="订阅管理" @click="openSubscriptions('overview')">
+                    <span class="link-badge search-link-badge"><span class="tab-search-icon" aria-hidden="true"></span></span>
+                    <span class="link-text" x-show="!sidebarCollapsed">订阅管理</span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('subscriptions')"></span>
+                </button>
                 <div class="sidebar-subscription-list" x-show="!subscriptionSectionCollapsed" x-transition.opacity.duration.160ms x-cloak>
-                    <button class="sidebar-link subscription-manage-link" data-testid="nav-subscriptions-inline" :class="{ active: currentView === 'subscriptions' }" title="订阅管理" @click="openSubscriptions('overview')">
-                        <span class="link-badge search-link-badge"><span class="tab-search-icon" aria-hidden="true"></span></span>
-                        <span class="link-text" x-show="!sidebarCollapsed">订阅管理</span>
-                        <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('subscriptions')"></span>
-                    </button>
                     <template x-for="item in subscriptions" :key="item.uid">
                         <button class="sidebar-link" :class="{ active: currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid }" :title="item.uname || item.uid" @click="selectSubscription(item.uid)">
                             <span class="link-badge subscription-link-badge" :class="{ image: subscriptionIconUrl(item) }" :style="subscriptionIconTinyStyle(item)">
@@ -435,7 +435,7 @@
                         <button class="secondary-button" @click="refreshDuplicates()" :disabled="duplicateLoading" x-text="duplicateLoading ? '检测中' : '重新检测'"></button>
                     </div>
                 </div>
-                <template x-for="(group, groupIndex) in duplicateGroups" :key="group.signature">
+                <template x-for="(group, groupIndex) in duplicateGroups" :key="group.group_key || group.signature">
                     <article class="duplicate-group-card" :class="{ 'is-busy': duplicateActionKey === group.signature }">
                         <header class="duplicate-group-head">
                             <div>
@@ -477,9 +477,14 @@
                                             <span x-text="item.subscription_name || '默认订阅'"></span>
                                             <span x-text="`${item.duplicate_match_count} 张命中`"></span>
                                         </div>
+                                        <div class="duplicate-feature-tags" x-show="item.feature_tags?.length" x-cloak>
+                                            <template x-for="tag in item.feature_tags" :key="`${item.folder_name}-${tag}`">
+                                                <span x-text="tag"></span>
+                                            </template>
+                                        </div>
                                     </div>
                                     <div class="duplicate-post-actions" @click.stop>
-                                        <button class="primary-button" @click="selectDuplicateKeep(group, item)" x-text="duplicateKeepSelection(group.signature) === item.folder_name ? '已选择保留' : '保留此贴文'"></button>
+                                        <button class="primary-button" @click="selectDuplicateKeep(group, item)" x-text="duplicateKeepSelection(group.signature) === item.folder_name ? '已选择仅保留' : '仅保留此贴文'"></button>
                                         <button class="secondary-button danger-button" @click="deleteDuplicateFolder(group, item)" :disabled="duplicateActionKey === group.signature">删除此贴文</button>
                                     </div>
                                 </article>
@@ -488,11 +493,11 @@
 
                         <div class="duplicate-keep-confirm" x-show="duplicateKeepSelection(group.signature)" x-cloak>
                             <div>
-                                <strong>保留所选贴文</strong>
+                                <strong>仅保留此贴文</strong>
                                 <span x-text="`其余 ${Math.max(0, group.post_count - 1)} 条重复贴文会移入垃圾桶。`"></span>
                             </div>
                             <button class="secondary-button" @click="cancelDuplicateKeep(group.signature)">取消</button>
-                            <button class="primary-button danger-confirm" @click="resolveDuplicateGroup(group)" :disabled="duplicateActionKey === group.signature">确认保留并删除其余贴文</button>
+                            <button class="primary-button danger-confirm" @click="resolveDuplicateGroup(group)" :disabled="duplicateActionKey === group.signature">二次确认，仅保留并删除其余贴文</button>
                         </div>
 
                         <section class="duplicate-match-detail">

@@ -78,13 +78,13 @@ class DuplicateService:
     def list_groups(self, include_ignored: bool = False) -> dict[str, Any]:
         with self._cache_lock:
             threshold = self._image_threshold()
-            signature = f"{self.db.gallery_page_cache_signature()}:{threshold}"
+            signature = self._gallery_signature(threshold)
             if signature != self._cache_signature:
                 self._cached_groups = self._build_groups(threshold)
-                self._cache_signature = f"{self.db.gallery_page_cache_signature()}:{threshold}"
+                self._cache_signature = self._gallery_signature(threshold)
             ignored = self.db.list_ignored_duplicate_signatures()
             groups = [
-                {**group, "ignored": group["signature"] in ignored}
+                self._public_group(group, ignored=group["signature"] in ignored)
                 for group in self._cached_groups
                 if include_ignored or group["signature"] not in ignored
             ]
@@ -113,9 +113,27 @@ class DuplicateService:
             "ok": True,
             "message": "已忽略重复项",
             "signature": signature,
+            "duplicates": payload,
             "sidebar_counts": self.db.get_sidebar_count_cache(),
             "remaining": payload["active_total"],
         }
+
+    def remove_folders(self, folder_names: list[str]) -> dict[str, Any]:
+        removed = {str(name) for name in folder_names if str(name)}
+        if not removed:
+            return self.list_groups()
+        with self._cache_lock:
+            groups = []
+            for group in self._cached_groups:
+                if not any(str(item["folder_name"]) in removed for item in group["items"]):
+                    groups.append(group)
+                    continue
+                updated = self._group_without_folders(group, removed)
+                if updated is not None:
+                    groups.append(updated)
+            self._cached_groups = groups
+            self._cache_signature = self._gallery_signature(self._image_threshold())
+            return self.list_groups()
 
     def _build_groups(self, threshold: int) -> list[dict[str, Any]]:
         folders = {str(item["folder_name"]): item for item in self.db.list_folders()}
@@ -191,6 +209,9 @@ class DuplicateService:
             return max(1, min(100, int(value)))
         except (TypeError, ValueError):
             return 2
+
+    def _gallery_signature(self, threshold: int) -> str:
+        return f"{self.db.gallery_page_cache_signature()}:{threshold}"
 
     def _duplicate_assets(self, folders: dict[str, dict[str, Any]]) -> list[DuplicateAsset]:
         output = []
@@ -268,16 +289,23 @@ class DuplicateService:
         ).hexdigest()
         matched_by_folder: dict[str, set[int]] = defaultdict(set)
         match_rows = []
+        link_summaries = []
         total_distance = 0
         total_matches = 0
         for pair, pair_matches in links.items():
+            link_similarity_total = 0
+            link_pair_indexes: dict[str, set[int]] = defaultdict(set)
             for distance, left_index, right_index in pair_matches:
                 left = assets[left_index]
                 right = assets[right_index]
                 matched_by_folder[left.folder_name].add(left.id)
                 matched_by_folder[right.folder_name].add(right.id)
+                link_pair_indexes[left.folder_name].add(left.pair_index)
+                link_pair_indexes[right.folder_name].add(right.pair_index)
                 total_distance += distance
                 total_matches += 1
+                similarity = round((1 - distance / 256) * 100)
+                link_similarity_total += similarity
                 match_rows.append(
                     {
                         "left_folder_name": left.folder_name,
@@ -286,9 +314,20 @@ class DuplicateService:
                         "right_pair_index": right.pair_index,
                         "left_url": left.preview_url,
                         "right_url": right.preview_url,
-                        "similarity": round((1 - distance / 256) * 100),
+                        "similarity": similarity,
                     }
                 )
+            link_summaries.append(
+                {
+                    "folders": list(pair),
+                    "match_count": len(pair_matches),
+                    "similarity_total": link_similarity_total,
+                    "pair_indexes": {
+                        name: sorted(indexes)
+                        for name, indexes in link_pair_indexes.items()
+                    },
+                }
+            )
         items = []
         for name in sorted(member_names, key=lambda item: int(folders[item].get("pub_ts") or 0), reverse=True):
             folder = folders[name]
@@ -308,20 +347,102 @@ class DuplicateService:
                     "preview_tiles": [asset.tile for asset in folder_assets[:4]],
                     "image_count": len(folder_assets),
                     "asset_count": len(folder_assets),
+                    "max_resolution_pixels": max(
+                        (asset.width * asset.height for asset in folder_assets),
+                        default=0,
+                    ),
                     "duplicate_match_count": len(matched_by_folder[name]),
                 }
             )
+        self._apply_feature_tags(items)
         similarity = round((1 - total_distance / max(total_matches * 256, 1)) * 100)
         match_rows.sort(key=lambda item: item["similarity"], reverse=True)
         return {
             "signature": signature,
+            "group_key": signature,
+            "_signature_source": signature_source,
+            "_link_summaries": link_summaries,
             "items": items,
             "post_count": len(items),
             "matched_image_count": total_matches,
             "similarity": similarity,
             "latest_pub_ts": max((int(item["pub_ts"]) for item in items), default=0),
-            "matches": match_rows[:12],
+            "matches": match_rows[:64],
         }
+
+    def _group_without_folders(self, group: dict[str, Any], removed: set[str]) -> dict[str, Any] | None:
+        items = [dict(item) for item in group["items"] if str(item["folder_name"]) not in removed]
+        if len(items) < 2:
+            return None
+        matches = [
+            dict(match)
+            for match in group.get("matches", [])
+            if str(match.get("left_folder_name")) not in removed
+            and str(match.get("right_folder_name")) not in removed
+        ]
+        link_summaries = [
+            dict(summary)
+            for summary in group.get("_link_summaries", [])
+            if not any(str(name) in removed for name in summary.get("folders", []))
+        ]
+        matched_by_folder: dict[str, set[int]] = defaultdict(set)
+        for summary in link_summaries:
+            for name, pair_indexes in summary.get("pair_indexes", {}).items():
+                matched_by_folder[str(name)].update(int(index) for index in pair_indexes)
+        for item in items:
+            item["duplicate_match_count"] = len(matched_by_folder[str(item["folder_name"])])
+        self._apply_feature_tags(items)
+        signature_source = [
+            entry
+            for entry in group.get("_signature_source", [])
+            if str(entry[0]) not in removed
+        ]
+        signature = hashlib.sha256(
+            json.dumps(signature_source, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        total_matches = sum(int(summary.get("match_count") or 0) for summary in link_summaries)
+        similarity_total = sum(int(summary.get("similarity_total") or 0) for summary in link_summaries)
+        return {
+            **group,
+            "signature": signature,
+            "_signature_source": signature_source,
+            "_link_summaries": link_summaries,
+            "items": items,
+            "post_count": len(items),
+            "matched_image_count": total_matches,
+            "similarity": round(similarity_total / total_matches) if total_matches else 0,
+            "latest_pub_ts": max((int(item.get("pub_ts") or 0) for item in items), default=0),
+            "matches": matches,
+        }
+
+    def _apply_feature_tags(self, items: list[dict[str, Any]]) -> None:
+        if not items:
+            return
+        resolution_values = [int(item.get("max_resolution_pixels") or 0) for item in items]
+        image_counts = [int(item.get("image_count") or 0) for item in items]
+        publication_times = [int(item.get("pub_ts") or 0) for item in items]
+        best_resolution = max(resolution_values, default=0)
+        most_images = max(image_counts, default=0)
+        earliest_publication = min(publication_times, default=0)
+        resolution_distinct = len(set(resolution_values)) > 1
+        image_count_distinct = len(set(image_counts)) > 1
+        publication_distinct = len(set(publication_times)) > 1
+        for item in items:
+            tags = []
+            if resolution_distinct and int(item.get("max_resolution_pixels") or 0) == best_resolution:
+                tags.append("更高分辨率")
+            if image_count_distinct and int(item.get("image_count") or 0) == most_images:
+                tags.append("更多图片")
+            if publication_distinct and int(item.get("pub_ts") or 0) == earliest_publication:
+                tags.append("更早发布")
+            item["feature_tags"] = tags
+
+    def _public_group(self, group: dict[str, Any], ignored: bool) -> dict[str, Any]:
+        return {
+            key: (value[:12] if key == "matches" else value)
+            for key, value in group.items()
+            if not key.startswith("_")
+        } | {"ignored": ignored}
 
     def _asset_tile(self, asset: dict[str, Any]) -> dict[str, Any]:
         return {

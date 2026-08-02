@@ -212,7 +212,7 @@ def ignore_duplicate(signature: str, payload: dict[str, Any] = Body(default={}))
 @app.post("/api/duplicates/{signature}/resolve")
 def resolve_duplicate(signature: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     if payload.get("confirmed") is not True:
-        raise HTTPException(status_code=400, detail="保留贴文并删除其余内容需要确认")
+        raise HTTPException(status_code=400, detail="仅保留贴文并删除其余内容需要二次确认")
     group = duplicates.get_group(signature)
     if not group:
         raise HTTPException(status_code=404, detail="重复内容项不存在或已经处理")
@@ -229,14 +229,33 @@ def resolve_duplicate(signature: str, payload: dict[str, Any] = Body(...)) -> di
             removed.append(folder_name)
         except RuntimeError:
             continue
-    remaining = duplicates.list_groups()
+    duplicate_payload = duplicates.remove_folders(removed)
     return {
         "ok": True,
-        "message": "已保留所选贴文，其余重复贴文已提交删除",
+        "message": "已仅保留所选贴文，其余重复贴文已提交删除",
         "kept": keep_folder_name,
         "removed": removed,
+        "duplicates": duplicate_payload,
         "sidebar_counts": db.get_sidebar_count_cache(),
-        "remaining": remaining["active_total"],
+        "remaining": duplicate_payload["active_total"],
+    }
+
+
+@app.post("/api/duplicates/{signature}/folders/{folder_name}/trash")
+def trash_duplicate_folder(signature: str, folder_name: str) -> dict[str, Any]:
+    group = duplicates.get_group(signature)
+    if not group or folder_name not in {str(item["folder_name"]) for item in group["items"]}:
+        raise HTTPException(status_code=404, detail="重复贴文不存在或已经处理")
+    try:
+        result = pull_manager.move_to_trash(folder_name, reason="重复内容")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    duplicate_payload = duplicates.remove_folders([folder_name])
+    return {
+        **result,
+        "duplicates": duplicate_payload,
+        "sidebar_counts": db.get_sidebar_count_cache(),
+        "remaining": duplicate_payload["active_total"],
     }
 
 

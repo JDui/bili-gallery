@@ -239,7 +239,7 @@ function galleryApp() {
     hoverPreviewCard: null,
     hoverPreviewLoadCard: null,
     sidebarCollapsed: localStorage.getItem("gallery_sidebar_collapsed") === "1",
-    subscriptionSectionCollapsed: localStorage.getItem("gallery_subscription_section_collapsed") === "1",
+    subscriptionSectionCollapsed: true,
     compactViewport: false,
     sidebarDrawerOpen: false,
     pendingTrashFolder: null,
@@ -1927,7 +1927,6 @@ function galleryApp() {
 
     toggleSubscriptionSection() {
       this.subscriptionSectionCollapsed = !this.subscriptionSectionCollapsed;
-      localStorage.setItem("gallery_subscription_section_collapsed", this.subscriptionSectionCollapsed ? "1" : "0");
     },
 
     subscriptionThresholdSummary(item) {
@@ -4541,20 +4540,41 @@ function galleryApp() {
       this.duplicateLoading = true;
       try {
         const payload = await this.api("/api/duplicates/items");
-        this.duplicateGroups = payload.items || [];
-        this.duplicateImageThreshold = Math.max(1, Number(payload.image_threshold) || 2);
-        this.sidebarCounts = { ...this.sidebarCounts, duplicates: Number(payload.active_total) || 0 };
-        this.lazyLoaded.duplicates = true;
-        const signatures = new Set(this.duplicateGroups.map((group) => group.signature));
-        this.duplicateKeepSelections = Object.fromEntries(
-          Object.entries(this.duplicateKeepSelections || {}).filter(([signature]) => signatures.has(signature)),
-        );
-        if (this.duplicateIgnoreConfirmSignature && !signatures.has(this.duplicateIgnoreConfirmSignature)) {
-          this.duplicateIgnoreConfirmSignature = null;
-        }
+        this.applyDuplicatePayload(payload);
       } finally {
         this.duplicateLoading = false;
       }
+    },
+
+    applyDuplicatePayload(payload) {
+      this.duplicateGroups = payload?.items || [];
+      this.duplicateImageThreshold = Math.max(1, Number(payload?.image_threshold) || 2);
+      this.sidebarCounts = { ...this.sidebarCounts, duplicates: Number(payload?.active_total) || 0 };
+      this.lazyLoaded.duplicates = true;
+      const signatures = new Set(this.duplicateGroups.map((group) => group.signature));
+      this.duplicateKeepSelections = Object.fromEntries(
+        Object.entries(this.duplicateKeepSelections || {}).filter(([signature]) => signatures.has(signature)),
+      );
+      if (this.duplicateIgnoreConfirmSignature && !signatures.has(this.duplicateIgnoreConfirmSignature)) {
+        this.duplicateIgnoreConfirmSignature = null;
+      }
+    },
+
+    removeFoldersFromLocalGallery(folderNames) {
+      const removed = new Set((folderNames || []).map((name) => String(name || "")).filter(Boolean));
+      if (!removed.size) {
+        return;
+      }
+      const items = (this.gallery.items || []).filter((item) => !removed.has(String(item?.folder_name || "")));
+      this.gallery = {
+        ...this.gallery,
+        items,
+        total: Math.max(0, Number(this.gallery.total || 0) - removed.size),
+      };
+      for (const folderName of removed) {
+        this.invalidateDetailCache(folderName);
+      }
+      this.clearLocalGalleryCaches();
     },
 
     duplicateKeepSelection(signature) {
@@ -4600,7 +4620,9 @@ function galleryApp() {
           body: JSON.stringify({ confirmed: true }),
         });
         this.duplicateIgnoreConfirmSignature = null;
-        await this.refreshDuplicates(true);
+        if (result.duplicates) {
+          this.applyDuplicatePayload(result.duplicates);
+        }
         if (result.sidebar_counts) {
           this.applySidebarCounts(result.sidebar_counts);
         }
@@ -4626,12 +4648,10 @@ function galleryApp() {
           body: JSON.stringify({ keep_folder_name: keepFolderName, confirmed: true }),
         });
         this.cancelDuplicateKeep(signature);
-        await Promise.all([
-          this.refreshDuplicates(true),
-          this.refreshMeta(),
-          this.refreshGallery(true),
-          this.lazyLoaded.trash ? this.refreshTrash() : Promise.resolve(),
-        ]);
+        if (result.duplicates) {
+          this.applyDuplicatePayload(result.duplicates);
+        }
+        this.removeFoldersFromLocalGallery(result.removed || []);
         if (result.sidebar_counts) {
           this.applySidebarCounts(result.sidebar_counts);
         }
@@ -4651,18 +4671,13 @@ function galleryApp() {
       this.duplicateActionKey = signature;
       this.notify("info", "已提交删除", "");
       try {
-        const result = await this.api(`/api/gallery/folders/${encodeURIComponent(folderName)}/trash`, {
+        const result = await this.api(`/api/duplicates/${encodeURIComponent(signature)}/folders/${encodeURIComponent(folderName)}/trash`, {
           method: "POST",
-          body: JSON.stringify({ reason: "重复内容" }),
         });
-        this.invalidateDetailCache(folderName);
-        this.clearLocalGalleryCaches();
-        await Promise.all([
-          this.refreshDuplicates(true),
-          this.refreshMeta(),
-          this.refreshGallery(true),
-          this.lazyLoaded.trash ? this.refreshTrash() : Promise.resolve(),
-        ]);
+        if (result.duplicates) {
+          this.applyDuplicatePayload(result.duplicates);
+        }
+        this.removeFoldersFromLocalGallery([folderName]);
         if (result.sidebar_counts) {
           this.applySidebarCounts(result.sidebar_counts);
         }

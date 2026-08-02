@@ -31,7 +31,14 @@ def fingerprint(hash_bits: int, color: str = "8090a0", contrast: int = 64) -> st
     return f"v1:{hash_bits:064x}:{color}:{contrast:02x}"
 
 
-def add_folder(db: Database, folder_name: str, pub_ts: int, fingerprints: list[str]) -> None:
+def add_folder(
+    db: Database,
+    folder_name: str,
+    pub_ts: int,
+    fingerprints: list[str],
+    width: int = 1200,
+    height: int = 900,
+) -> None:
     db.upsert_folder(
         {
             "folder_name": folder_name,
@@ -55,8 +62,8 @@ def add_folder(db: Database, folder_name: str, pub_ts: int, fingerprints: list[s
                 "pair_index": index,
                 "filename": f"{index:03d}.jpg",
                 "rel_path": f"data/images/{folder_name}/{index:03d}.jpg",
-                "width": 1200,
-                "height": 900,
+                "width": width,
+                "height": height,
                 "duplicate_fingerprint": value,
                 "metadata": {"kind": "image"},
             }
@@ -119,3 +126,33 @@ def test_low_contrast_images_with_different_colors_are_not_duplicates(tmp_path: 
     )
 
     assert service.list_groups()["items"] == []
+
+
+def test_removing_duplicate_folders_updates_cache_without_global_rescan(tmp_path: Path) -> None:
+    db, _storage, service = make_services(tmp_path)
+    first = int("a5" * 32, 16)
+    second = int("3c" * 32, 16)
+    shared = [fingerprint(first), fingerprint(second)]
+    add_folder(db, "high-resolution", 3, shared, width=2400, height=1800)
+    add_folder(db, "more-images", 2, [*shared, fingerprint(int("f0" * 32, 16))])
+    add_folder(db, "earlier", 1, shared)
+
+    group = service.list_groups()["items"][0]
+    tags = {item["folder_name"]: item["feature_tags"] for item in group["items"]}
+    assert "更高分辨率" in tags["high-resolution"]
+    assert "更多图片" in tags["more-images"]
+    assert "更早发布" in tags["earlier"]
+
+    db.delete_folder("high-resolution")
+    service._build_groups = lambda _threshold: (_ for _ in ()).throw(AssertionError("不应重新全局检测"))
+    payload = service.remove_folders(["high-resolution"])
+
+    assert payload["active_total"] == 1
+    assert {item["folder_name"] for item in payload["items"][0]["items"]} == {"more-images", "earlier"}
+
+    db.delete_folder("more-images")
+    payload = service.remove_folders(["more-images"])
+
+    assert payload["active_total"] == 0
+    assert payload["items"] == []
+    assert db.get_sidebar_count_cache()["counts"]["duplicates"] == 0
