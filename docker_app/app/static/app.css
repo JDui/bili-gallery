@@ -2212,8 +2212,12 @@ html.is-interacting .detail-thumb::before {
     font-size: 22px;
 }
 
-.duplicate-ignore-actions {
+.duplicate-group-actions {
     flex: 0 0 auto;
+}
+
+.duplicate-group-actions > .button-row {
+    justify-content: flex-end;
 }
 
 .duplicate-confirm-box {
@@ -2232,6 +2236,20 @@ html.is-interacting .detail-thumb::before {
 .duplicate-confirm-box span {
     color: #87414b;
     font-size: 13px;
+}
+
+.duplicate-cleanup-confirm {
+    background: rgba(235, 242, 253, 0.9);
+    border-color: rgba(45, 108, 223, 0.18);
+}
+
+.duplicate-cleanup-confirm span {
+    color: #315d9d;
+}
+
+.photo-stats .duplicate-ratio {
+    color: #2d62b7;
+    font-weight: 720;
 }
 
 .duplicate-post-grid {
@@ -4342,8 +4360,12 @@ html.is-interacting .detail-thumb::before {
         align-items: stretch;
     }
 
-    .duplicate-ignore-actions {
+    .duplicate-group-actions {
         width: 100%;
+    }
+
+    .duplicate-group-actions > .button-row {
+        justify-content: flex-start;
     }
 
     .duplicate-confirm-box {

@@ -508,7 +508,15 @@ class PullManager:
             self._release()
             self._run_next_queued_task()
 
-    def delete_pair(self, folder_name: str, pair_index: int) -> dict[str, Any]:
+    def delete_pair(
+        self,
+        folder_name: str,
+        pair_index: int,
+        *,
+        preserve_folder: bool = False,
+        refresh_counts: bool = True,
+        reason: str = "手动删除",
+    ) -> dict[str, Any]:
         folder = next((item for item in self.db.list_folders() if item["folder_name"] == folder_name), None)
         if not folder:
             raise RuntimeError("动态不存在")
@@ -520,7 +528,7 @@ class PullManager:
             folder["source_dynamic_id"],
             folder_name,
             int(pair_index),
-            reason="手动删除",
+            reason=reason,
         )
         for asset in assets:
             self.db.delete_asset(int(asset["id"]))
@@ -532,6 +540,11 @@ class PullManager:
             self.db.update_folder_media_flags(folder_name, has_images, has_livephoto)
             self.indexer._replace_gallery_index(folder_for_index, remaining_assets)
             remove_empty_folder = False
+        elif preserve_folder:
+            folder_for_index = {**folder, "has_images": False, "has_livephoto": False}
+            self.db.update_folder_media_flags(folder_name, False, False)
+            self.indexer._replace_gallery_index(folder_for_index, [])
+            remove_empty_folder = False
         else:
             self.db.delete_folder_if_empty(folder_name)
             remove_empty_folder = True
@@ -541,6 +554,32 @@ class PullManager:
             "message": "当前图片组已永久删除，文件会在后台继续清理",
             "cleanup_queued": True,
             "remove_empty_folder": remove_empty_folder,
+            "sidebar_counts": self._refresh_delete_sidebar_counts() if refresh_counts else None,
+        }
+
+    def cleanup_duplicate_pairs(self, targets: list[dict[str, Any]]) -> dict[str, Any]:
+        removed = []
+        seen: set[tuple[str, int]] = set()
+        for target in targets:
+            folder_name = str(target.get("folder_name") or "")
+            pair_index = int(target.get("pair_index") or 0)
+            key = (folder_name, pair_index)
+            if not folder_name or pair_index <= 0 or key in seen:
+                continue
+            seen.add(key)
+            try:
+                self.delete_pair(
+                    folder_name,
+                    pair_index,
+                    preserve_folder=True,
+                    refresh_counts=False,
+                    reason="仅清理低分辨率重复图片",
+                )
+            except RuntimeError:
+                continue
+            removed.append({"folder_name": folder_name, "pair_index": pair_index})
+        return {
+            "removed": removed,
             "sidebar_counts": self._refresh_delete_sidebar_counts(),
         }
 

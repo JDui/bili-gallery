@@ -130,6 +130,7 @@ function galleryApp() {
     duplicateImageThreshold: 2,
     duplicateActionKey: null,
     duplicateIgnoreConfirmSignature: null,
+    duplicateCleanupConfirmSignature: null,
     duplicateKeepSelections: {},
     logs: [],
     taskRuns: [],
@@ -305,7 +306,7 @@ function galleryApp() {
       this.loadBootstrap()
         .then(() => {
           this.refreshGallery(true);
-          this.scheduleIdleWork(() => this.refreshDuplicates(true).catch(() => {}), 1400);
+          this.scheduleIdleWork(() => this.refreshDuplicates().catch(() => {}), 1400);
         })
         .catch(() => {});
       this.scheduleStatusRefresh();
@@ -828,6 +829,10 @@ function galleryApp() {
     },
 
     handleEscape() {
+      if (this.duplicateCleanupConfirmSignature) {
+        this.duplicateCleanupConfirmSignature = null;
+        return;
+      }
       if (this.duplicateIgnoreConfirmSignature) {
         this.duplicateIgnoreConfirmSignature = null;
         return;
@@ -1075,7 +1080,7 @@ function galleryApp() {
           tasks.push(this.refreshTasks().catch(() => {}));
         }
         if (this.currentView === "duplicates" || this.lazyLoaded.duplicates) {
-          tasks.push(this.refreshDuplicates(true).catch(() => {}));
+          tasks.push(this.refreshDuplicates().catch(() => {}));
         }
         Promise.all(tasks).catch(() => {});
       }, 1200);
@@ -4533,13 +4538,13 @@ function galleryApp() {
       this.sidebarCounts = { ...this.sidebarCounts, review: this.reviewItems.length };
     },
 
-    async refreshDuplicates() {
+    async refreshDuplicates(force = false) {
       if (this.duplicateLoading) {
         return;
       }
       this.duplicateLoading = true;
       try {
-        const payload = await this.api("/api/duplicates/items");
+        const payload = await this.api(force ? "/api/duplicates/items?force=true" : "/api/duplicates/items");
         this.applyDuplicatePayload(payload);
       } finally {
         this.duplicateLoading = false;
@@ -4557,6 +4562,9 @@ function galleryApp() {
       );
       if (this.duplicateIgnoreConfirmSignature && !signatures.has(this.duplicateIgnoreConfirmSignature)) {
         this.duplicateIgnoreConfirmSignature = null;
+      }
+      if (this.duplicateCleanupConfirmSignature && !signatures.has(this.duplicateCleanupConfirmSignature)) {
+        this.duplicateCleanupConfirmSignature = null;
       }
     },
 
@@ -4589,6 +4597,8 @@ function galleryApp() {
         ...this.duplicateKeepSelections,
         [String(group.signature)]: String(item.folder_name),
       };
+      this.duplicateCleanupConfirmSignature = null;
+      this.duplicateIgnoreConfirmSignature = null;
     },
 
     cancelDuplicateKeep(signature) {
@@ -4602,10 +4612,53 @@ function galleryApp() {
         return;
       }
       this.duplicateIgnoreConfirmSignature = String(signature || "");
+      this.duplicateCleanupConfirmSignature = null;
     },
 
     cancelIgnoreDuplicate() {
       this.duplicateIgnoreConfirmSignature = null;
+    },
+
+    askCleanupDuplicate(signature) {
+      if (this.duplicateActionKey) {
+        return;
+      }
+      this.duplicateCleanupConfirmSignature = String(signature || "");
+      this.duplicateIgnoreConfirmSignature = null;
+    },
+
+    cancelCleanupDuplicate() {
+      this.duplicateCleanupConfirmSignature = null;
+    },
+
+    async confirmCleanupDuplicate(group) {
+      const signature = String(group?.signature || "");
+      if (!signature || this.duplicateCleanupConfirmSignature !== signature || this.duplicateActionKey) {
+        return;
+      }
+      this.duplicateActionKey = signature;
+      this.notify("info", "已提交删除", "");
+      try {
+        const result = await this.api(`/api/duplicates/${encodeURIComponent(signature)}/cleanup`, {
+          method: "POST",
+          body: JSON.stringify({ confirmed: true }),
+        });
+        this.duplicateCleanupConfirmSignature = null;
+        if (result.duplicates) {
+          this.applyDuplicatePayload(result.duplicates);
+        }
+        for (const item of result.removed || []) {
+          this.invalidateDetailCache(item.folder_name);
+        }
+        this.clearLocalGalleryCaches();
+        if (result.sidebar_counts) {
+          this.applySidebarCounts(result.sidebar_counts);
+        }
+      } catch (error) {
+        this.notify("error", "清理失败", error.message || "请稍后重试。");
+      } finally {
+        this.duplicateActionKey = null;
+      }
     },
 
     async confirmIgnoreDuplicate(group) {
@@ -5967,7 +6020,7 @@ function galleryApp() {
       this.settings = { ...savedSettings, auth: auth || this.settings.auth };
       document.title = this.settings.app_title || document.title;
       await Promise.all([this.refreshMeta(), this.loadSettings()]);
-      this.scheduleIdleWork(() => this.refreshDuplicates(true).catch(() => {}), 500);
+      this.scheduleIdleWork(() => this.refreshDuplicates().catch(() => {}), 500);
       this.notify("success", "设置已保存", "新的拉取和过滤参数已经生效。");
     },
 
@@ -6228,7 +6281,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.review || this.currentView === "review" ? this.refreshReview() : Promise.resolve(),
-          this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates(true) : Promise.resolve(),
+          this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates() : Promise.resolve(),
           this.lazyLoaded.logs || this.currentView === "logs" ? this.refreshLogs() : Promise.resolve(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
           this.lazyLoaded.trash || this.currentView === "trash" ? this.refreshTrash() : Promise.resolve(),
@@ -6241,7 +6294,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
-          this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates(true) : Promise.resolve(),
+          this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates() : Promise.resolve(),
           this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
           this.currentView === "settings" ? this.loadSettings() : Promise.resolve(),
@@ -6252,7 +6305,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
-          this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates(true) : Promise.resolve(),
+          this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates() : Promise.resolve(),
           this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
         ]);

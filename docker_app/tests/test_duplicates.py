@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.config import AppConfig
 from app.db import Database
 from app.services.duplicates import DuplicateService
@@ -87,6 +89,16 @@ def test_duplicate_groups_require_persisted_image_threshold(tmp_path: Path) -> N
     assert payload["active_total"] == 1
     assert {item["folder_name"] for item in payload["items"][0]["items"]} == {"folder-a", "folder-b"}
     assert payload["items"][0]["matched_image_count"] == 2
+    ratios = {item["folder_name"]: item["duplicate_ratio"] for item in payload["items"][0]["items"]}
+    assert ratios == {"folder-a": 67, "folder-b": 67}
+
+    restarted_service = DuplicateService(db, _storage)
+    restarted_service._build_groups = lambda _threshold: (_ for _ in ()).throw(AssertionError("不应重新全局检测"))
+    assert restarted_service.list_groups()["active_total"] == 1
+    db.set_folder_favorite("folder-a", True)
+    assert restarted_service.list_groups()["active_total"] == 1
+    with pytest.raises(AssertionError, match="不应重新全局检测"):
+        restarted_service.list_groups(force=True)
 
     db.save_settings({"duplicate_image_threshold": 3})
     assert Database(db.db_path).get_settings()["duplicate_image_threshold"] == 3
@@ -156,3 +168,74 @@ def test_removing_duplicate_folders_updates_cache_without_global_rescan(tmp_path
     assert payload["active_total"] == 0
     assert payload["items"] == []
     assert db.get_sidebar_count_cache()["counts"]["duplicates"] == 0
+
+    restarted_service = DuplicateService(db, _storage)
+    restarted_service._build_groups = lambda _threshold: (_ for _ in ()).throw(AssertionError("不应重新全局检测"))
+    assert restarted_service.list_groups()["items"] == []
+
+
+def test_cleanup_plan_only_selects_lower_resolution_duplicates(tmp_path: Path) -> None:
+    db, storage, service = make_services(tmp_path)
+    first = int("a5" * 32, 16)
+    second = int("3c" * 32, 16)
+    shared = [fingerprint(first), fingerprint(second)]
+    add_folder(db, "high-resolution", 2, shared, width=2400, height=1800)
+    add_folder(db, "low-resolution", 1, shared, width=1200, height=900)
+
+    group = service.list_groups()["items"][0]
+    assert group["cleanup_candidate_count"] == 2
+    assert {item["duplicate_ratio"] for item in group["items"]} == {100}
+
+    restarted = DuplicateService(db, storage)
+    restarted._build_groups = lambda _threshold: (_ for _ in ()).throw(AssertionError("不应重新全局检测"))
+    plan = restarted.cleanup_plan(group["signature"])
+
+    assert plan["folder_names"] == ["high-resolution", "low-resolution"]
+    assert {
+        (target["folder_name"], target["pair_index"])
+        for target in plan["targets"]
+    } == {("low-resolution", 1), ("low-resolution", 2)}
+
+
+def test_refresh_group_after_cleanup_only_rechecks_affected_folders(tmp_path: Path) -> None:
+    db, _storage, service = make_services(tmp_path)
+    first = int("a5" * 32, 16)
+    second = int("3c" * 32, 16)
+    shared = [fingerprint(first), fingerprint(second)]
+    add_folder(db, "high-resolution", 2, shared, width=2400, height=1800)
+    add_folder(db, "low-resolution", 1, shared, width=1200, height=900)
+    group = service.list_groups()["items"][0]
+    plan = service.cleanup_plan(group["signature"])
+    for target in plan["targets"]:
+        for asset in db.list_assets_for_folder(target["folder_name"]):
+            if int(asset["pair_index"]) == int(target["pair_index"]):
+                db.delete_asset(int(asset["id"]))
+
+    original_build = service._build_groups
+    calls = []
+
+    def scoped_build(threshold: int, folder_names: set[str] | None = None) -> list[dict]:
+        calls.append(folder_names)
+        return original_build(threshold, folder_names=folder_names)
+
+    service._build_groups = scoped_build
+    payload = service.refresh_group(group["signature"], plan["folder_names"])
+
+    assert calls == [{"high-resolution", "low-resolution"}]
+    assert payload["items"] == []
+    assert db.get_folder("high-resolution") is not None
+    assert db.get_folder("low-resolution") is not None
+
+
+def test_equal_resolution_duplicates_have_no_cleanup_targets(tmp_path: Path) -> None:
+    db, _storage, service = make_services(tmp_path)
+    first = int("a5" * 32, 16)
+    second = int("3c" * 32, 16)
+    shared = [fingerprint(first), fingerprint(second)]
+    add_folder(db, "first", 2, shared)
+    add_folder(db, "second", 1, shared)
+
+    group = service.list_groups()["items"][0]
+
+    assert group["cleanup_candidate_count"] == 0
+    assert service.cleanup_plan(group["signature"])["targets"] == []

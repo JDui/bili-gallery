@@ -195,8 +195,8 @@ async def get_folder_detail(folder_name: str) -> dict[str, Any]:
 
 
 @app.get("/api/duplicates/items")
-def duplicate_items() -> dict[str, Any]:
-    return duplicates.list_groups()
+def duplicate_items(force: bool = False) -> dict[str, Any]:
+    return duplicates.list_groups(force=force)
 
 
 @app.post("/api/duplicates/{signature}/ignore")
@@ -235,6 +235,28 @@ def resolve_duplicate(signature: str, payload: dict[str, Any] = Body(...)) -> di
         "message": "已仅保留所选贴文，其余重复贴文已提交删除",
         "kept": keep_folder_name,
         "removed": removed,
+        "duplicates": duplicate_payload,
+        "sidebar_counts": db.get_sidebar_count_cache(),
+        "remaining": duplicate_payload["active_total"],
+    }
+
+
+@app.post("/api/duplicates/{signature}/cleanup")
+def cleanup_duplicate_images(signature: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    if payload.get("confirmed") is not True:
+        raise HTTPException(status_code=400, detail="仅清理重复图片需要二次确认")
+    try:
+        plan = duplicates.cleanup_plan(signature)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not plan["targets"]:
+        raise HTTPException(status_code=400, detail="此分组没有分辨率更低的重复图片")
+    result = pull_manager.cleanup_duplicate_pairs(plan["targets"])
+    duplicate_payload = duplicates.refresh_group(signature, plan["folder_names"])
+    return {
+        "ok": True,
+        "message": "已清理低分辨率重复图片，贴文均已保留",
+        "removed": result["removed"],
         "duplicates": duplicate_payload,
         "sidebar_counts": db.get_sidebar_count_cache(),
         "remaining": duplicate_payload["active_total"],

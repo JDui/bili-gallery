@@ -432,7 +432,7 @@
                     </div>
                     <div class="button-row">
                         <span class="inline-tag" x-text="`至少 ${duplicateImageThreshold} 张相似图片`"></span>
-                        <button class="secondary-button" @click="refreshDuplicates()" :disabled="duplicateLoading" x-text="duplicateLoading ? '检测中' : '重新检测'"></button>
+                        <button class="secondary-button" @click="refreshDuplicates(true)" :disabled="duplicateLoading" x-text="duplicateLoading ? '检测中' : '重新检测'"></button>
                     </div>
                 </div>
                 <template x-for="(group, groupIndex) in duplicateGroups" :key="group.group_key || group.signature">
@@ -446,8 +446,16 @@
                                     <span class="inline-tag" x-text="`平均相似度 ${group.similarity}%`"></span>
                                 </div>
                             </div>
-                            <div class="duplicate-ignore-actions" @click.stop>
-                                <button class="secondary-button" x-show="duplicateIgnoreConfirmSignature !== group.signature" @click="askIgnoreDuplicate(group.signature)">忽略此重复项</button>
+                            <div class="duplicate-group-actions" @click.stop>
+                                <div class="button-row" x-show="duplicateIgnoreConfirmSignature !== group.signature && duplicateCleanupConfirmSignature !== group.signature">
+                                    <button class="secondary-button" @click="askCleanupDuplicate(group.signature)" :disabled="duplicateActionKey === group.signature || !group.cleanup_candidate_count" :title="group.cleanup_candidate_count ? `可清理 ${group.cleanup_candidate_count} 张低分辨率重复图片` : '没有分辨率更低的重复图片'">仅清理重复</button>
+                                    <button class="secondary-button" @click="askIgnoreDuplicate(group.signature)">忽略此重复项</button>
+                                </div>
+                                <div class="duplicate-confirm-box duplicate-cleanup-confirm" x-show="duplicateCleanupConfirmSignature === group.signature" x-cloak>
+                                    <span x-text="`将删除 ${group.cleanup_candidate_count} 张分辨率更低的重复图片，所有贴文都会保留。确定继续？`"></span>
+                                    <button class="secondary-button" @click="cancelCleanupDuplicate()">取消</button>
+                                    <button class="primary-button danger-confirm" @click="confirmCleanupDuplicate(group)" :disabled="duplicateActionKey === group.signature">二次确认，仅清理重复</button>
+                                </div>
                                 <div class="duplicate-confirm-box" x-show="duplicateIgnoreConfirmSignature === group.signature" x-cloak>
                                     <span>忽略后此组将不再出现，确定继续？</span>
                                     <button class="secondary-button" @click="cancelIgnoreDuplicate()">取消</button>
@@ -476,6 +484,7 @@
                                         <div class="photo-stats">
                                             <span x-text="item.subscription_name || '默认订阅'"></span>
                                             <span x-text="`${item.duplicate_match_count} 张命中`"></span>
+                                            <span class="duplicate-ratio" x-text="`重复内容占比 ${item.duplicate_ratio}%`"></span>
                                         </div>
                                         <div class="duplicate-feature-tags" x-show="item.feature_tags?.length" x-cloak>
                                             <template x-for="tag in item.feature_tags" :key="`${item.folder_name}-${tag}`">

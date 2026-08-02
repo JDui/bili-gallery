@@ -243,6 +243,13 @@ class Database:
                     ignored_at text not null
                 );
 
+                create table if not exists duplicate_group_cache (
+                    id integer primary key check(id = 1),
+                    cache_key text not null,
+                    groups_json text not null,
+                    updated_at text not null
+                );
+
                 create table if not exists subscriptions (
                     uid text primary key,
                     uname text,
@@ -1624,6 +1631,57 @@ class Database:
                 (str(signature), dumps_json(sorted(str(name) for name in folder_names)), now_iso()),
             )
 
+    def get_duplicate_group_cache(self, cache_key: str) -> list[dict[str, Any]] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select groups_json from duplicate_group_cache where id = 1 and cache_key = ?",
+                (str(cache_key),),
+            ).fetchone()
+        if not row:
+            return None
+        payload = loads_json(row["groups_json"], None)
+        if not isinstance(payload, list):
+            return None
+        return [dict(group) for group in payload if isinstance(group, dict)]
+
+    def set_duplicate_group_cache(self, cache_key: str, groups: list[dict[str, Any]]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into duplicate_group_cache(id, cache_key, groups_json, updated_at)
+                values (1, ?, ?, ?)
+                on conflict(id) do update set
+                    cache_key = excluded.cache_key,
+                    groups_json = excluded.groups_json,
+                    updated_at = excluded.updated_at
+                """,
+                (str(cache_key), dumps_json(groups), now_iso()),
+            )
+
+    def clear_duplicate_group_cache(self) -> None:
+        with self.connect() as conn:
+            conn.execute("delete from duplicate_group_cache")
+
+    def duplicate_content_signature(self) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                select
+                    count(*) as image_rows,
+                    coalesce(max(id), 0) as max_image_id,
+                    coalesce(sum(id), 0) as image_id_sum,
+                    count(distinct folder_name) as folder_rows,
+                    coalesce(sum(pair_index), 0) as pair_index_sum,
+                    coalesce(sum(width), 0) as width_sum,
+                    coalesce(sum(height), 0) as height_sum,
+                    sum(case when coalesce(duplicate_fingerprint, '') != '' then 1 else 0 end) as fingerprint_rows,
+                    coalesce(max(created_at), '') as newest_created_at
+                from assets
+                where media_type = 'image'
+                """
+            ).fetchone()
+        return dumps_json(dict(row))
+
     def set_folder_favorite(self, folder_name: str, is_favorite: bool) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -2654,4 +2712,5 @@ class Database:
             conn.execute("delete from deleted_pair_marks")
             conn.execute("delete from trash_items")
             conn.execute("delete from duplicate_ignores")
+            conn.execute("delete from duplicate_group_cache")
             conn.execute("delete from task_runs")

@@ -18,6 +18,7 @@ MAX_HASH_DISTANCE = 32
 MAX_ASPECT_LOG_DISTANCE = 0.24
 LOW_CONTRAST_LIMIT = 12
 LOW_CONTRAST_COLOR_DISTANCE = 36
+DUPLICATE_CACHE_VERSION = 2
 
 
 @dataclass
@@ -75,13 +76,19 @@ class DuplicateService:
         self._cached_groups: list[dict[str, Any]] = []
         self._cache_lock = threading.RLock()
 
-    def list_groups(self, include_ignored: bool = False) -> dict[str, Any]:
+    def list_groups(self, include_ignored: bool = False, force: bool = False) -> dict[str, Any]:
         with self._cache_lock:
             threshold = self._image_threshold()
             signature = self._gallery_signature(threshold)
-            if signature != self._cache_signature:
-                self._cached_groups = self._build_groups(threshold)
-                self._cache_signature = self._gallery_signature(threshold)
+            if force or signature != self._cache_signature:
+                cached_groups = None if force else self.db.get_duplicate_group_cache(signature)
+                if cached_groups is None:
+                    self._cached_groups = self._build_groups(threshold)
+                    signature = self._gallery_signature(threshold)
+                    self.db.set_duplicate_group_cache(signature, self._cached_groups)
+                else:
+                    self._cached_groups = cached_groups
+                self._cache_signature = signature
             ignored = self.db.list_ignored_duplicate_signatures()
             groups = [
                 self._public_group(group, ignored=group["signature"] in ignored)
@@ -133,10 +140,47 @@ class DuplicateService:
                     groups.append(updated)
             self._cached_groups = groups
             self._cache_signature = self._gallery_signature(self._image_threshold())
+            self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
             return self.list_groups()
 
-    def _build_groups(self, threshold: int) -> list[dict[str, Any]]:
-        folders = {str(item["folder_name"]): item for item in self.db.list_folders()}
+    def cleanup_plan(self, signature: str) -> dict[str, Any]:
+        self.list_groups(include_ignored=True)
+        with self._cache_lock:
+            group = next(
+                (item for item in self._cached_groups if str(item.get("signature")) == str(signature)),
+                None,
+            )
+            if not group:
+                raise RuntimeError("重复内容项不存在或已经处理")
+            return {
+                "folder_names": [str(item["folder_name"]) for item in group.get("items", [])],
+                "targets": [dict(target) for target in group.get("_cleanup_targets", [])],
+            }
+
+    def refresh_group(self, signature: str, folder_names: list[str]) -> dict[str, Any]:
+        affected = {str(name) for name in folder_names if str(name)}
+        with self._cache_lock:
+            threshold = self._image_threshold()
+            replacement_groups = self._build_groups(threshold, folder_names=affected)
+            self._cached_groups = [
+                group for group in self._cached_groups
+                if str(group.get("signature")) != str(signature)
+            ]
+            self._cached_groups.extend(replacement_groups)
+            self._cached_groups.sort(
+                key=lambda group: (group["latest_pub_ts"], group["similarity"]),
+                reverse=True,
+            )
+            self._cache_signature = self._gallery_signature(threshold)
+            self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
+            return self.list_groups()
+
+    def _build_groups(self, threshold: int, folder_names: set[str] | None = None) -> list[dict[str, Any]]:
+        folders = {
+            str(item["folder_name"]): item
+            for item in self.db.list_folders()
+            if folder_names is None or str(item["folder_name"]) in folder_names
+        }
         assets = self._duplicate_assets(folders)
         if len(assets) < 2:
             return []
@@ -211,7 +255,7 @@ class DuplicateService:
             return 2
 
     def _gallery_signature(self, threshold: int) -> str:
-        return f"{self.db.gallery_page_cache_signature()}:{threshold}"
+        return f"v{DUPLICATE_CACHE_VERSION}:{self.db.duplicate_content_signature()}:{threshold}"
 
     def _duplicate_assets(self, folders: dict[str, dict[str, Any]]) -> list[DuplicateAsset]:
         output = []
@@ -288,6 +332,7 @@ class DuplicateService:
             json.dumps(signature_source, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         matched_by_folder: dict[str, set[int]] = defaultdict(set)
+        cleanup_targets: dict[tuple[str, int], dict[str, Any]] = {}
         match_rows = []
         link_summaries = []
         total_distance = 0
@@ -306,6 +351,19 @@ class DuplicateService:
                 total_matches += 1
                 similarity = round((1 - distance / 256) * 100)
                 link_similarity_total += similarity
+                left_pixels = left.width * left.height
+                right_pixels = right.width * right.height
+                lower = left if left_pixels < right_pixels else right if right_pixels < left_pixels else None
+                higher_pixels = max(left_pixels, right_pixels)
+                if lower is not None:
+                    cleanup_targets[(lower.folder_name, lower.pair_index)] = {
+                        "folder_name": lower.folder_name,
+                        "pair_index": lower.pair_index,
+                        "width": lower.width,
+                        "height": lower.height,
+                        "pixels": lower.width * lower.height,
+                        "compared_pixels": higher_pixels,
+                    }
                 match_rows.append(
                     {
                         "left_folder_name": left.folder_name,
@@ -352,6 +410,9 @@ class DuplicateService:
                         default=0,
                     ),
                     "duplicate_match_count": len(matched_by_folder[name]),
+                    "duplicate_ratio": round(
+                        len(matched_by_folder[name]) / max(len(folder_assets), 1) * 100
+                    ),
                 }
             )
         self._apply_feature_tags(items)
@@ -362,6 +423,11 @@ class DuplicateService:
             "group_key": signature,
             "_signature_source": signature_source,
             "_link_summaries": link_summaries,
+            "_cleanup_targets": sorted(
+                cleanup_targets.values(),
+                key=lambda item: (item["folder_name"], item["pair_index"]),
+            ),
+            "cleanup_candidate_count": len(cleanup_targets),
             "items": items,
             "post_count": len(items),
             "matched_image_count": total_matches,
@@ -391,6 +457,9 @@ class DuplicateService:
                 matched_by_folder[str(name)].update(int(index) for index in pair_indexes)
         for item in items:
             item["duplicate_match_count"] = len(matched_by_folder[str(item["folder_name"])])
+            item["duplicate_ratio"] = round(
+                item["duplicate_match_count"] / max(int(item.get("image_count") or 0), 1) * 100
+            )
         self._apply_feature_tags(items)
         signature_source = [
             entry
@@ -407,6 +476,16 @@ class DuplicateService:
             "signature": signature,
             "_signature_source": signature_source,
             "_link_summaries": link_summaries,
+            "_cleanup_targets": [
+                dict(target)
+                for target in group.get("_cleanup_targets", [])
+                if str(target.get("folder_name")) not in removed
+            ],
+            "cleanup_candidate_count": sum(
+                1
+                for target in group.get("_cleanup_targets", [])
+                if str(target.get("folder_name")) not in removed
+            ),
             "items": items,
             "post_count": len(items),
             "matched_image_count": total_matches,
