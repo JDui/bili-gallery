@@ -1565,6 +1565,15 @@ html.is-interacting .detail-thumb::before {
     grid-template-rows: 1fr;
 }
 
+.photo-collage.tiles-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: 1fr;
+}
+
+.photo-collage.tiles-3 .photo-collage-tile:nth-of-type(1) {
+    grid-row: 1 / -1;
+}
+
 .photo-collage-tile {
     position: relative;
     overflow: hidden;
@@ -2157,6 +2166,11 @@ html.is-interacting .detail-thumb::before {
     gap: 18px;
 }
 
+.review-card.is-removing {
+    pointer-events: none;
+    animation: review-card-remove 180ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
 .panel-card.subscription-card {
     display: grid;
     grid-template-columns: 1fr;
@@ -2521,7 +2535,7 @@ html.is-interacting .detail-thumb::before {
     will-change: transform, opacity;
     backface-visibility: hidden;
     overscroll-behavior: contain;
-    scroll-behavior: smooth;
+    scroll-behavior: auto;
     overflow-anchor: none;
     transition: transform var(--duration-base) var(--ease-fluid), opacity var(--duration-fast) var(--ease-soft);
 }
@@ -4437,28 +4451,60 @@ html.is-interacting .detail-thumb::before {
 
 .thumbnail-settings-card {
     grid-column: span 2;
+    padding: 16px 18px;
+}
+
+.thumbnail-settings-card > h4 {
+    margin-bottom: 12px;
+}
+
+.interface-settings-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(180px, 0.8fr);
+    gap: 8px 12px;
+    align-items: end;
+    margin-bottom: 10px;
+}
+
+.interface-settings-grid > label {
+    margin: 0;
+}
+
+.interface-settings-grid input,
+.interface-settings-grid select {
+    margin-top: 5px;
+    padding-block: 9px;
+}
+
+.interface-settings-grid .interface-preview-toggle {
+    align-self: center;
+    min-height: 34px;
+}
+
+.interface-performance-copy {
+    align-self: center;
+    margin: 0;
 }
 
 .thumbnail-level-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
+    grid-template-columns: 1fr;
+    gap: 7px;
 }
 
 .thumbnail-level-row {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px 12px;
-    align-items: stretch;
+    grid-template-columns: 58px minmax(130px, 1fr) minmax(130px, 1fr) minmax(112px, auto);
+    gap: 8px 12px;
+    align-items: center;
     min-width: 0;
-    padding: 14px;
+    padding: 8px 10px;
     border-radius: var(--radius-card);
     background: rgba(246, 249, 253, 0.9);
     border: 1px solid rgba(45, 58, 75, 0.08);
 }
 
 .thumbnail-level-row strong {
-    grid-column: 1 / -1;
     align-self: center;
     color: var(--text);
     font-size: 16px;
@@ -4466,19 +4512,62 @@ html.is-interacting .detail-thumb::before {
 
 .thumbnail-level-row label {
     display: grid;
-    gap: 6px;
+    grid-template-columns: auto minmax(64px, 1fr);
+    align-items: center;
+    gap: 7px;
     min-width: 0;
     margin: 0;
 }
 
+.thumbnail-level-row label input {
+    margin: 0;
+    padding: 8px 10px;
+}
+
 .thumbnail-level-row .confirm-row {
-    grid-column: 1 / -1;
     margin: 0;
 }
 
 .thumbnail-level-row > .secondary-button {
-    grid-column: 1 / -1;
     width: 100%;
+}
+
+@keyframes review-card-remove {
+    to {
+        opacity: 0;
+        transform: translate3d(0, -10px, 0) scale(0.985);
+    }
+}
+
+@media (max-width: 1240px) {
+    .thumbnail-settings-card {
+        grid-column: auto;
+    }
+}
+
+@media (max-width: 720px) {
+    .interface-settings-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .thumbnail-level-row {
+        grid-template-columns: 52px repeat(2, minmax(0, 1fr));
+    }
+
+    .thumbnail-level-row > .secondary-button,
+    .thumbnail-level-row > .confirm-row {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 520px) {
+    .thumbnail-level-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .thumbnail-level-row strong {
+        grid-column: 1 / -1;
+    }
 }
 
 .site-source-row,

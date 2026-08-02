@@ -428,7 +428,11 @@
                     <button class="secondary-button" @click="refreshReview()">刷新</button>
                 </div>
                 <template x-for="item in reviewItems" :key="item.id">
-                    <article class="panel-card">
+                    <article
+                        class="panel-card review-card"
+                        :class="{ 'is-removing': reviewItemRemoving(item.id) }"
+                        :data-review-id="item.id"
+                    >
                         <div class="panel-card-main">
                             <h4 x-text="item.folder_name_candidate || '未命名动态'"></h4>
                             <p x-text="item.text_excerpt || '无文案'"></p>
@@ -709,16 +713,18 @@
 
                     <article class="settings-card thumbnail-settings-card">
                         <h4>界面与缩略图</h4>
-                        <label>应用标题 <input type="text" x-model="settings.app_title" placeholder="BiliGalleryRC"></label>
-                        <label>显示性能模式
-                            <select x-model="performanceMode" @change="setPerformanceMode($event.target.value)">
-                                <option value="auto">自动</option>
-                                <option value="full">完整视觉</option>
-                                <option value="low">低功耗</option>
-                            </select>
-                        </label>
-                        <label class="toggle-row"><input type="checkbox" :checked="hoverPreviewEnabled" @change="setHoverPreviewEnabled($event.target.checked)"> 自动预览 Live Photo</label>
-                        <p class="field-copy" x-text="resolvedPerformanceMode === 'low' ? '当前已降低模糊和阴影，媒体功能不受影响。' : '当前保留完整视觉效果。'"></p>
+                        <div class="interface-settings-grid">
+                            <label>应用标题 <input type="text" x-model="settings.app_title" placeholder="BiliGalleryRC"></label>
+                            <label>显示性能模式
+                                <select x-model="performanceMode" @change="setPerformanceMode($event.target.value)">
+                                    <option value="auto">自动</option>
+                                    <option value="full">完整视觉</option>
+                                    <option value="low">低功耗</option>
+                                </select>
+                            </label>
+                            <label class="toggle-row interface-preview-toggle"><input type="checkbox" :checked="hoverPreviewEnabled" @change="setHoverPreviewEnabled($event.target.checked)"> 自动预览 Live Photo</label>
+                            <p class="field-copy interface-performance-copy" x-text="resolvedPerformanceMode === 'low' ? '当前已降低模糊和阴影，媒体功能不受影响。' : '当前保留完整视觉效果。'"></p>
+                        </div>
                         <div class="thumbnail-level-grid">
                             <div class="thumbnail-level-row">
                                 <strong>tiny</strong>
@@ -1285,7 +1291,7 @@
                             @click="detailTextExpandable() ? toggleDetailText() : null"
                             :aria-expanded="detailTextExpanded"
                         >
-                            <span x-text="detailContentText()"></span>
+                            <span x-ref="detailContentText" x-text="detailContentText()"></span>
                             <small x-show="detailTextExpandable()" x-text="detailTextExpanded ? '收起' : '查看全部'"></small>
                         </button>
                     </div>
@@ -1388,7 +1394,13 @@
                         <h3 x-text="sourcePreview.title || '原始内容'"></h3>
                         <p class="detail-copy" x-text="sourcePreview.subtitle"></p>
                     </div>
-                    <div class="button-row">
+                    <div class="button-row source-preview-actions">
+                        <template x-if="sourcePreview.reviewId">
+                            <button class="primary-button" :disabled="reviewActionId === sourcePreview.reviewId" @click="resolveSourcePreviewReview('approve')">拉取</button>
+                        </template>
+                        <template x-if="sourcePreview.reviewId">
+                            <button class="secondary-button danger-button" :disabled="reviewActionId === sourcePreview.reviewId" @click="resolveSourcePreviewReview('reject')">放弃</button>
+                        </template>
                         <button class="secondary-button" @click="openSourcePreviewExternal()">系统浏览器打开</button>
                         <button class="secondary-button" @click="closeSourcePreview()">关闭</button>
                     </div>
@@ -1468,7 +1480,7 @@
                     <strong x-text="toast.title"></strong>
                     <button class="toast-close" @click="closeToast()" aria-label="关闭提示">×</button>
                 </div>
-                <p x-text="toast.message"></p>
+                <p x-show="toast.message" x-text="toast.message"></p>
             </article>
         </div>
 

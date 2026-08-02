@@ -48,6 +48,13 @@ def make_app(tmp_path: Path) -> tuple[Database, StorageService, SiteSyncManager]
     return db, storage, SiteSyncManager(db, storage)
 
 
+def cached_storage_path(storage: StorageService, url: str) -> Path:
+    assert url.startswith("/storage/")
+    path = storage.resolve_storage_path(url.removeprefix("/storage/"))
+    assert path is not None
+    return path
+
+
 def wait_for_task(db: Database, task_type: str, timeout: float = 3.0) -> dict:
     deadline = time.time() + timeout
     task = None
@@ -2048,7 +2055,7 @@ def test_bilibili_dynamic_feed_retries_with_light_headers(tmp_path: Path) -> Non
 
 
 def test_site_icon_refresh_discovers_html_link_icon(tmp_path: Path) -> None:
-    db, _storage, syncer = make_app(tmp_path)
+    db, storage, syncer = make_app(tmp_path)
     site_dir = tmp_path / "icon-site"
     site_dir.mkdir()
     (site_dir / "logo.png").write_bytes(b"fake png")
@@ -2074,13 +2081,16 @@ def test_site_icon_refresh_discovers_html_link_icon(tmp_path: Path) -> None:
 
     item = syncer.refresh_site_icon(source["id"])
 
-    assert item["icon_url"] == (site_dir / "logo.png").resolve().as_uri()
+    cached_icon = cached_storage_path(storage, item["icon_url"])
+    assert cached_icon.name.startswith(f"{source['id']}-")
+    assert cached_icon.suffix == ".png"
+    assert cached_icon.read_bytes() == b"fake png"
 
 
 def test_site_icon_refresh_fallback_parser_discovers_shortcut_icon(tmp_path: Path, monkeypatch) -> None:
     from app.services import site_parser
 
-    db, _storage, syncer = make_app(tmp_path)
+    db, storage, syncer = make_app(tmp_path)
     site_dir = tmp_path / "shortcut-icon-site"
     site_dir.mkdir()
     (site_dir / "site.ico").write_bytes(b"fake ico")
@@ -2104,11 +2114,14 @@ def test_site_icon_refresh_fallback_parser_discovers_shortcut_icon(tmp_path: Pat
 
     item = syncer.refresh_site_icon(source["id"])
 
-    assert item["icon_url"] == (site_dir / "site.ico").resolve().as_uri()
+    cached_icon = cached_storage_path(storage, item["icon_url"])
+    assert cached_icon.name.startswith(f"{source['id']}-")
+    assert cached_icon.suffix == ".ico"
+    assert cached_icon.read_bytes() == b"fake ico"
 
 
 def test_site_icon_refresh_discovers_rss_image(tmp_path: Path) -> None:
-    db, _storage, syncer = make_app(tmp_path)
+    db, storage, syncer = make_app(tmp_path)
     site_dir = tmp_path / "rss-icon-site"
     site_dir.mkdir()
     (site_dir / "feed-logo.png").write_bytes(b"fake png")
@@ -2137,7 +2150,10 @@ def test_site_icon_refresh_discovers_rss_image(tmp_path: Path) -> None:
 
     item = syncer.refresh_site_icon(source["id"])
 
-    assert item["icon_url"] == (site_dir / "feed-logo.png").resolve().as_uri()
+    cached_icon = cached_storage_path(storage, item["icon_url"])
+    assert cached_icon.name.startswith(f"{source['id']}-")
+    assert cached_icon.suffix == ".png"
+    assert cached_icon.read_bytes() == b"fake png"
 
 
 def test_site_icon_refresh_caches_remote_icon_in_local_storage(tmp_path: Path, monkeypatch) -> None:
@@ -2185,10 +2201,10 @@ def test_site_icon_refresh_caches_remote_icon_in_local_storage(tmp_path: Path, m
 
     item = syncer.refresh_site_icon(source["id"])
 
-    cached_icon = icon_dir / f"{source['id']}.png"
-    tiny_icon = icon_dir / "tiny" / f"{source['id']}.webp"
-    assert item["icon_url"] == f"/storage/data/avatars/sites/{source['id']}.png"
-    assert item["icon_tiny_url"] == f"/storage/data/avatars/sites/tiny/{source['id']}.webp"
+    cached_icon = cached_storage_path(storage, item["icon_url"])
+    tiny_icon = cached_storage_path(storage, item["icon_tiny_url"])
+    assert cached_icon.name.startswith(f"{source['id']}-")
+    assert tiny_icon.name.startswith(f"{source['id']}-")
     assert cached_icon.read_bytes() == icon_bytes
     with Image.open(tiny_icon) as image:
         assert min(image.size) == 32
@@ -2198,8 +2214,40 @@ def test_site_icon_refresh_caches_remote_icon_in_local_storage(tmp_path: Path, m
     assert sessions[0].headers["Referer"] == source["entry_url"]
 
 
+def test_site_icon_refresh_uses_new_url_when_icon_content_changes(tmp_path: Path) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    site_dir = tmp_path / "changing-icon-site"
+    site_dir.mkdir()
+    icon_path = site_dir / "logo.png"
+    Image.new("RGB", (48, 48), (30, 90, 180)).save(icon_path, format="PNG")
+    (site_dir / "index.html").write_text(
+        '<!doctype html><html><head><link rel="icon" href="logo.png"></head><body></body></html>',
+        encoding="utf-8",
+    )
+    source = db.create_site_source(
+        {
+            "name": "Changing Icon Fixture",
+            "slug": "changing-icon-fixture",
+            **html_source(),
+            "entry_url": (site_dir / "index.html").resolve().as_uri(),
+            "enabled": True,
+        }
+    )
+
+    first = syncer.refresh_site_icon(source["id"])
+    first_path = cached_storage_path(storage, first["icon_url"])
+    Image.new("RGB", (48, 48), (180, 70, 40)).save(icon_path, format="PNG")
+    second = syncer.refresh_site_icon(source["id"])
+    second_path = cached_storage_path(storage, second["icon_url"])
+
+    assert first["icon_url"] != second["icon_url"]
+    assert not first_path.exists()
+    assert second_path.exists()
+    assert second["icon_tiny_url"] != first["icon_tiny_url"]
+
+
 def test_site_icon_refresh_discovers_web_manifest_icon(tmp_path: Path) -> None:
-    db, _storage, syncer = make_app(tmp_path)
+    db, storage, syncer = make_app(tmp_path)
     site_dir = tmp_path / "manifest-icon-site"
     site_dir.mkdir()
     (site_dir / "manifest-icon.png").write_bytes(b"manifest icon")
@@ -2226,11 +2274,14 @@ def test_site_icon_refresh_discovers_web_manifest_icon(tmp_path: Path) -> None:
 
     item = syncer.refresh_site_icon(source["id"])
 
-    assert item["icon_url"] == (site_dir / "manifest-icon.png").resolve().as_uri()
+    cached_icon = cached_storage_path(storage, item["icon_url"])
+    assert cached_icon.name.startswith(f"{source['id']}-")
+    assert cached_icon.suffix == ".png"
+    assert cached_icon.read_bytes() == b"manifest icon"
 
 
 def test_site_icon_refresh_discovers_json_ld_and_lazy_logo(tmp_path: Path) -> None:
-    db, _storage, syncer = make_app(tmp_path)
+    db, storage, syncer = make_app(tmp_path)
     site_dir = tmp_path / "structured-logo-site"
     site_dir.mkdir()
     (site_dir / "structured-logo.svg").write_text("<svg></svg>", encoding="utf-8")
@@ -2261,13 +2312,16 @@ def test_site_icon_refresh_discovers_json_ld_and_lazy_logo(tmp_path: Path) -> No
 
     item = syncer.refresh_site_icon(source["id"])
 
-    assert item["icon_url"] == (site_dir / "structured-logo.svg").resolve().as_uri()
+    cached_icon = cached_storage_path(storage, item["icon_url"])
+    assert cached_icon.name.startswith(f"{source['id']}-")
+    assert cached_icon.suffix == ".svg"
+    assert cached_icon.read_text(encoding="utf-8") == "<svg></svg>"
 
 
 def test_reset_all_icons_refreshes_up_and_site_icons(tmp_path: Path, monkeypatch) -> None:
     from app import main as app_main
 
-    db, _storage, syncer = make_app(tmp_path)
+    db, storage, syncer = make_app(tmp_path)
     db.upsert_subscription("123", "旧名称", avatar_url="https://example.test/old.jpg")
     subscription_total = len(db.list_subscriptions(include_paused=True))
     site_dir = tmp_path / "reset-icon-site"
@@ -2315,7 +2369,10 @@ def test_reset_all_icons_refreshes_up_and_site_icons(tmp_path: Path, monkeypatch
     assert details["result"]["sites"]["updated"] == 1
     assert db.get_subscription("123")["avatar_url"] == "https://example.test/new.jpg"
     assert db.get_subscription("123")["uname"] == "新名称"
-    assert db.get_site_source(source["id"])["icon_url"] == (site_dir / "site-logo.png").resolve().as_uri()
+    refreshed_icon = db.get_site_source(source["id"])["icon_url"]
+    cached_icon = cached_storage_path(storage, refreshed_icon)
+    assert cached_icon.name.startswith(f"{source['id']}-")
+    assert cached_icon.read_bytes() == b"fake png"
 
 
 def test_reset_all_icons_clears_stale_icons_when_missing(tmp_path: Path, monkeypatch) -> None:

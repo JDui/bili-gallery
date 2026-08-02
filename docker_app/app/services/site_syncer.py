@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -461,6 +462,9 @@ class SiteSyncManager:
         if not icon_url:
             return None, None
         parsed = urlparse(str(icon_url))
+        if parsed.scheme == "file":
+            source_path = Path(unquote(parsed.path))
+            return self._cache_local_site_icon(source_id, source_path)
         if parsed.scheme not in {"http", "https"}:
             return icon_url, self._tiny_icon_url_from_local_value(source_id, str(icon_url))
 
@@ -486,8 +490,7 @@ class SiteSyncManager:
             if content_type and not content_type.startswith("image/") and not self._looks_like_image_url(parsed.path):
                 return None, None
             extension = self._site_icon_extension(parsed.path, content_type)
-            target = target_dir / f"{int(source_id)}{extension}"
-            tmp_target = target.with_suffix(f"{target.suffix}.tmp")
+            tmp_target = target_dir / f".{int(source_id)}-{threading.get_ident()}-{time.time_ns()}{extension}.tmp"
             total = 0
             with tmp_target.open("wb") as file:
                 for chunk in response.iter_content(chunk_size=64 * 1024):
@@ -501,12 +504,7 @@ class SiteSyncManager:
             if total <= 0:
                 tmp_target.unlink(missing_ok=True)
                 return None, None
-            tmp_target.replace(target)
-            for stale in target_dir.glob(f"{int(source_id)}.*"):
-                if stale != target:
-                    stale.unlink(missing_ok=True)
-            tiny_url = self._tiny_icon_url_from_path(source_id, target)
-            return self.storage.storage_url(self.storage.relative_to_storage(target)), tiny_url
+            return self._commit_site_icon_file(source_id, tmp_target, extension)
         except Exception:
             if tmp_target is not None:
                 tmp_target.unlink(missing_ok=True)
@@ -519,6 +517,47 @@ class SiteSyncManager:
                     pass
             session.close()
 
+    def _cache_local_site_icon(self, source_id: int, source_path: Path) -> tuple[str | None, str | None]:
+        if not source_path.is_file() or source_path.stat().st_size <= 0 or source_path.stat().st_size > SITE_ICON_CACHE_MAX_BYTES:
+            return None, None
+        extension = self._site_icon_extension(source_path.name)
+        target_dir = self.storage.config.data_dir / "avatars" / "sites"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        tmp_target = target_dir / f".{int(source_id)}-{threading.get_ident()}-{time.time_ns()}{extension}.tmp"
+        try:
+            shutil.copyfile(source_path, tmp_target)
+            return self._commit_site_icon_file(source_id, tmp_target, extension)
+        except Exception:
+            tmp_target.unlink(missing_ok=True)
+            return None, None
+
+    def _commit_site_icon_file(self, source_id: int, tmp_target: Path, extension: str) -> tuple[str | None, str | None]:
+        revision = self._site_icon_file_revision(tmp_target)
+        if not revision:
+            tmp_target.unlink(missing_ok=True)
+            return None, None
+        target_dir = self.storage.config.data_dir / "avatars" / "sites"
+        target = target_dir / f"{int(source_id)}-{revision}{extension}"
+        if target.exists():
+            tmp_target.unlink(missing_ok=True)
+        else:
+            tmp_target.replace(target)
+        tiny_url = self._tiny_icon_url_from_path(source_id, target, revision=revision)
+        for stale in target_dir.iterdir():
+            if stale.is_file() and stale != target and re.match(rf"^{int(source_id)}(?:-|\.)", stale.name):
+                stale.unlink(missing_ok=True)
+        return self.storage.storage_url(self.storage.relative_to_storage(target)), tiny_url
+
+    def _site_icon_file_revision(self, path: Path) -> str | None:
+        try:
+            digest = hashlib.sha256()
+            with path.open("rb") as file:
+                for chunk in iter(lambda: file.read(64 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()[:12]
+        except Exception:
+            return None
+
     def _tiny_icon_url_from_local_value(self, source_id: int, icon_url: str) -> str | None:
         parsed = urlparse(str(icon_url))
         if parsed.scheme == "file":
@@ -529,16 +568,23 @@ class SiteSyncManager:
             return self._tiny_icon_url_from_path(source_id, path) if path else None
         return None
 
-    def _tiny_icon_url_from_path(self, source_id: int, source_path: Path) -> str | None:
+    def _tiny_icon_url_from_path(self, source_id: int, source_path: Path, revision: str | None = None) -> str | None:
         if not source_path.exists():
             return None
-        target = self.storage.config.data_dir / "avatars" / "sites" / "tiny" / f"{int(source_id)}.webp"
+        resolved_revision = revision or self._site_icon_file_revision(source_path)
+        if not resolved_revision:
+            return None
+        target_dir = self.storage.config.data_dir / "avatars" / "sites" / "tiny"
+        target = target_dir / f"{int(source_id)}-{resolved_revision}.webp"
         try:
             self.thumbnailer.ensure_tiny_image_thumbnail(source_path, target)
         except Exception:
             return None
         if not target.exists():
             return None
+        for stale in target_dir.glob(f"{int(source_id)}-*.webp"):
+            if stale != target:
+                stale.unlink(missing_ok=True)
         return self.storage.storage_url(self.storage.relative_to_storage(target))
 
     def discover_site_icon(self, source: dict[str, Any]) -> str | None:

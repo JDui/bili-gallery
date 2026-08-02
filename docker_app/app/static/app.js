@@ -112,6 +112,7 @@ function galleryApp() {
     detailClosing: false,
     detailCloseTimer: null,
     detailTextExpanded: false,
+    detailTextOverflowing: false,
     viewerClosing: false,
     viewerCloseTimer: null,
     headerCompact: false,
@@ -122,6 +123,8 @@ function galleryApp() {
     lastScrollTop: 0,
     scrollDirection: "down",
     reviewItems: [],
+    reviewRemovingIds: {},
+    reviewActionId: null,
     logs: [],
     taskRuns: [],
     queuedTasks: [],
@@ -256,7 +259,7 @@ function galleryApp() {
     deletePairConfirmStep: 0,
     pairDeletingKey: null,
     taskInspector: { open: false, title: "", subtitle: "", body: "" },
-    sourcePreview: { open: false, url: "", title: "", subtitle: "" },
+    sourcePreview: { open: false, url: "", title: "", subtitle: "", reviewId: null },
     taskInspectorLoading: false,
     toast: { open: false, tone: "info", title: "", message: "" },
     toastTimer: null,
@@ -657,6 +660,7 @@ function galleryApp() {
         this.observeGalleryCards();
         this.observeGalleryLoadSentinel();
         this.scheduleFixedLayoutMetrics();
+        this.refreshDetailTextOverflow();
       });
     },
 
@@ -1234,6 +1238,10 @@ function galleryApp() {
         window.cancelAnimationFrame(this.detailWindowShiftRaf);
         this.detailWindowShiftRaf = null;
       }
+      this.$nextTick(() => {
+        this.measureDetailWindow();
+        this.refreshDetailTextOverflow();
+      });
     },
 
     measureDetailWindow() {
@@ -1314,11 +1322,7 @@ function galleryApp() {
         if (nextAnchor && anchorTop !== null) {
           const delta = nextAnchor.getBoundingClientRect().top - anchorTop;
           if (Math.abs(delta) > 1) {
-            if (typeof shell.scrollTo === "function") {
-              shell.scrollTo({ top: shell.scrollTop + delta, left: 0, behavior: "auto" });
-            } else {
-              shell.scrollTop += delta;
-            }
+            shell.scrollTop += delta;
           }
         }
         window.setTimeout(() => {
@@ -1575,7 +1579,19 @@ function galleryApp() {
     },
 
     detailTextExpandable() {
-      return this.detailContentText().length > 36;
+      return this.detailTextOverflowing || this.detailTextExpanded || this.detailContentText().length > 36;
+    },
+
+    refreshDetailTextOverflow() {
+      if (!this.detail.open) {
+        this.detailTextOverflowing = false;
+        return;
+      }
+      const element = this.$refs?.detailContentText || document.querySelector(".detail-content-toggle > span");
+      if (!element || this.detailTextExpanded) {
+        return;
+      }
+      this.detailTextOverflowing = element.scrollWidth > element.clientWidth + 1;
     },
 
     toggleDetailText() {
@@ -1583,6 +1599,9 @@ function galleryApp() {
         return;
       }
       this.detailTextExpanded = !this.detailTextExpanded;
+      if (!this.detailTextExpanded) {
+        this.$nextTick(() => this.refreshDetailTextOverflow());
+      }
     },
 
     setGalleryColumnCount(value) {
@@ -2676,6 +2695,7 @@ function galleryApp() {
       }
       const resetDetailScroll = () => this.$nextTick(() => this.scrollDetailTop());
       this.detailTextExpanded = false;
+      this.detailTextOverflowing = false;
       this.setInteracting(360);
       this.cancelDeleteViewerPair();
       this.pauseCurrentViewerMedia(true);
@@ -3156,6 +3176,7 @@ function galleryApp() {
         this.detailClosing = false;
         this.detail = { open: false, pairs: [], folder: null, videos: [] };
         this.detailTextExpanded = false;
+        this.detailTextOverflowing = false;
         this.resetDetailWindow();
         this.detailCloseTimer = null;
         this.syncBodyLock();
@@ -3769,11 +3790,15 @@ function galleryApp() {
         return;
       }
       if (this.settings?.review_source_open_mode === "popup") {
+        const reviewItem = this.currentView === "review"
+          ? (this.reviewItems || []).find((entry) => Number(entry.id) === Number(item?.id))
+          : null;
         this.sourcePreview = {
           open: true,
           url,
           title: item?.folder_name_candidate || item?.title || "原始内容",
           subtitle: url,
+          reviewId: reviewItem ? Number(reviewItem.id) : null,
         };
         this.syncBodyLock();
         return;
@@ -3795,8 +3820,21 @@ function galleryApp() {
       if (!this.sourcePreview.open) {
         return;
       }
-      this.sourcePreview = { open: false, url: "", title: "", subtitle: "" };
+      this.sourcePreview = { open: false, url: "", title: "", subtitle: "", reviewId: null };
       this.syncBodyLock();
+    },
+
+    resolveSourcePreviewReview(action) {
+      const reviewId = Number(this.sourcePreview.reviewId);
+      if (!reviewId || this.reviewActionId === reviewId) {
+        return;
+      }
+      this.closeSourcePreview();
+      if (action === "reject") {
+        this.rejectReview(reviewId);
+        return;
+      }
+      this.approveReview(reviewId);
     },
 
     openTrashSource(item) {
@@ -5020,7 +5058,7 @@ function galleryApp() {
       } else if (this.viewer.open) {
         this.viewerSequence = nextSequence;
       }
-      this.notify("info", "正在删除", "页面已先更新，后台正在处理删除。");
+      this.notify("info", "已提交删除", "");
       try {
         const result = await this.api(`/api/gallery/folders/${encodeURIComponent(folderName)}/pairs/${pairIndex}/delete`, {
           method: "POST",
@@ -5034,7 +5072,6 @@ function galleryApp() {
           }
         }
         this.schedulePostMutationRefresh(result, ["all", "favorites", "livephoto", "trash", "tasks"]);
-        this.notify("success", "已删除", result.message);
       } catch (error) {
         const placeholderKey = this.pairPlaceholderKey(folderName, pairIndex);
         if (this.deletedGalleryTimers[placeholderKey]) {
@@ -5395,12 +5432,70 @@ function galleryApp() {
       return compact.length > 20 ? `${compact.slice(0, 20)}…` : compact;
     },
 
+    reviewItemRemoving(id) {
+      return !!this.reviewRemovingIds[String(id)];
+    },
+
+    animateReviewItemRemoval(id) {
+      const normalized = Number(id);
+      const cards = Array.from(document.querySelectorAll(".review-card[data-review-id]"));
+      const before = new Map(cards.map((card) => [card.getAttribute("data-review-id"), card.getBoundingClientRect().top]));
+      this.reviewRemovingIds = { ...this.reviewRemovingIds, [String(normalized)]: true };
+      return new Promise((resolve) => {
+        window.setTimeout(() => {
+          this.reviewItems = (this.reviewItems || []).filter((item) => Number(item.id) !== normalized);
+          this.sidebarCounts = {
+            ...this.sidebarCounts,
+            review: Math.max(0, Number(this.sidebarCounts.review || 0) - 1),
+          };
+          this.$nextTick(() => {
+            document.querySelectorAll(".review-card[data-review-id]").forEach((card) => {
+              const previousTop = before.get(card.getAttribute("data-review-id"));
+              if (!Number.isFinite(previousTop) || typeof card.animate !== "function") {
+                return;
+              }
+              const delta = previousTop - card.getBoundingClientRect().top;
+              if (Math.abs(delta) > 1) {
+                card.animate(
+                  [{ transform: `translate3d(0, ${delta}px, 0)` }, { transform: "translate3d(0, 0, 0)" }],
+                  { duration: 260, easing: "cubic-bezier(0.16, 1, 0.3, 1)" },
+                );
+              }
+            });
+            const nextRemoving = { ...this.reviewRemovingIds };
+            delete nextRemoving[String(normalized)];
+            this.reviewRemovingIds = nextRemoving;
+            resolve();
+          });
+        }, 180);
+      });
+    },
+
     async approveReview(id) {
-      this.reviewItems = (this.reviewItems || []).filter((item) => Number(item.id) !== Number(id));
+      const normalized = Number(id);
+      if (!normalized || this.reviewActionId) {
+        return;
+      }
+      const previousItems = [...(this.reviewItems || [])];
+      this.reviewActionId = normalized;
+      this.closeSourcePreview();
       this.setImmediateTaskFeedback("正在提交待审核放行任务...");
-      const result = await this.api(`/api/review/${id}/approve`, { method: "POST" });
-      await Promise.all([this.refreshReview(), this.refreshStatus(), this.refreshMeta()]);
-      this.notify("success", "已开始处理", result.message);
+      const removal = this.animateReviewItemRemoval(normalized);
+      try {
+        const [result] = await Promise.all([
+          this.api(`/api/review/${normalized}/approve`, { method: "POST" }),
+          removal,
+        ]);
+        await Promise.all([this.refreshReview(), this.refreshStatus(), this.refreshMeta()]);
+        this.notify("success", "已开始处理", result.message);
+      } catch (error) {
+        await removal;
+        this.reviewItems = previousItems;
+        this.sidebarCounts = { ...this.sidebarCounts, review: previousItems.length };
+        this.notify("error", "拉取提交失败", error.message || "待审核列表已恢复。");
+      } finally {
+        this.reviewActionId = null;
+      }
     },
 
     queuedTaskCancelLabel(task) {
@@ -5461,16 +5556,29 @@ function galleryApp() {
     },
 
     async rejectReview(id) {
+      const normalized = Number(id);
+      if (!normalized || this.reviewActionId) {
+        return;
+      }
       const previousItems = [...(this.reviewItems || [])];
-      this.reviewItems = (this.reviewItems || []).filter((item) => Number(item.id) !== Number(id));
-      this.notify("info", "正在忽略", "页面已先更新，后台正在移动到垃圾桶。");
+      this.reviewActionId = normalized;
+      this.closeSourcePreview();
+      const removal = this.animateReviewItemRemoval(normalized);
+      this.notify("info", "已提交删除", "");
       try {
-        const result = await this.api(`/api/review/${id}/reject`, { method: "POST" });
+        const [result] = await Promise.all([
+          this.api(`/api/review/${normalized}/reject`, { method: "POST" }),
+          removal,
+        ]);
         await Promise.all([this.refreshReview(), this.refreshMeta(), this.refreshTrash()]);
-        this.notify("success", "已忽略", result.message);
+        void result;
       } catch (error) {
+        await removal;
         this.reviewItems = previousItems;
+        this.sidebarCounts = { ...this.sidebarCounts, review: previousItems.length };
         this.notify("error", "忽略失败", error.message || "待审核列表已恢复。");
+      } finally {
+        this.reviewActionId = null;
       }
     },
 
@@ -6156,14 +6264,13 @@ function galleryApp() {
       this.removeFolderFromGallery(folderName, { placeholder: true });
       this.invalidateDetailCache(folderName);
       this.clearLocalGalleryCaches();
-      this.notify("info", "正在移入垃圾桶", "页面已先更新，后台正在处理删除。");
+      this.notify("info", "已提交删除", "");
       try {
         const result = await this.api(`/api/gallery/folders/${encodeURIComponent(folderName)}/trash`, {
           method: "POST",
           body: JSON.stringify({ reason: "不喜欢" }),
         });
         this.schedulePostMutationRefresh(result, ["all", "favorites", "livephoto", "trash", "tasks"], { trash: true, tasks: true });
-        this.notify("success", "已移入垃圾桶", result.message);
       } catch (error) {
         if (this.deletedGalleryTimers[folderName]) {
           window.clearTimeout(this.deletedGalleryTimers[folderName]);
@@ -6200,14 +6307,13 @@ function galleryApp() {
       this.removeFolderFromGallery(folderName, { placeholder: true });
       this.invalidateDetailCache(folderName);
       this.clearLocalGalleryCaches();
-      this.notify("info", "正在移入垃圾桶", "页面已先更新，后台正在处理删除。");
+      this.notify("info", "已提交删除", "");
       try {
         const result = await this.api(`/api/gallery/folders/${encodeURIComponent(folderName)}/trash`, {
           method: "POST",
           body: JSON.stringify({ reason: "不喜欢" }),
         });
         this.schedulePostMutationRefresh(result, ["all", "favorites", "livephoto", "trash", "tasks"], { trash: true, tasks: true });
-        this.notify("success", "已移入垃圾桶", result.message);
       } catch (error) {
         this.gallery = {
           ...this.gallery,
@@ -6616,35 +6722,36 @@ function galleryApp() {
       const key = String(sourceId);
       this.siteIconRefreshingById = { ...this.siteIconRefreshingById, [key]: true };
       this.iconLoadFailures = { ...this.iconLoadFailures, [subscriptionUid]: false };
-      this.notify("info", "开始刷新站点图标", "开始重新获取该站点的网站 icon，并下载更新本地图标。");
+      this.notify("info", "正在重新获取站点图标", "");
       try {
         const result = await this.api(`/api/site-sources/${encodeURIComponent(sourceId)}/refresh-icon`, { method: "POST" });
-        if (result.item) {
-          const refreshVersion = Date.now();
-          this.iconRefreshVersions = {
-            ...this.iconRefreshVersions,
-            [subscriptionUid]: refreshVersion,
-          };
-          this.siteSources = (this.siteSources || []).map((item) =>
-            Number(item.id) === sourceId ? { ...item, ...result.item } : item,
-          );
-          this.siteSourceDrafts = {
-            ...this.siteSourceDrafts,
-            [key]: this.siteSourceDraftFromSource(result.item),
-          };
-          this.subscriptions = (this.subscriptions || []).map((item) =>
-            String(item.uid) === subscriptionUid
-              ? this.normalizeSubscriptionItem({
-                  ...item,
-                  icon_url: result.item.icon_url || "",
-                  icon_tiny_url: result.item.icon_tiny_url || "",
-                  updated_at: result.item.updated_at || item.updated_at,
-                })
-              : item,
-          );
-          this.iconLoadFailures = { ...this.iconLoadFailures, [subscriptionUid]: false };
+        if (!result.item) {
+          throw new Error("图标刷新接口没有返回站点数据");
         }
-        this.notify("success", "站点图标已刷新", result.message || "已更新站点图标。");
+        const refreshVersion = Date.now();
+        this.siteSources = (this.siteSources || []).map((item) =>
+          Number(item.id) === sourceId ? { ...item, ...result.item } : item,
+        );
+        this.subscriptions = (this.subscriptions || []).map((item) =>
+          String(item.uid) === subscriptionUid
+            ? this.normalizeSubscriptionItem({
+                ...item,
+                icon_url: result.item.icon_url || "",
+                icon_tiny_url: result.item.icon_tiny_url || "",
+                updated_at: result.item.updated_at || item.updated_at,
+              })
+            : item,
+        );
+        this.iconRefreshVersions = { ...this.iconRefreshVersions, [subscriptionUid]: refreshVersion };
+        this.iconLoadFailures = { ...this.iconLoadFailures, [subscriptionUid]: false };
+        await Promise.all([this.loadSiteSources(), this.loadSubscriptions()]);
+        this.iconRefreshVersions = { ...this.iconRefreshVersions, [subscriptionUid]: refreshVersion };
+        this.iconLoadFailures = { ...this.iconLoadFailures, [subscriptionUid]: false };
+        this.notify(
+          result.item.icon_url ? "success" : "info",
+          result.item.icon_url ? "站点图标已更新" : "未找到可用站点图标",
+          "",
+        );
       } catch (error) {
         this.notify("error", "站点图标刷新失败", error.message || "请稍后重试。");
       } finally {

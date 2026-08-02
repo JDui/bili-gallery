@@ -116,8 +116,11 @@ def seed_review_data(db: Database) -> None:
         "这是一个命中推广规则的示例动态，用于展示待审核页",
         ["命中文案关键词: 推广", "长图占多数"],
         {
+            "top_item": {},
+            "source_item": {},
             "top_dynamic_id": "review-top-1",
             "source_dynamic_id": "review-src-1",
+            "pub_ts": 1773014400,
             "text": "推广样例",
             "pictures": [],
             "live_assets": [],
