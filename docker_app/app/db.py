@@ -39,6 +39,7 @@ DEFAULT_SETTINGS = {
         "链接",
     ],
     "long_image_ratio": 3.0,
+    "duplicate_image_threshold": 2,
     "gallery_index_version": 0,
     "gallery_index_rebuilt_at": None,
     "gallery_index_rebuilding": False,
@@ -236,6 +237,12 @@ class Database:
                     unique(top_dynamic_id, source_dynamic_id)
                 );
 
+                create table if not exists duplicate_ignores (
+                    signature text primary key,
+                    folder_names_json text not null,
+                    ignored_at text not null
+                );
+
                 create table if not exists subscriptions (
                     uid text primary key,
                     uname text,
@@ -399,6 +406,7 @@ class Database:
                 create index if not exists idx_blacklist_items_dynamic on blacklist_items(top_dynamic_id, source_dynamic_id);
                 create index if not exists idx_deleted_pair_marks_dynamic on deleted_pair_marks(top_dynamic_id, source_dynamic_id, pair_index);
                 create index if not exists idx_trash_items_deleted on trash_items(deleted_at desc);
+                create index if not exists idx_duplicate_ignores_ignored on duplicate_ignores(ignored_at desc);
                 create index if not exists idx_subscriptions_status on subscriptions(status, updated_at desc);
                 create index if not exists idx_site_posts_source_date on site_posts(source_id, pub_date desc);
                 create index if not exists idx_site_posts_flags on site_posts(is_favorite, is_blocked, status);
@@ -421,6 +429,7 @@ class Database:
             self._ensure_column(conn, "folders", "is_favorite", "integer not null default 0")
             self._ensure_column(conn, "assets", "small_thumb_rel_path", "text")
             self._ensure_column(conn, "assets", "tiny_thumb_rel_path", "text")
+            self._ensure_column(conn, "assets", "duplicate_fingerprint", "text")
             conn.execute(
                 "create index if not exists idx_folders_subscription_pub_ts on folders(subscription_uid, pub_ts desc)"
             )
@@ -515,6 +524,7 @@ class Database:
             "all": "全部项目",
             "favorites": "收藏",
             "livephoto": "Live Photo",
+            "duplicates": "重复内容",
             "review": "待审核",
             "logs": "过滤日志",
             "tasks": "任务队列",
@@ -1529,10 +1539,10 @@ class Database:
                     """
                     insert into assets(
                         folder_name, media_type, pair_index, filename, rel_path, thumb_rel_path, small_thumb_rel_path, tiny_thumb_rel_path,
-                        cover_rel_path, reverse_rel_path, width, height, status, metadata_json,
+                        cover_rel_path, reverse_rel_path, width, height, status, metadata_json, duplicate_fingerprint,
                         created_at, updated_at
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         folder_name,
@@ -1549,6 +1559,7 @@ class Database:
                         asset.get("height"),
                         asset.get("status", "ready"),
                         dumps_json(asset.get("metadata", {})),
+                        asset.get("duplicate_fingerprint"),
                         now,
                         now,
                     ),
@@ -1585,6 +1596,33 @@ class Database:
                 (folder_name,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def set_asset_duplicate_fingerprints(self, fingerprints: dict[int, str]) -> None:
+        if not fingerprints:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                "update assets set duplicate_fingerprint = ? where id = ?",
+                [(str(fingerprint), int(asset_id)) for asset_id, fingerprint in fingerprints.items()],
+            )
+
+    def list_ignored_duplicate_signatures(self) -> set[str]:
+        with self.connect() as conn:
+            rows = conn.execute("select signature from duplicate_ignores").fetchall()
+        return {str(row["signature"]) for row in rows}
+
+    def ignore_duplicate_group(self, signature: str, folder_names: list[str]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into duplicate_ignores(signature, folder_names_json, ignored_at)
+                values (?, ?, ?)
+                on conflict(signature) do update set
+                    folder_names_json = excluded.folder_names_json,
+                    ignored_at = excluded.ignored_at
+                """,
+                (str(signature), dumps_json(sorted(str(name) for name in folder_names)), now_iso()),
+            )
 
     def set_folder_favorite(self, folder_name: str, is_favorite: bool) -> None:
         with self.connect() as conn:
@@ -1759,6 +1797,20 @@ class Database:
         }
         return {"counts": counts, "updated_at": updated_at, "payloads": payloads}
 
+    def set_sidebar_count(self, key: str, count: int, label: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                insert into sidebar_count_cache(key, count, label, payload_json, updated_at)
+                values (?, ?, ?, null, ?)
+                on conflict(key) do update set
+                    count = excluded.count,
+                    label = excluded.label,
+                    updated_at = excluded.updated_at
+                """,
+                (str(key), max(0, int(count)), str(label), now_iso()),
+            )
+
     def refresh_sidebar_count_cache(self, keys: list[str] | None = None) -> dict[str, Any]:
         requested = {str(key) for key in keys or [] if str(key)}
         if not requested:
@@ -1792,6 +1844,7 @@ class Database:
             "all": "全部项目",
             "favorites": "收藏",
             "livephoto": "Live Photo",
+            "duplicates": "重复内容",
             "review": "待审核",
             "logs": "过滤日志",
             "tasks": "任务队列",
@@ -2600,4 +2653,5 @@ class Database:
             conn.execute("delete from blacklist_items")
             conn.execute("delete from deleted_pair_marks")
             conn.execute("delete from trash_items")
+            conn.execute("delete from duplicate_ignores")
             conn.execute("delete from task_runs")

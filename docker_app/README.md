@@ -1,4 +1,4 @@
-# Docker 化 B 站动态相簿 v8.5
+# Docker 化 B 站动态相簿 v9.0
 
 ## 启动
 
@@ -12,7 +12,7 @@ AMD64 NAS 可以直接使用 [docker-compose.nas-amd64.yml](/Users/muxinzheng/De
 
 建议流程：
 
-1. 先把镜像包导入 NAS：`docker load -i zzs-bili-gallery_v8.5_amd64.tar`
+1. 先把镜像包导入 NAS：`docker load -i zzs-bili-gallery_v9.0_amd64.tar`
 2. 按你的 NAS 实际目录修改 compose 里的两个挂载路径
 3. 执行 `docker compose -f docker-compose.nas-amd64.yml up -d`
 
@@ -34,6 +34,7 @@ AMD64 NAS 可以直接使用 [docker-compose.nas-amd64.yml](/Users/muxinzheng/De
 - 九图动态与 Live Photo 拉取
 - 二维码扫码登录与 Cookie 检查
 - 推广过滤与待审核列表
+- 相似图片重复内容检测与贴文集中处理
 - 缩略图 WebP 预生成
 - Live Photo 预览、循环、乒乓、单次、不播放
 - 原始媒体删除后的缩略图销毁与索引清理

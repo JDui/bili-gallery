@@ -125,6 +125,12 @@ function galleryApp() {
     reviewItems: [],
     reviewRemovingIds: {},
     reviewActionId: null,
+    duplicateGroups: [],
+    duplicateLoading: false,
+    duplicateImageThreshold: 2,
+    duplicateActionKey: null,
+    duplicateIgnoreConfirmSignature: null,
+    duplicateKeepSelections: {},
     logs: [],
     taskRuns: [],
     queuedTasks: [],
@@ -274,6 +280,7 @@ function galleryApp() {
     deletedGalleryTimers: {},
     galleryReflowTimer: null,
     lazyLoaded: {
+      duplicates: false,
       review: false,
       logs: false,
       tasks: false,
@@ -296,7 +303,10 @@ function galleryApp() {
       window.addEventListener("pointercancel", () => this.finishTimeFilterDrag());
       this.updateHeaderState();
       this.loadBootstrap()
-        .then(() => this.refreshGallery(true))
+        .then(() => {
+          this.refreshGallery(true);
+          this.scheduleIdleWork(() => this.refreshDuplicates(true).catch(() => {}), 1400);
+        })
         .catch(() => {});
       this.scheduleStatusRefresh();
       this.startPerformanceSampling();
@@ -818,6 +828,10 @@ function galleryApp() {
     },
 
     handleEscape() {
+      if (this.duplicateIgnoreConfirmSignature) {
+        this.duplicateIgnoreConfirmSignature = null;
+        return;
+      }
       if (this.sourcePreview.open) {
         this.closeSourcePreview();
         return;
@@ -842,6 +856,7 @@ function galleryApp() {
     },
 
     currentSectionLabel() {
+      if (this.currentView === "duplicates") return "Duplicates";
       if (this.currentView === "review") return "Review";
       if (this.currentView === "logs") return "Filter Log";
       if (this.currentView === "tasks") return "Task Queue";
@@ -854,6 +869,7 @@ function galleryApp() {
     },
 
     currentSectionTitle() {
+      if (this.currentView === "duplicates") return "重复内容";
       if (this.currentView === "review") return "待审核动态";
       if (this.currentView === "logs") return "过滤日志";
       if (this.currentView === "tasks") return "任务队列";
@@ -869,6 +885,7 @@ function galleryApp() {
     },
 
     currentSectionHeadline() {
+      if (this.currentView === "duplicates") return "把相似图片贴文放在一起集中处理";
       if (this.currentView === "review") return "把推广动态拦在相簿之前";
       if (this.currentView === "logs") return "知道每一条动态为什么被筛出去";
       if (this.currentView === "settings") return "同步、账号权限与过滤策略";
@@ -1056,6 +1073,9 @@ function galleryApp() {
         }
         if (extras.tasks || this.currentView === "tasks" || this.lazyLoaded.tasks) {
           tasks.push(this.refreshTasks().catch(() => {}));
+        }
+        if (this.currentView === "duplicates" || this.lazyLoaded.duplicates) {
+          tasks.push(this.refreshDuplicates(true).catch(() => {}));
         }
         Promise.all(tasks).catch(() => {});
       }, 1200);
@@ -2516,6 +2536,14 @@ function galleryApp() {
       this.refreshSidebarCounts(["review"]).catch(() => {});
     },
 
+    openDuplicates() {
+      this.closeGalleryLayers();
+      this.currentView = "duplicates";
+      this.closeSidebarDrawer();
+      this.scrollViewTop();
+      this.refreshDuplicates();
+    },
+
     openLogs() {
       this.closeGalleryLayers();
       this.currentView = "logs";
@@ -2702,7 +2730,8 @@ function galleryApp() {
       this.detailClosing = false;
       this.detailRequestId += 1;
       const requestId = this.detailRequestId;
-      const previewFolder = (this.gallery.items || []).find((item) => item.folder_name === folderName);
+      const previewFolder = (this.gallery.items || []).find((item) => item.folder_name === folderName)
+        || (this.duplicateGroups || []).flatMap((group) => group.items || []).find((item) => item.folder_name === folderName);
       const cached = this.cachedDetail(folderName);
       if (cached) {
         this.detailLoading = false;
@@ -2767,6 +2796,14 @@ function galleryApp() {
     },
 
     galleryFolderSequence() {
+      if (this.currentView === "duplicates") {
+        return [...new Set(
+          (this.duplicateGroups || [])
+            .flatMap((group) => group.items || [])
+            .map((item) => String(item?.folder_name || ""))
+            .filter(Boolean),
+        )];
+      }
       const output = [];
       const seen = new Set();
       for (const item of this.gallery.items || []) {
@@ -4497,6 +4534,145 @@ function galleryApp() {
       this.sidebarCounts = { ...this.sidebarCounts, review: this.reviewItems.length };
     },
 
+    async refreshDuplicates() {
+      if (this.duplicateLoading) {
+        return;
+      }
+      this.duplicateLoading = true;
+      try {
+        const payload = await this.api("/api/duplicates/items");
+        this.duplicateGroups = payload.items || [];
+        this.duplicateImageThreshold = Math.max(1, Number(payload.image_threshold) || 2);
+        this.sidebarCounts = { ...this.sidebarCounts, duplicates: Number(payload.active_total) || 0 };
+        this.lazyLoaded.duplicates = true;
+        const signatures = new Set(this.duplicateGroups.map((group) => group.signature));
+        this.duplicateKeepSelections = Object.fromEntries(
+          Object.entries(this.duplicateKeepSelections || {}).filter(([signature]) => signatures.has(signature)),
+        );
+        if (this.duplicateIgnoreConfirmSignature && !signatures.has(this.duplicateIgnoreConfirmSignature)) {
+          this.duplicateIgnoreConfirmSignature = null;
+        }
+      } finally {
+        this.duplicateLoading = false;
+      }
+    },
+
+    duplicateKeepSelection(signature) {
+      return this.duplicateKeepSelections[String(signature)] || "";
+    },
+
+    selectDuplicateKeep(group, item) {
+      if (!group?.signature || !item?.folder_name || this.duplicateActionKey) {
+        return;
+      }
+      this.duplicateKeepSelections = {
+        ...this.duplicateKeepSelections,
+        [String(group.signature)]: String(item.folder_name),
+      };
+    },
+
+    cancelDuplicateKeep(signature) {
+      const next = { ...this.duplicateKeepSelections };
+      delete next[String(signature)];
+      this.duplicateKeepSelections = next;
+    },
+
+    askIgnoreDuplicate(signature) {
+      if (this.duplicateActionKey) {
+        return;
+      }
+      this.duplicateIgnoreConfirmSignature = String(signature || "");
+    },
+
+    cancelIgnoreDuplicate() {
+      this.duplicateIgnoreConfirmSignature = null;
+    },
+
+    async confirmIgnoreDuplicate(group) {
+      const signature = String(group?.signature || "");
+      if (!signature || this.duplicateIgnoreConfirmSignature !== signature || this.duplicateActionKey) {
+        return;
+      }
+      this.duplicateActionKey = signature;
+      try {
+        const result = await this.api(`/api/duplicates/${encodeURIComponent(signature)}/ignore`, {
+          method: "POST",
+          body: JSON.stringify({ confirmed: true }),
+        });
+        this.duplicateIgnoreConfirmSignature = null;
+        await this.refreshDuplicates(true);
+        if (result.sidebar_counts) {
+          this.applySidebarCounts(result.sidebar_counts);
+        }
+        this.notify("success", "已忽略重复项", "");
+      } catch (error) {
+        this.notify("error", "忽略失败", error.message || "请稍后重试。");
+      } finally {
+        this.duplicateActionKey = null;
+      }
+    },
+
+    async resolveDuplicateGroup(group) {
+      const signature = String(group?.signature || "");
+      const keepFolderName = this.duplicateKeepSelection(signature);
+      if (!signature || !keepFolderName || this.duplicateActionKey) {
+        return;
+      }
+      this.duplicateActionKey = signature;
+      this.notify("info", "已提交删除", "");
+      try {
+        const result = await this.api(`/api/duplicates/${encodeURIComponent(signature)}/resolve`, {
+          method: "POST",
+          body: JSON.stringify({ keep_folder_name: keepFolderName, confirmed: true }),
+        });
+        this.cancelDuplicateKeep(signature);
+        await Promise.all([
+          this.refreshDuplicates(true),
+          this.refreshMeta(),
+          this.refreshGallery(true),
+          this.lazyLoaded.trash ? this.refreshTrash() : Promise.resolve(),
+        ]);
+        if (result.sidebar_counts) {
+          this.applySidebarCounts(result.sidebar_counts);
+        }
+      } catch (error) {
+        this.notify("error", "重复内容处理失败", error.message || "请稍后重试。");
+      } finally {
+        this.duplicateActionKey = null;
+      }
+    },
+
+    async deleteDuplicateFolder(group, item) {
+      const signature = String(group?.signature || "");
+      const folderName = String(item?.folder_name || "");
+      if (!signature || !folderName || this.duplicateActionKey) {
+        return;
+      }
+      this.duplicateActionKey = signature;
+      this.notify("info", "已提交删除", "");
+      try {
+        const result = await this.api(`/api/gallery/folders/${encodeURIComponent(folderName)}/trash`, {
+          method: "POST",
+          body: JSON.stringify({ reason: "重复内容" }),
+        });
+        this.invalidateDetailCache(folderName);
+        this.clearLocalGalleryCaches();
+        await Promise.all([
+          this.refreshDuplicates(true),
+          this.refreshMeta(),
+          this.refreshGallery(true),
+          this.lazyLoaded.trash ? this.refreshTrash() : Promise.resolve(),
+        ]);
+        if (result.sidebar_counts) {
+          this.applySidebarCounts(result.sidebar_counts);
+        }
+      } catch (error) {
+        this.notify("error", "删除失败", error.message || "请稍后重试。");
+      } finally {
+        this.duplicateActionKey = null;
+      }
+    },
+
     async refreshTasks() {
       const payload = await this.api("/api/tasks/runs");
       this.taskRuns = payload.items;
@@ -5755,6 +5931,7 @@ function galleryApp() {
         site_proxy_host: String(settingsPayload.site_proxy_host || "127.0.0.1").trim() || "127.0.0.1",
         site_proxy_port: Math.max(1, Math.min(65535, Number(settingsPayload.site_proxy_port) || 7890)),
         review_source_open_mode: settingsPayload.review_source_open_mode === "popup" ? "popup" : "browser",
+        duplicate_image_threshold: Math.max(1, Math.min(100, Number(settingsPayload.duplicate_image_threshold) || 2)),
         app_title: String(settingsPayload.app_title || "BiliGalleryRC").trim() || "BiliGalleryRC",
         thumb_edge: Math.max(128, Math.min(2048, Number(settingsPayload.thumb_edge) || 576)),
         thumb_quality: Math.max(1, Math.min(100, Number(settingsPayload.thumb_quality) || 68)),
@@ -5775,6 +5952,7 @@ function galleryApp() {
       this.settings = { ...savedSettings, auth: auth || this.settings.auth };
       document.title = this.settings.app_title || document.title;
       await Promise.all([this.refreshMeta(), this.loadSettings()]);
+      this.scheduleIdleWork(() => this.refreshDuplicates(true).catch(() => {}), 500);
       this.notify("success", "设置已保存", "新的拉取和过滤参数已经生效。");
     },
 
@@ -6035,6 +6213,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.review || this.currentView === "review" ? this.refreshReview() : Promise.resolve(),
+          this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates(true) : Promise.resolve(),
           this.lazyLoaded.logs || this.currentView === "logs" ? this.refreshLogs() : Promise.resolve(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
           this.lazyLoaded.trash || this.currentView === "trash" ? this.refreshTrash() : Promise.resolve(),
@@ -6047,6 +6226,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
+          this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates(true) : Promise.resolve(),
           this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
           this.currentView === "settings" ? this.loadSettings() : Promise.resolve(),
@@ -6057,6 +6237,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
+          this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates(true) : Promise.resolve(),
           this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
         ]);

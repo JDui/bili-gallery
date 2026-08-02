@@ -1,0 +1,339 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import threading
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.db import Database
+from app.services.image_similarity import color_distance, hamming_distance, image_fingerprint, parse_fingerprint
+from app.services.storage import StorageService
+from app.services.utils import loads_json
+
+
+MAX_HASH_DISTANCE = 32
+MAX_ASPECT_LOG_DISTANCE = 0.24
+LOW_CONTRAST_LIMIT = 12
+LOW_CONTRAST_COLOR_DISTANCE = 36
+
+
+@dataclass
+class DuplicateAsset:
+    id: int
+    folder_name: str
+    pair_index: int
+    fingerprint: str
+    hash_bits: int
+    color: tuple[int, int, int]
+    contrast: int
+    width: int
+    height: int
+    preview_url: str | None
+    tile: dict[str, Any]
+
+    @property
+    def aspect_ratio(self) -> float:
+        return max(1.0 / 20.0, min(20.0, self.width / max(self.height, 1)))
+
+
+@dataclass
+class BKNode:
+    value: int
+    indexes: list[int] = field(default_factory=list)
+    children: dict[int, "BKNode"] = field(default_factory=dict)
+
+    def add(self, value: int, index: int) -> None:
+        distance = hamming_distance(self.value, value)
+        if distance == 0:
+            self.indexes.append(index)
+            return
+        child = self.children.get(distance)
+        if child is None:
+            self.children[distance] = BKNode(value=value, indexes=[index])
+            return
+        child.add(value, index)
+
+    def query(self, value: int, limit: int, output: list[int]) -> None:
+        distance = hamming_distance(self.value, value)
+        if distance <= limit:
+            output.extend(self.indexes)
+        minimum = max(1, distance - limit)
+        maximum = distance + limit
+        for edge, child in self.children.items():
+            if minimum <= edge <= maximum:
+                child.query(value, limit, output)
+
+
+class DuplicateService:
+    def __init__(self, db: Database, storage: StorageService) -> None:
+        self.db = db
+        self.storage = storage
+        self._cache_signature = ""
+        self._cached_groups: list[dict[str, Any]] = []
+        self._cache_lock = threading.RLock()
+
+    def list_groups(self, include_ignored: bool = False) -> dict[str, Any]:
+        with self._cache_lock:
+            threshold = self._image_threshold()
+            signature = f"{self.db.gallery_page_cache_signature()}:{threshold}"
+            if signature != self._cache_signature:
+                self._cached_groups = self._build_groups(threshold)
+                self._cache_signature = f"{self.db.gallery_page_cache_signature()}:{threshold}"
+            ignored = self.db.list_ignored_duplicate_signatures()
+            groups = [
+                {**group, "ignored": group["signature"] in ignored}
+                for group in self._cached_groups
+                if include_ignored or group["signature"] not in ignored
+            ]
+            active_total = sum(1 for group in self._cached_groups if group["signature"] not in ignored)
+            self.db.set_sidebar_count("duplicates", active_total, "重复内容")
+            return {
+                "items": groups,
+                "total": len(groups),
+                "active_total": active_total,
+                "image_threshold": threshold,
+                "scanned_folders": len(self.db.list_folders()),
+            }
+
+    def get_group(self, signature: str, include_ignored: bool = False) -> dict[str, Any] | None:
+        payload = self.list_groups(include_ignored=include_ignored)
+        return next((group for group in payload["items"] if group["signature"] == str(signature)), None)
+
+    def ignore_group(self, signature: str) -> dict[str, Any]:
+        group = self.get_group(signature)
+        if not group:
+            raise RuntimeError("重复内容项不存在或已经处理")
+        folder_names = [str(item["folder_name"]) for item in group["items"]]
+        self.db.ignore_duplicate_group(signature, folder_names)
+        payload = self.list_groups()
+        return {
+            "ok": True,
+            "message": "已忽略重复项",
+            "signature": signature,
+            "sidebar_counts": self.db.get_sidebar_count_cache(),
+            "remaining": payload["active_total"],
+        }
+
+    def _build_groups(self, threshold: int) -> list[dict[str, Any]]:
+        folders = {str(item["folder_name"]): item for item in self.db.list_folders()}
+        assets = self._duplicate_assets(folders)
+        if len(assets) < 2:
+            return []
+        candidates: dict[tuple[str, str], list[tuple[int, int, int]]] = defaultdict(list)
+        root: BKNode | None = None
+        for index, asset in enumerate(assets):
+            matches: list[int] = []
+            if root is not None:
+                root.query(asset.hash_bits, MAX_HASH_DISTANCE, matches)
+            for other_index in matches:
+                other = assets[other_index]
+                if other.folder_name == asset.folder_name or not self._assets_similar(asset, other):
+                    continue
+                left_index, right_index = sorted((other_index, index))
+                folder_pair = tuple(sorted((other.folder_name, asset.folder_name)))
+                distance = hamming_distance(asset.hash_bits, other.hash_bits)
+                candidates[folder_pair].append((distance, left_index, right_index))
+            if root is None:
+                root = BKNode(value=asset.hash_bits, indexes=[index])
+            else:
+                root.add(asset.hash_bits, index)
+
+        accepted_links: dict[tuple[str, str], list[tuple[int, int, int]]] = {}
+        for folder_pair, pair_matches in candidates.items():
+            selected = self._greedy_matches(pair_matches)
+            if len(selected) >= threshold:
+                accepted_links[folder_pair] = selected
+        if not accepted_links:
+            return []
+
+        parent = {name: name for pair in accepted_links for name in pair}
+
+        def find(name: str) -> str:
+            while parent[name] != name:
+                parent[name] = parent[parent[name]]
+                name = parent[name]
+            return name
+
+        def union(left: str, right: str) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        for left, right in accepted_links:
+            union(left, right)
+        components: dict[str, set[str]] = defaultdict(set)
+        for name in parent:
+            components[find(name)].add(name)
+
+        groups = []
+        assets_by_folder: dict[str, list[DuplicateAsset]] = defaultdict(list)
+        for asset in assets:
+            assets_by_folder[asset.folder_name].append(asset)
+        for member_names in components.values():
+            if len(member_names) < 2:
+                continue
+            links = {
+                pair: matches
+                for pair, matches in accepted_links.items()
+                if pair[0] in member_names and pair[1] in member_names
+            }
+            groups.append(self._group_payload(member_names, links, folders, assets, assets_by_folder))
+        groups.sort(key=lambda group: (group["latest_pub_ts"], group["similarity"]), reverse=True)
+        return groups
+
+    def _image_threshold(self) -> int:
+        value = self.db.get_settings().get("duplicate_image_threshold", 2)
+        try:
+            return max(1, min(100, int(value)))
+        except (TypeError, ValueError):
+            return 2
+
+    def _duplicate_assets(self, folders: dict[str, dict[str, Any]]) -> list[DuplicateAsset]:
+        output = []
+        fingerprint_updates: dict[int, str] = {}
+        for row in self.db.list_all_assets():
+            if row.get("media_type") != "image" or row.get("folder_name") not in folders:
+                continue
+            fingerprint = str(row.get("duplicate_fingerprint") or "")
+            parsed = parse_fingerprint(fingerprint)
+            if parsed is None:
+                fingerprint_rel_path = row.get("small_thumb_rel_path") or row.get("thumb_rel_path") or row.get("rel_path")
+                path = self.storage.resolve_storage_path(fingerprint_rel_path)
+                fingerprint = image_fingerprint(path) if path else None
+                parsed = parse_fingerprint(fingerprint)
+                if fingerprint and row.get("id"):
+                    fingerprint_updates[int(row["id"])] = fingerprint
+            if not fingerprint or parsed is None:
+                continue
+            hash_bits, color, contrast = parsed
+            tile = self._asset_tile(row)
+            output.append(
+                DuplicateAsset(
+                    id=int(row.get("id") or 0),
+                    folder_name=str(row["folder_name"]),
+                    pair_index=int(row.get("pair_index") or 0),
+                    fingerprint=fingerprint,
+                    hash_bits=hash_bits,
+                    color=color,
+                    contrast=contrast,
+                    width=max(1, int(row.get("width") or 1)),
+                    height=max(1, int(row.get("height") or 1)),
+                    preview_url=tile.get("small_thumb_url") or tile.get("thumb_url") or tile.get("url"),
+                    tile=tile,
+                )
+            )
+        self.db.set_asset_duplicate_fingerprints(fingerprint_updates)
+        return output
+
+    def _assets_similar(self, left: DuplicateAsset, right: DuplicateAsset) -> bool:
+        if abs(math.log(left.aspect_ratio / right.aspect_ratio)) > MAX_ASPECT_LOG_DISTANCE:
+            return False
+        distance = hamming_distance(left.hash_bits, right.hash_bits)
+        if distance > MAX_HASH_DISTANCE:
+            return False
+        if max(left.contrast, right.contrast) <= LOW_CONTRAST_LIMIT:
+            return color_distance(left.color, right.color) <= LOW_CONTRAST_COLOR_DISTANCE
+        return True
+
+    def _greedy_matches(self, matches: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+        selected = []
+        used_left: set[int] = set()
+        used_right: set[int] = set()
+        for distance, left_index, right_index in sorted(matches):
+            if left_index in used_left or right_index in used_right:
+                continue
+            used_left.add(left_index)
+            used_right.add(right_index)
+            selected.append((distance, left_index, right_index))
+        return selected
+
+    def _group_payload(
+        self,
+        member_names: set[str],
+        links: dict[tuple[str, str], list[tuple[int, int, int]]],
+        folders: dict[str, dict[str, Any]],
+        assets: list[DuplicateAsset],
+        assets_by_folder: dict[str, list[DuplicateAsset]],
+    ) -> dict[str, Any]:
+        signature_source = [
+            (name, sorted(asset.fingerprint for asset in assets_by_folder[name]))
+            for name in sorted(member_names)
+        ]
+        signature = hashlib.sha256(
+            json.dumps(signature_source, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        matched_by_folder: dict[str, set[int]] = defaultdict(set)
+        match_rows = []
+        total_distance = 0
+        total_matches = 0
+        for pair, pair_matches in links.items():
+            for distance, left_index, right_index in pair_matches:
+                left = assets[left_index]
+                right = assets[right_index]
+                matched_by_folder[left.folder_name].add(left.id)
+                matched_by_folder[right.folder_name].add(right.id)
+                total_distance += distance
+                total_matches += 1
+                match_rows.append(
+                    {
+                        "left_folder_name": left.folder_name,
+                        "right_folder_name": right.folder_name,
+                        "left_pair_index": left.pair_index,
+                        "right_pair_index": right.pair_index,
+                        "left_url": left.preview_url,
+                        "right_url": right.preview_url,
+                        "similarity": round((1 - distance / 256) * 100),
+                    }
+                )
+        items = []
+        for name in sorted(member_names, key=lambda item: int(folders[item].get("pub_ts") or 0), reverse=True):
+            folder = folders[name]
+            folder_assets = sorted(assets_by_folder[name], key=lambda item: (item.pair_index, item.id))
+            items.append(
+                {
+                    "folder_name": name,
+                    "title": folder.get("title") or name,
+                    "text_prefix": folder.get("text_prefix") or "",
+                    "pub_time": folder.get("pub_time") or "",
+                    "pub_ts": int(folder.get("pub_ts") or 0),
+                    "subscription_uid": str(folder.get("subscription_uid") or ""),
+                    "subscription_name": folder.get("subscription_name") or "",
+                    "has_images": True,
+                    "has_livephoto": bool(folder.get("has_livephoto")),
+                    "is_favorite": bool(folder.get("is_favorite")),
+                    "preview_tiles": [asset.tile for asset in folder_assets[:4]],
+                    "image_count": len(folder_assets),
+                    "asset_count": len(folder_assets),
+                    "duplicate_match_count": len(matched_by_folder[name]),
+                }
+            )
+        similarity = round((1 - total_distance / max(total_matches * 256, 1)) * 100)
+        match_rows.sort(key=lambda item: item["similarity"], reverse=True)
+        return {
+            "signature": signature,
+            "items": items,
+            "post_count": len(items),
+            "matched_image_count": total_matches,
+            "similarity": similarity,
+            "latest_pub_ts": max((int(item["pub_ts"]) for item in items), default=0),
+            "matches": match_rows[:12],
+        }
+
+    def _asset_tile(self, asset: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": int(asset.get("id") or 0),
+            "media_type": asset.get("media_type"),
+            "pair_index": int(asset.get("pair_index") or 0),
+            "filename": asset.get("filename"),
+            "url": self.storage.storage_url(asset.get("rel_path")),
+            "thumb_url": self.storage.storage_url(asset.get("thumb_rel_path")),
+            "small_thumb_url": self.storage.storage_url(asset.get("small_thumb_rel_path")),
+            "tiny_thumb_url": self.storage.storage_url(asset.get("tiny_thumb_rel_path")),
+            "width": asset.get("width"),
+            "height": asset.get("height"),
+            "metadata": loads_json(asset.get("metadata_json"), {}),
+        }

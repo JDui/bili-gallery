@@ -20,6 +20,7 @@ from app.config import load_config
 from app.db import Database
 from app.services.bilibili import BilibiliAuthService
 from app.services.cleanup import CleanupService
+from app.services.duplicates import DuplicateService
 from app.services.gallery import GalleryService
 from app.services.legacy_import import LegacyImporter
 from app.services.media_indexer import MediaIndexer
@@ -39,6 +40,7 @@ indexer = MediaIndexer(db, storage, thumbnailer)
 cleanup = CleanupService(db, storage)
 auth = BilibiliAuthService(db)
 gallery = GalleryService(db, storage)
+duplicates = DuplicateService(db, storage)
 legacy_importer = LegacyImporter(db, storage, indexer, config.repo_root)
 pull_manager = PullManager(db, storage, indexer, cleanup, auth, legacy_importer)
 site_syncer = SiteSyncManager(db, storage, indexer)
@@ -135,11 +137,17 @@ async def sidebar_counts() -> dict[str, Any]:
 
 
 @app.post("/api/sidebar-counts/refresh")
-async def refresh_sidebar_counts(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+def refresh_sidebar_counts(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     keys = payload.get("keys")
     if keys is not None and not isinstance(keys, list):
         raise HTTPException(status_code=400, detail="keys 必须是数组")
-    return db.refresh_sidebar_count_cache([str(key) for key in keys] if keys else None)
+    normalized_keys = [str(key) for key in keys] if keys else None
+    if normalized_keys is None or "duplicates" in normalized_keys:
+        duplicates.list_groups()
+    db_keys = [key for key in (normalized_keys or []) if key != "duplicates"]
+    if normalized_keys is None or db_keys:
+        db.refresh_sidebar_count_cache(db_keys if normalized_keys is not None else None)
+    return db.get_sidebar_count_cache()
 
 
 @app.get("/api/gallery/items")
@@ -184,6 +192,52 @@ async def get_folder_detail(folder_name: str) -> dict[str, Any]:
     if detail is None:
         raise HTTPException(status_code=404, detail="动态不存在")
     return detail
+
+
+@app.get("/api/duplicates/items")
+def duplicate_items() -> dict[str, Any]:
+    return duplicates.list_groups()
+
+
+@app.post("/api/duplicates/{signature}/ignore")
+def ignore_duplicate(signature: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    if payload.get("confirmed") is not True:
+        raise HTTPException(status_code=400, detail="忽略重复项需要二次确认")
+    try:
+        return duplicates.ignore_group(signature)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/duplicates/{signature}/resolve")
+def resolve_duplicate(signature: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    if payload.get("confirmed") is not True:
+        raise HTTPException(status_code=400, detail="保留贴文并删除其余内容需要确认")
+    group = duplicates.get_group(signature)
+    if not group:
+        raise HTTPException(status_code=404, detail="重复内容项不存在或已经处理")
+    keep_folder_name = str(payload.get("keep_folder_name") or "")
+    folder_names = [str(item["folder_name"]) for item in group["items"]]
+    if keep_folder_name not in folder_names:
+        raise HTTPException(status_code=400, detail="请选择当前重复组中的贴文")
+    removed = []
+    for folder_name in folder_names:
+        if folder_name == keep_folder_name:
+            continue
+        try:
+            pull_manager.move_to_trash(folder_name, reason=f"重复内容，保留 {keep_folder_name}")
+            removed.append(folder_name)
+        except RuntimeError:
+            continue
+    remaining = duplicates.list_groups()
+    return {
+        "ok": True,
+        "message": "已保留所选贴文，其余重复贴文已提交删除",
+        "kept": keep_folder_name,
+        "removed": removed,
+        "sidebar_counts": db.get_sidebar_count_cache(),
+        "remaining": remaining["active_total"],
+    }
 
 
 @app.post("/api/gallery/folders/{folder_name}/favorite")

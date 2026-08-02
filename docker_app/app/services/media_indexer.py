@@ -9,6 +9,7 @@ from typing import Any, Callable
 from PIL import Image
 
 from app.db import Database
+from app.services.image_similarity import image_fingerprint
 from app.services.sidecar import SidecarRunner
 from app.services.storage import StorageService
 from app.services.thumbnailer import ThumbnailService
@@ -417,6 +418,7 @@ class MediaIndexer:
                     "tiny_thumb_rel_path": self.storage.relative_to_storage(tiny_thumb_path) if tiny_thumb_path.exists() else None,
                     "width": width,
                     "height": height,
+                    "duplicate_fingerprint": image_fingerprint(small_thumb_path if small_thumb_path.exists() else file_path),
                     "metadata": {
                         "kind": "image",
                         "pair_hash": self._image_hash(file_path),

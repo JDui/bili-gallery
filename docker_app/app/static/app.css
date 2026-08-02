@@ -2171,6 +2171,206 @@ html.is-interacting .detail-thumb::before {
     animation: review-card-remove 180ms cubic-bezier(0.4, 0, 1, 1) forwards;
 }
 
+.duplicate-view {
+    display: grid;
+    gap: 16px;
+}
+
+.duplicate-group-card {
+    display: grid;
+    gap: 18px;
+    padding: 20px;
+    border-radius: var(--radius-card);
+    border: 1px solid rgba(213, 222, 234, 0.92);
+    background: rgba(255, 255, 255, 0.86);
+    box-shadow: var(--shadow-card);
+    transition: opacity var(--duration-fast) var(--ease-soft), border-color var(--duration-fast) var(--ease-soft), box-shadow var(--duration-base) var(--ease-fluid);
+}
+
+.duplicate-group-card.is-busy {
+    opacity: 0.72;
+}
+
+.duplicate-group-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+}
+
+.duplicate-group-head p,
+.duplicate-detail-copy p {
+    margin: 0 0 6px;
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 760;
+    letter-spacing: 0.04em;
+}
+
+.duplicate-group-head h3 {
+    margin: 0;
+    font-size: 22px;
+}
+
+.duplicate-ignore-actions {
+    flex: 0 0 auto;
+}
+
+.duplicate-confirm-box {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 9px;
+    flex-wrap: wrap;
+    max-width: 560px;
+    padding: 10px;
+    border-radius: 12px;
+    background: rgba(255, 241, 243, 0.9);
+    border: 1px solid rgba(199, 69, 84, 0.18);
+}
+
+.duplicate-confirm-box span {
+    color: #87414b;
+    font-size: 13px;
+}
+
+.duplicate-post-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 320px));
+    grid-auto-rows: 1fr;
+    gap: 14px;
+    align-items: stretch;
+}
+
+.duplicate-post-card {
+    display: flex;
+    min-width: 0;
+    height: 100%;
+    flex-direction: column;
+    content-visibility: visible;
+    contain: layout paint style;
+}
+
+.duplicate-post-card.selected {
+    border-color: rgba(45, 108, 223, 0.72);
+    box-shadow: 0 20px 42px rgba(45, 108, 223, 0.16);
+}
+
+.duplicate-post-card .photo-visual,
+.duplicate-post-card .photo-collage {
+    min-height: 0;
+    aspect-ratio: 4 / 3;
+}
+
+.duplicate-post-meta {
+    display: grid;
+    align-content: start;
+    flex: 1 1 auto;
+}
+
+.duplicate-post-meta h4 {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.duplicate-post-meta p {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 13px;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.duplicate-post-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 0 14px 14px;
+}
+
+.duplicate-post-actions button {
+    min-width: 0;
+    padding-inline: 10px;
+}
+
+.duplicate-keep-confirm {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 14px;
+    border-radius: 12px;
+    background: rgba(235, 242, 253, 0.9);
+    border: 1px solid rgba(45, 108, 223, 0.16);
+}
+
+.duplicate-keep-confirm > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    margin-right: auto;
+}
+
+.duplicate-keep-confirm span,
+.duplicate-detail-copy span {
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.duplicate-match-detail {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.25fr) minmax(0, 1fr);
+    gap: 16px;
+    align-items: center;
+    padding-top: 16px;
+    border-top: 1px solid rgba(45, 58, 75, 0.08);
+}
+
+.duplicate-match-list {
+    display: flex;
+    gap: 10px;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 2px 2px 8px;
+    scroll-snap-type: x proximity;
+}
+
+.duplicate-match-row {
+    display: grid;
+    grid-template-columns: 86px auto 86px;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 8px;
+    padding: 7px;
+    border-radius: 12px;
+    background: rgba(244, 247, 251, 0.88);
+    border: 1px solid rgba(45, 58, 75, 0.08);
+    scroll-snap-align: start;
+}
+
+.duplicate-match-row img {
+    display: block;
+    width: 86px;
+    height: 72px;
+    object-fit: cover;
+    border-radius: 8px;
+    background: rgba(223, 232, 243, 0.9);
+}
+
+.duplicate-match-row > div {
+    display: grid;
+    justify-items: center;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.duplicate-match-row strong {
+    color: var(--accent);
+    font-size: 15px;
+}
+
 .panel-card.subscription-card {
     display: grid;
     grid-template-columns: 1fr;
@@ -4115,6 +4315,45 @@ html.is-interacting .detail-thumb::before {
 
     .time-filter-action-buttons .secondary-button {
         flex: 0 0 auto;
+    }
+
+    .duplicate-group-head,
+    .duplicate-match-detail {
+        grid-template-columns: 1fr;
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .duplicate-ignore-actions {
+        width: 100%;
+    }
+
+    .duplicate-confirm-box {
+        justify-content: flex-start;
+        max-width: none;
+    }
+
+    .duplicate-post-grid {
+        grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    }
+}
+
+@media (max-width: 620px) {
+    .duplicate-group-card {
+        padding: 14px;
+    }
+
+    .duplicate-post-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .duplicate-keep-confirm {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .duplicate-keep-confirm > div {
+        margin-right: 0;
     }
 }
 

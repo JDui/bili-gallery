@@ -75,6 +75,11 @@
 
             <section class="nav-section">
                 <div class="section-label" x-show="!sidebarCollapsed">智能相簿</div>
+                <button class="sidebar-link" data-testid="nav-duplicates" :class="{ active: currentView === 'duplicates' }" title="重复内容" @click="openDuplicates()">
+                    <span class="link-badge">重</span>
+                    <span class="link-text" x-show="!sidebarCollapsed">重复内容</span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('duplicates')"></span>
+                </button>
                 <button class="sidebar-link" data-testid="nav-review" :class="{ active: currentView === 'review' }" title="待审核" @click="openReview()">
                     <span class="link-badge">审</span>
                     <span class="link-text" x-show="!sidebarCollapsed">待审核</span>
@@ -419,6 +424,107 @@
                 </div>
             </section>
 
+            <section class="panel-view duplicate-view" data-testid="section-duplicates" x-show="currentView === 'duplicates'" x-cloak>
+                <div class="section-heading">
+                    <div>
+                        <p>智能查重</p>
+                        <h3>相似图片贴文</h3>
+                    </div>
+                    <div class="button-row">
+                        <span class="inline-tag" x-text="`至少 ${duplicateImageThreshold} 张相似图片`"></span>
+                        <button class="secondary-button" @click="refreshDuplicates()" :disabled="duplicateLoading" x-text="duplicateLoading ? '检测中' : '重新检测'"></button>
+                    </div>
+                </div>
+                <template x-for="(group, groupIndex) in duplicateGroups" :key="group.signature">
+                    <article class="duplicate-group-card" :class="{ 'is-busy': duplicateActionKey === group.signature }">
+                        <header class="duplicate-group-head">
+                            <div>
+                                <p x-text="`重复内容 ${groupIndex + 1}`"></p>
+                                <h3 x-text="`${group.post_count} 条贴文拥有相似图片`"></h3>
+                                <div class="inline-tags">
+                                    <span class="inline-tag accent" x-text="`${group.matched_image_count} 组相似图片`"></span>
+                                    <span class="inline-tag" x-text="`平均相似度 ${group.similarity}%`"></span>
+                                </div>
+                            </div>
+                            <div class="duplicate-ignore-actions" @click.stop>
+                                <button class="secondary-button" x-show="duplicateIgnoreConfirmSignature !== group.signature" @click="askIgnoreDuplicate(group.signature)">忽略此重复项</button>
+                                <div class="duplicate-confirm-box" x-show="duplicateIgnoreConfirmSignature === group.signature" x-cloak>
+                                    <span>忽略后此组将不再出现，确定继续？</span>
+                                    <button class="secondary-button" @click="cancelIgnoreDuplicate()">取消</button>
+                                    <button class="primary-button danger-confirm" @click="confirmIgnoreDuplicate(group)" :disabled="duplicateActionKey === group.signature">再次确认忽略</button>
+                                </div>
+                            </div>
+                        </header>
+
+                        <div class="duplicate-post-grid">
+                            <template x-for="item in group.items" :key="item.folder_name">
+                                <article class="photo-card duplicate-post-card" :class="{ selected: duplicateKeepSelection(group.signature) === item.folder_name }" @click="openFolder(item.folder_name)">
+                                    <div class="photo-visual" x-show="item.preview_tiles?.length" :style="galleryItemTinyStyle(item)">
+                                        <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
+                                            <template x-for="tile in item.preview_tiles" :key="tile.id">
+                                                <div class="photo-collage-tile" :style="tileTinyStyle(tile)">
+                                                    <img loading="lazy" decoding="async" :src="galleryTileUrl(tile)" :alt="item.title" :width="tile.width || null" :height="tile.height || null" @load="fadeLoadedImage($event)">
+                                                </div>
+                                            </template>
+                                        </div>
+                                        <div class="photo-badges"><span class="photo-badge" x-text="item.pub_time"></span></div>
+                                        <div class="photo-count-badge" x-text="`${item.image_count} 张`"></div>
+                                    </div>
+                                    <div class="photo-meta duplicate-post-meta">
+                                        <h4 x-text="item.title || item.folder_name"></h4>
+                                        <p x-text="item.text_prefix || '无正文摘要'"></p>
+                                        <div class="photo-stats">
+                                            <span x-text="item.subscription_name || '默认订阅'"></span>
+                                            <span x-text="`${item.duplicate_match_count} 张命中`"></span>
+                                        </div>
+                                    </div>
+                                    <div class="duplicate-post-actions" @click.stop>
+                                        <button class="primary-button" @click="selectDuplicateKeep(group, item)" x-text="duplicateKeepSelection(group.signature) === item.folder_name ? '已选择保留' : '保留此贴文'"></button>
+                                        <button class="secondary-button danger-button" @click="deleteDuplicateFolder(group, item)" :disabled="duplicateActionKey === group.signature">删除此贴文</button>
+                                    </div>
+                                </article>
+                            </template>
+                        </div>
+
+                        <div class="duplicate-keep-confirm" x-show="duplicateKeepSelection(group.signature)" x-cloak>
+                            <div>
+                                <strong>保留所选贴文</strong>
+                                <span x-text="`其余 ${Math.max(0, group.post_count - 1)} 条重复贴文会移入垃圾桶。`"></span>
+                            </div>
+                            <button class="secondary-button" @click="cancelDuplicateKeep(group.signature)">取消</button>
+                            <button class="primary-button danger-confirm" @click="resolveDuplicateGroup(group)" :disabled="duplicateActionKey === group.signature">确认保留并删除其余贴文</button>
+                        </div>
+
+                        <section class="duplicate-match-detail">
+                            <div class="duplicate-detail-copy">
+                                <p>重复内容详情</p>
+                                <span>下面展示用于判定的相似图片对，最多显示 12 组。</span>
+                            </div>
+                            <div class="duplicate-match-list">
+                                <template x-for="(match, matchIndex) in group.matches" :key="`${group.signature}-${matchIndex}`">
+                                    <div class="duplicate-match-row">
+                                        <img :src="match.left_url" :alt="match.left_folder_name" loading="lazy" decoding="async" @load="fadeLoadedImage($event)">
+                                        <div>
+                                            <strong x-text="`${match.similarity}%`"></strong>
+                                            <span>相似</span>
+                                        </div>
+                                        <img :src="match.right_url" :alt="match.right_folder_name" loading="lazy" decoding="async" @load="fadeLoadedImage($event)">
+                                    </div>
+                                </template>
+                            </div>
+                        </section>
+                    </article>
+                </template>
+                <div class="empty-state" x-show="!duplicateLoading && duplicateGroups.length === 0" x-cloak>
+                    <strong>没有待处理的重复内容</strong>
+                    <p x-text="`两条贴文至少命中 ${duplicateImageThreshold} 张相似图片时，会出现在这里。`"></p>
+                </div>
+                <div class="empty-state" x-show="duplicateLoading && duplicateGroups.length === 0" x-cloak>
+                    <strong>正在检测重复内容</strong>
+                    <p>首次检测会为旧图片补充感知指纹，请稍候。</p>
+                </div>
+            </section>
+
             <section class="panel-view" data-testid="section-review" x-show="currentView === 'review'" x-cloak>
                 <div class="section-heading">
                     <div>
@@ -695,6 +801,14 @@
                         <label for="ad-filter-keywords">关键词列表</label>
                         <textarea id="ad-filter-keywords" rows="10" x-model="keywordText" aria-label="推广过滤关键词列表"></textarea>
                         <p class="field-copy">每行一个关键词，命中后动态进入待审核列表。</p>
+                    </article>
+
+                    <article class="settings-card">
+                        <h4>重复内容检测</h4>
+                        <label>触发所需相似图片数
+                            <input type="number" min="1" max="100" step="1" x-model.number="settings.duplicate_image_threshold">
+                        </label>
+                        <p class="field-copy">默认 2 张。两条贴文达到这个相似图片数量后，会出现在“重复内容”中；修改后保存即可持久生效。</p>
                     </article>
 
                     <article class="settings-card">

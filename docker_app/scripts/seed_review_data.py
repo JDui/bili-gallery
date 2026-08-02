@@ -103,6 +103,13 @@ def seed_library(storage: StorageService, indexer: MediaIndexer) -> None:
     make_image(storage.image_folder(folder_b) / "02.jpg", "山路", (1080, 1380), ("#8b77d1", "#ece5ff"))
     indexer.index_folder(folder_b, 1768737600, "春日海风里的照片流", "春日海风", "demo-top-2", "demo-src-2")
 
+    folder_duplicate = "20260220_海风返图"
+    storage.image_folder(folder_duplicate).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(storage.image_folder(folder_b) / "01.jpg", storage.image_folder(folder_duplicate) / "01.jpg")
+    shutil.copy2(storage.image_folder(folder_b) / "02.jpg", storage.image_folder(folder_duplicate) / "02.jpg")
+    make_image(storage.image_folder(folder_duplicate) / "03.jpg", "返图", (1080, 1440), ("#7bbbd1", "#e1f4fa"))
+    indexer.index_folder(folder_duplicate, 1771545600, "海风返图与补充记录", "海风返图", "demo-top-duplicate", "demo-src-duplicate")
+
     folder_c = "20260301_设计样片"
     make_video(storage.livephoto_folder(folder_c) / "01.mp4", "#f29cb5")
     indexer.index_folder(folder_c, 1772323200, "设计样片与动效预览", "设计样片", "demo-top-3", "demo-src-3")
