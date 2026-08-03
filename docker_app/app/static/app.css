@@ -4811,6 +4811,32 @@ html.is-interacting .detail-thumb::before {
     width: 100%;
 }
 
+.settings-icon-reset-grid {
+    display: grid;
+    gap: 8px;
+}
+
+.settings-icon-reset-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid rgba(45, 58, 75, 0.08);
+    border-radius: var(--radius-card);
+    background: rgba(246, 249, 253, 0.9);
+}
+
+.settings-icon-reset-row > div:first-child {
+    display: grid;
+    gap: 3px;
+}
+
+.settings-icon-reset-row span {
+    color: var(--muted);
+    font-size: 12px;
+}
+
 @keyframes review-card-remove {
     to {
         opacity: 0;
@@ -4846,6 +4872,14 @@ html.is-interacting .detail-thumb::before {
 
     .thumbnail-level-row strong {
         grid-column: 1 / -1;
+    }
+
+    .settings-icon-reset-row {
+        grid-template-columns: 1fr;
+    }
+
+    .settings-icon-reset-row .button-row {
+        justify-content: flex-start;
     }
 }
 

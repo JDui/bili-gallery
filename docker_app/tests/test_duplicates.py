@@ -161,6 +161,7 @@ def test_removing_duplicate_folders_updates_cache_without_global_rescan(tmp_path
 
     assert payload["active_total"] == 1
     assert {item["folder_name"] for item in payload["items"][0]["items"]} == {"more-images", "earlier"}
+    assert service.get_group(group["signature"])["post_count"] == 2
 
     db.delete_folder("more-images")
     payload = service.remove_folders(["more-images"])

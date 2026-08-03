@@ -45,6 +45,7 @@ legacy_importer = LegacyImporter(db, storage, indexer, config.repo_root)
 pull_manager = PullManager(db, storage, indexer, cleanup, auth, legacy_importer)
 site_syncer = SiteSyncManager(db, storage, indexer)
 pull_manager.attach_site_syncer(site_syncer)
+pull_manager.attach_duplicate_service(duplicates)
 site_syncer.bind_task_queue(pull_manager)
 scheduler = SchedulerService(db, pull_manager, site_syncer)
 templates = Jinja2Templates(directory=str(config.app_root / "templates"))
@@ -56,6 +57,8 @@ AVATAR_REFRESH_RISK_BACKOFF_RANGE = (90.0, 180.0)
 AVATAR_REFRESH_RISK_KEYWORDS = ("验证码", "风控", "安全", "captcha", "-352", "412")
 AVATAR_CACHE_MAX_BYTES = 5 * 1024 * 1024
 _icon_reset_lock = threading.Lock()
+_subscription_icon_reset_lock = threading.Lock()
+_site_icon_reset_lock = threading.Lock()
 
 
 class CacheControlStaticFiles(StaticFiles):
@@ -220,25 +223,7 @@ def resolve_duplicate(signature: str, payload: dict[str, Any] = Body(...)) -> di
     folder_names = [str(item["folder_name"]) for item in group["items"]]
     if keep_folder_name not in folder_names:
         raise HTTPException(status_code=400, detail="请选择当前重复组中的贴文")
-    removed = []
-    for folder_name in folder_names:
-        if folder_name == keep_folder_name:
-            continue
-        try:
-            pull_manager.move_to_trash(folder_name, reason=f"重复内容，保留 {keep_folder_name}")
-            removed.append(folder_name)
-        except RuntimeError:
-            continue
-    duplicate_payload = duplicates.remove_folders(removed)
-    return {
-        "ok": True,
-        "message": "已仅保留所选贴文，其余重复贴文已提交删除",
-        "kept": keep_folder_name,
-        "removed": removed,
-        "duplicates": duplicate_payload,
-        "sidebar_counts": db.get_sidebar_count_cache(),
-        "remaining": duplicate_payload["active_total"],
-    }
+    return pull_manager.start_duplicate_resolve(signature, keep_folder_name, folder_names)
 
 
 @app.post("/api/duplicates/{signature}/cleanup")
@@ -251,16 +236,7 @@ def cleanup_duplicate_images(signature: str, payload: dict[str, Any] = Body(...)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not plan["targets"]:
         raise HTTPException(status_code=400, detail="此分组没有分辨率更低的重复图片")
-    result = pull_manager.cleanup_duplicate_pairs(plan["targets"])
-    duplicate_payload = duplicates.refresh_group(signature, plan["folder_names"])
-    return {
-        "ok": True,
-        "message": "已清理低分辨率重复图片，贴文均已保留",
-        "removed": result["removed"],
-        "duplicates": duplicate_payload,
-        "sidebar_counts": db.get_sidebar_count_cache(),
-        "remaining": duplicate_payload["active_total"],
-    }
+    return pull_manager.start_duplicate_cleanup(signature, plan["folder_names"], plan["targets"])
 
 
 @app.post("/api/duplicates/{signature}/folders/{folder_name}/trash")
@@ -268,17 +244,7 @@ def trash_duplicate_folder(signature: str, folder_name: str) -> dict[str, Any]:
     group = duplicates.get_group(signature)
     if not group or folder_name not in {str(item["folder_name"]) for item in group["items"]}:
         raise HTTPException(status_code=404, detail="重复贴文不存在或已经处理")
-    try:
-        result = pull_manager.move_to_trash(folder_name, reason="重复内容")
-    except RuntimeError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    duplicate_payload = duplicates.remove_folders([folder_name])
-    return {
-        **result,
-        "duplicates": duplicate_payload,
-        "sidebar_counts": db.get_sidebar_count_cache(),
-        "remaining": duplicate_payload["active_total"],
-    }
+    return pull_manager.start_duplicate_trash(signature, folder_name)
 
 
 @app.post("/api/gallery/folders/{folder_name}/favorite")
@@ -1208,50 +1174,70 @@ async def rebuild_thumbnails(level: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-def _execute_reset_all_icons(cookie: str | None) -> dict[str, Any]:
-    summary = {
-        "subscriptions": {"total": 0, "updated": 0, "fallback": 0, "failed": 0},
-        "sites": {"total": 0, "updated": 0, "fallback": 0, "failed": 0},
-        "errors": [],
-    }
-
+def _execute_reset_subscription_icons(cookie: str | None) -> dict[str, Any]:
+    summary = {"total": 0, "updated": 0, "fallback": 0, "failed": 0}
+    errors = []
     previous_avatar_error: str | None = None
     for index, subscription in enumerate(db.list_subscriptions(include_paused=True)):
-        summary["subscriptions"]["total"] += 1
+        summary["total"] += 1
         waited = _sleep_before_avatar_refresh(index, previous_avatar_error)
-        summary["subscriptions"]["wait_seconds"] = round(float(summary["subscriptions"].get("wait_seconds", 0)) + waited, 2)
+        summary["wait_seconds"] = round(float(summary.get("wait_seconds", 0)) + waited, 2)
         item, found, error = _refresh_subscription_icon_item(subscription, cookie)
         previous_avatar_error = error
         if found and item.get("avatar_url"):
-            summary["subscriptions"]["updated"] += 1
+            summary["updated"] += 1
         else:
-            summary["subscriptions"]["fallback"] += 1
+            summary["fallback"] += 1
         if error and error != "未能获取 UP 主头像":
-            summary["subscriptions"]["failed"] += 1
-            summary["errors"].append({"kind": "subscription", "uid": subscription.get("uid"), "message": error})
+            summary["failed"] += 1
+            errors.append({"kind": "subscription", "uid": subscription.get("uid"), "message": error})
+    db.refresh_sidebar_count_cache(["subscriptions"])
+    message = f"动态订阅图标重置完成：{summary['updated']}/{summary['total']}。"
+    if summary["fallback"]:
+        message += " 无法获取头像的项目已回退默认样式。"
+    if summary["failed"]:
+        message += " 部分项目请求失败，详情已记录。"
+    return {"message": message, "result": {"subscriptions": summary, "errors": errors}}
 
+
+def _execute_reset_site_icons() -> dict[str, Any]:
+    summary = {"total": 0, "updated": 0, "fallback": 0, "failed": 0}
+    errors = []
     for source in db.list_site_sources():
-        summary["sites"]["total"] += 1
+        summary["total"] += 1
         try:
             item = site_syncer.refresh_site_icon(int(source["id"]))
         except RuntimeError as exc:
-            summary["sites"]["failed"] += 1
-            summary["errors"].append({"kind": "site", "id": source.get("id"), "message": str(exc)})
+            summary["failed"] += 1
+            errors.append({"kind": "site", "id": source.get("id"), "message": str(exc)})
             continue
         if item.get("icon_url"):
-            summary["sites"]["updated"] += 1
+            summary["updated"] += 1
         else:
-            summary["sites"]["fallback"] += 1
-
-    db.refresh_sidebar_count_cache(["subscriptions", "sites"])
-    message = (
-        f"图标重置完成：UP {summary['subscriptions']['updated']}/{summary['subscriptions']['total']}，"
-        f"站点 {summary['sites']['updated']}/{summary['sites']['total']}。"
-    )
-    if summary["subscriptions"]["fallback"] or summary["sites"]["fallback"]:
-        message += " 无法获取图像的项目已回退默认样式。"
-    if summary["subscriptions"]["failed"] or summary["sites"]["failed"]:
+            summary["fallback"] += 1
+    db.refresh_sidebar_count_cache(["sites"])
+    message = f"站点订阅图标重置完成：{summary['updated']}/{summary['total']}。"
+    if summary["fallback"]:
+        message += " 无法获取图标的项目已回退默认样式。"
+    if summary["failed"]:
         message += " 部分项目请求失败，详情已记录。"
+    return {"message": message, "result": {"sites": summary, "errors": errors}}
+
+
+def _execute_reset_all_icons(cookie: str | None) -> dict[str, Any]:
+    subscription_details = _execute_reset_subscription_icons(cookie)
+    site_details = _execute_reset_site_icons()
+    subscriptions = subscription_details["result"]["subscriptions"]
+    sites = site_details["result"]["sites"]
+    summary = {
+        "subscriptions": subscriptions,
+        "sites": sites,
+        "errors": [
+            *subscription_details["result"]["errors"],
+            *site_details["result"]["errors"],
+        ],
+    }
+    message = f"图标重置完成：UP {subscriptions['updated']}/{subscriptions['total']}，站点 {sites['updated']}/{sites['total']}。"
     return {"message": message, "result": summary}
 
 
@@ -1265,6 +1251,16 @@ def _run_reset_all_icons_task(task_id: int, cookie: str | None) -> None:
         _icon_reset_lock.release()
 
 
+def _run_scoped_icon_reset_task(task_id: int, scope: str, cookie: str | None, lock: threading.Lock) -> None:
+    try:
+        details = _execute_reset_subscription_icons(cookie) if scope == "subscriptions" else _execute_reset_site_icons()
+        db.finish_task_run(task_id, "success", details["message"], details)
+    except Exception as exc:
+        db.finish_task_run(task_id, "failed", str(exc), {"error": str(exc), "scope": scope})
+    finally:
+        lock.release()
+
+
 @app.post("/api/settings/reset-icons")
 async def reset_all_icons() -> dict[str, Any]:
     if not _icon_reset_lock.acquire(blocking=False):
@@ -1274,6 +1270,35 @@ async def reset_all_icons() -> dict[str, Any]:
     thread = threading.Thread(target=_run_reset_all_icons_task, args=(task_id, cookie), daemon=True)
     thread.start()
     return {"ok": True, "queued": False, "message": "图标重置任务已提交，可在任务队列中查看进度"}
+
+
+@app.post("/api/settings/reset-icons/subscriptions")
+async def reset_subscription_icons() -> dict[str, Any]:
+    if not _subscription_icon_reset_lock.acquire(blocking=False):
+        return {"ok": True, "queued": True, "message": "动态订阅图标重置任务正在运行"}
+    cookie = auth.get_cookie_state().cookie
+    task_id = db.create_task_run("subscription-icons", "running", "开始重置动态订阅图标")
+    thread = threading.Thread(
+        target=_run_scoped_icon_reset_task,
+        args=(task_id, "subscriptions", cookie, _subscription_icon_reset_lock),
+        daemon=True,
+    )
+    thread.start()
+    return {"ok": True, "queued": False, "message": "动态订阅图标重置已提交"}
+
+
+@app.post("/api/settings/reset-icons/sites")
+async def reset_site_icons() -> dict[str, Any]:
+    if not _site_icon_reset_lock.acquire(blocking=False):
+        return {"ok": True, "queued": True, "message": "站点订阅图标重置任务正在运行"}
+    task_id = db.create_task_run("site-icons", "running", "开始重置站点订阅图标")
+    thread = threading.Thread(
+        target=_run_scoped_icon_reset_task,
+        args=(task_id, "sites", None, _site_icon_reset_lock),
+        daemon=True,
+    )
+    thread.start()
+    return {"ok": True, "queued": False, "message": "站点订阅图标重置已提交"}
 
 
 @app.post("/api/auth/qr/start")

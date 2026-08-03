@@ -128,7 +128,7 @@ function galleryApp() {
     duplicateGroups: [],
     duplicateLoading: false,
     duplicateImageThreshold: 2,
-    duplicateActionKey: null,
+    duplicatePendingActions: {},
     duplicateIgnoreConfirmSignature: null,
     duplicateCleanupConfirmSignature: null,
     duplicateKeepSelections: {},
@@ -249,8 +249,10 @@ function galleryApp() {
     validateConfirmStep: 0,
     rebuildIndexConfirmStep: 0,
     thumbnailRebuildConfirmLevel: null,
-    resetIconsConfirmStep: 0,
-    resetIconsRunning: false,
+    resetSubscriptionIconsConfirmStep: 0,
+    resetSubscriptionIconsRunning: false,
+    resetSiteIconsConfirmStep: 0,
+    resetSiteIconsRunning: false,
     fullReloadConfirmStep: 0,
     clearTaskLogsConfirmStep: 0,
     clearFilterLogsConfirmStep: 0,
@@ -829,6 +831,11 @@ function galleryApp() {
     },
 
     handleEscape() {
+      if (this.resetSubscriptionIconsConfirmStep || this.resetSiteIconsConfirmStep) {
+        this.resetSubscriptionIconsConfirmStep = 0;
+        this.resetSiteIconsConfirmStep = 0;
+        return;
+      }
       if (this.duplicateCleanupConfirmSignature) {
         this.duplicateCleanupConfirmSignature = null;
         return;
@@ -4589,8 +4596,76 @@ function galleryApp() {
       return this.duplicateKeepSelections[String(signature)] || "";
     },
 
+    duplicatePendingKey(kind, signature, suffix = "") {
+      return [String(kind || "action"), String(signature || ""), String(suffix || "")].join(":");
+    },
+
+    duplicateActionPending(kind, signature, suffix = "") {
+      return !!this.duplicatePendingActions[this.duplicatePendingKey(kind, signature, suffix)];
+    },
+
+    setDuplicateActionPending(kind, signature, suffix, pending) {
+      const key = this.duplicatePendingKey(kind, signature, suffix);
+      const next = { ...(this.duplicatePendingActions || {}) };
+      if (pending) {
+        next[key] = true;
+      } else {
+        delete next[key];
+      }
+      this.duplicatePendingActions = next;
+    },
+
+    removeDuplicateGroupLocally(signature) {
+      const normalized = String(signature || "");
+      this.duplicateGroups = (this.duplicateGroups || []).filter((group) => String(group.signature) !== normalized);
+      this.sidebarCounts = { ...this.sidebarCounts, duplicates: this.duplicateGroups.length };
+      this.cancelDuplicateKeep(normalized);
+      if (this.duplicateCleanupConfirmSignature === normalized) {
+        this.duplicateCleanupConfirmSignature = null;
+      }
+      if (this.duplicateIgnoreConfirmSignature === normalized) {
+        this.duplicateIgnoreConfirmSignature = null;
+      }
+    },
+
+    removeDuplicateFoldersLocally(signature, folderNames) {
+      const normalized = String(signature || "");
+      const removed = new Set((folderNames || []).map((name) => String(name || "")));
+      const nextGroups = [];
+      for (const group of this.duplicateGroups || []) {
+        if (String(group.signature) !== normalized) {
+          nextGroups.push(group);
+          continue;
+        }
+        const items = (group.items || []).filter((item) => !removed.has(String(item.folder_name)));
+        if (items.length < 2) {
+          continue;
+        }
+        const matches = (group.matches || []).filter(
+          (match) => !removed.has(String(match.left_folder_name)) && !removed.has(String(match.right_folder_name)),
+        );
+        nextGroups.push({
+          ...group,
+          items,
+          matches,
+          post_count: items.length,
+          matched_image_count: matches.length,
+        });
+      }
+      this.duplicateGroups = nextGroups;
+      this.sidebarCounts = { ...this.sidebarCounts, duplicates: nextGroups.length };
+    },
+
+    applyDuplicateQueueFeedback(result) {
+      const taskCount = Number(result?.sidebar_counts?.counts?.tasks);
+      if (Number.isFinite(taskCount)) {
+        this.sidebarCounts = { ...this.sidebarCounts, tasks: taskCount };
+      }
+      this.scheduleIdleWork(() => this.refreshTasks().catch(() => {}), 120);
+    },
+
     selectDuplicateKeep(group, item) {
-      if (!group?.signature || !item?.folder_name || this.duplicateActionKey) {
+      if (!group?.signature || !item?.folder_name) {
         return;
       }
       this.duplicateKeepSelections = {
@@ -4608,9 +4683,6 @@ function galleryApp() {
     },
 
     askIgnoreDuplicate(signature) {
-      if (this.duplicateActionKey) {
-        return;
-      }
       this.duplicateIgnoreConfirmSignature = String(signature || "");
       this.duplicateCleanupConfirmSignature = null;
     },
@@ -4620,9 +4692,6 @@ function galleryApp() {
     },
 
     askCleanupDuplicate(signature) {
-      if (this.duplicateActionKey) {
-        return;
-      }
       this.duplicateCleanupConfirmSignature = String(signature || "");
       this.duplicateIgnoreConfirmSignature = null;
     },
@@ -4633,40 +4702,41 @@ function galleryApp() {
 
     async confirmCleanupDuplicate(group) {
       const signature = String(group?.signature || "");
-      if (!signature || this.duplicateCleanupConfirmSignature !== signature || this.duplicateActionKey) {
+      if (!signature || this.duplicateCleanupConfirmSignature !== signature || this.duplicateActionPending("cleanup", signature)) {
         return;
       }
-      this.duplicateActionKey = signature;
+      const previousGroups = [...(this.duplicateGroups || [])];
+      const previousDuplicateCount = Number(this.sidebarCounts.duplicates || 0);
+      const affectedFolders = (group.items || []).map((item) => String(item.folder_name));
+      this.setDuplicateActionPending("cleanup", signature, "", true);
+      this.duplicateCleanupConfirmSignature = null;
+      this.removeDuplicateGroupLocally(signature);
       this.notify("info", "已提交删除", "");
       try {
         const result = await this.api(`/api/duplicates/${encodeURIComponent(signature)}/cleanup`, {
           method: "POST",
           body: JSON.stringify({ confirmed: true }),
         });
-        this.duplicateCleanupConfirmSignature = null;
-        if (result.duplicates) {
-          this.applyDuplicatePayload(result.duplicates);
-        }
-        for (const item of result.removed || []) {
-          this.invalidateDetailCache(item.folder_name);
+        for (const folderName of affectedFolders) {
+          this.invalidateDetailCache(folderName);
         }
         this.clearLocalGalleryCaches();
-        if (result.sidebar_counts) {
-          this.applySidebarCounts(result.sidebar_counts);
-        }
+        this.applyDuplicateQueueFeedback(result);
       } catch (error) {
+        this.duplicateGroups = previousGroups;
+        this.sidebarCounts = { ...this.sidebarCounts, duplicates: previousDuplicateCount };
         this.notify("error", "清理失败", error.message || "请稍后重试。");
       } finally {
-        this.duplicateActionKey = null;
+        this.setDuplicateActionPending("cleanup", signature, "", false);
       }
     },
 
     async confirmIgnoreDuplicate(group) {
       const signature = String(group?.signature || "");
-      if (!signature || this.duplicateIgnoreConfirmSignature !== signature || this.duplicateActionKey) {
+      if (!signature || this.duplicateIgnoreConfirmSignature !== signature || this.duplicateActionPending("ignore", signature)) {
         return;
       }
-      this.duplicateActionKey = signature;
+      this.setDuplicateActionPending("ignore", signature, "", true);
       try {
         const result = await this.api(`/api/duplicates/${encodeURIComponent(signature)}/ignore`, {
           method: "POST",
@@ -4683,17 +4753,25 @@ function galleryApp() {
       } catch (error) {
         this.notify("error", "忽略失败", error.message || "请稍后重试。");
       } finally {
-        this.duplicateActionKey = null;
+        this.setDuplicateActionPending("ignore", signature, "", false);
       }
     },
 
     async resolveDuplicateGroup(group) {
       const signature = String(group?.signature || "");
       const keepFolderName = this.duplicateKeepSelection(signature);
-      if (!signature || !keepFolderName || this.duplicateActionKey) {
+      if (!signature || !keepFolderName || this.duplicateActionPending("resolve", signature)) {
         return;
       }
-      this.duplicateActionKey = signature;
+      const previousGroups = [...(this.duplicateGroups || [])];
+      const previousDuplicateCount = Number(this.sidebarCounts.duplicates || 0);
+      const previousGallery = { ...this.gallery, items: [...(this.gallery.items || [])] };
+      const removedFolders = (group.items || [])
+        .map((item) => String(item.folder_name))
+        .filter((folderName) => folderName !== keepFolderName);
+      this.setDuplicateActionPending("resolve", signature, "", true);
+      this.removeDuplicateGroupLocally(signature);
+      this.removeFoldersFromLocalGallery(removedFolders);
       this.notify("info", "已提交删除", "");
       try {
         const result = await this.api(`/api/duplicates/${encodeURIComponent(signature)}/resolve`, {
@@ -4701,43 +4779,44 @@ function galleryApp() {
           body: JSON.stringify({ keep_folder_name: keepFolderName, confirmed: true }),
         });
         this.cancelDuplicateKeep(signature);
-        if (result.duplicates) {
-          this.applyDuplicatePayload(result.duplicates);
-        }
-        this.removeFoldersFromLocalGallery(result.removed || []);
-        if (result.sidebar_counts) {
-          this.applySidebarCounts(result.sidebar_counts);
-        }
+        this.applyDuplicateQueueFeedback(result);
       } catch (error) {
+        this.duplicateGroups = previousGroups;
+        this.sidebarCounts = { ...this.sidebarCounts, duplicates: previousDuplicateCount };
+        this.gallery = previousGallery;
+        this.clearLocalGalleryCaches();
         this.notify("error", "重复内容处理失败", error.message || "请稍后重试。");
       } finally {
-        this.duplicateActionKey = null;
+        this.setDuplicateActionPending("resolve", signature, "", false);
       }
     },
 
     async deleteDuplicateFolder(group, item) {
       const signature = String(group?.signature || "");
       const folderName = String(item?.folder_name || "");
-      if (!signature || !folderName || this.duplicateActionKey) {
+      if (!signature || !folderName || this.duplicateActionPending("trash", signature, folderName)) {
         return;
       }
-      this.duplicateActionKey = signature;
+      const previousGroups = [...(this.duplicateGroups || [])];
+      const previousDuplicateCount = Number(this.sidebarCounts.duplicates || 0);
+      const previousGallery = { ...this.gallery, items: [...(this.gallery.items || [])] };
+      this.setDuplicateActionPending("trash", signature, folderName, true);
+      this.removeDuplicateFoldersLocally(signature, [folderName]);
+      this.removeFoldersFromLocalGallery([folderName]);
       this.notify("info", "已提交删除", "");
       try {
         const result = await this.api(`/api/duplicates/${encodeURIComponent(signature)}/folders/${encodeURIComponent(folderName)}/trash`, {
           method: "POST",
         });
-        if (result.duplicates) {
-          this.applyDuplicatePayload(result.duplicates);
-        }
-        this.removeFoldersFromLocalGallery([folderName]);
-        if (result.sidebar_counts) {
-          this.applySidebarCounts(result.sidebar_counts);
-        }
+        this.applyDuplicateQueueFeedback(result);
       } catch (error) {
+        this.duplicateGroups = previousGroups;
+        this.sidebarCounts = { ...this.sidebarCounts, duplicates: previousDuplicateCount };
+        this.gallery = previousGallery;
+        this.clearLocalGalleryCaches();
         this.notify("error", "删除失败", error.message || "请稍后重试。");
       } finally {
-        this.duplicateActionKey = null;
+        this.setDuplicateActionPending("trash", signature, folderName, false);
       }
     },
 
@@ -5007,6 +5086,11 @@ function galleryApp() {
         "site-validate": "站点校验",
         "storage-cleanup": "存储清理",
         icons: "图标刷新",
+        "subscription-icons": "动态图标",
+        "site-icons": "站点图标",
+        "duplicate-trash": "重复贴文删除",
+        "duplicate-resolve": "仅保留贴文",
+        "duplicate-cleanup": "重复图片清理",
         startup: "启动整理",
         idle: "空闲",
       };
@@ -6090,43 +6174,65 @@ function galleryApp() {
       this.notify("info", "缩略图任务已提交", result.message);
     },
 
-    resetIconsButtonLabel() {
-      if (this.resetIconsRunning) {
-        return "重置中";
+    askResetSubscriptionIcons() {
+      if (!this.resetSubscriptionIconsRunning) {
+        this.resetSubscriptionIconsConfirmStep = 1;
       }
-      return this.resetIconsConfirmStep === 0 ? "重置所有图标" : "再次确认重置";
     },
 
-    askResetAllIcons() {
-      if (this.resetIconsRunning) {
-        return;
+    cancelResetSubscriptionIcons() {
+      if (!this.resetSubscriptionIconsRunning) {
+        this.resetSubscriptionIconsConfirmStep = 0;
       }
-      this.resetIconsConfirmStep = 1;
     },
 
-    cancelResetAllIcons() {
-      if (this.resetIconsRunning) {
+    async confirmResetSubscriptionIcons() {
+      if (this.resetSubscriptionIconsConfirmStep < 1 || this.resetSubscriptionIconsRunning) {
         return;
       }
-      this.resetIconsConfirmStep = 0;
-    },
-
-    async confirmResetAllIcons() {
-      if (this.resetIconsConfirmStep < 1 || this.resetIconsRunning) {
-        return;
-      }
-      this.resetIconsRunning = true;
-      this.resetIconsConfirmStep = 0;
-      this.notify("info", "正在提交图标重置", "后台会继续拉取每个 UP 主头像和站点图标。");
+      this.resetSubscriptionIconsRunning = true;
+      this.resetSubscriptionIconsConfirmStep = 0;
+      this.notify("info", "正在提交动态图标重置", "后台会逐个重新获取动态订阅头像。");
       try {
-        const result = await this.api("/api/settings/reset-icons", { method: "POST" });
+        const result = await this.api("/api/settings/reset-icons/subscriptions", { method: "POST" });
         this.iconLoadFailures = {};
         await Promise.all([this.refreshStatus(), this.refreshTasks()]);
-        this.notify("success", "图标任务已提交", result.message || "后台正在刷新订阅图标。");
+        this.notify("success", "动态图标任务已提交", result.message || "后台正在刷新动态订阅头像。");
       } catch (error) {
-        this.notify("error", "图标重置提交失败", error.message || "请稍后重试。");
+        this.notify("error", "动态图标重置提交失败", error.message || "请稍后重试。");
       } finally {
-        this.resetIconsRunning = false;
+        this.resetSubscriptionIconsRunning = false;
+      }
+    },
+
+    askResetSiteIcons() {
+      if (!this.resetSiteIconsRunning) {
+        this.resetSiteIconsConfirmStep = 1;
+      }
+    },
+
+    cancelResetSiteIcons() {
+      if (!this.resetSiteIconsRunning) {
+        this.resetSiteIconsConfirmStep = 0;
+      }
+    },
+
+    async confirmResetSiteIcons() {
+      if (this.resetSiteIconsConfirmStep < 1 || this.resetSiteIconsRunning) {
+        return;
+      }
+      this.resetSiteIconsRunning = true;
+      this.resetSiteIconsConfirmStep = 0;
+      this.notify("info", "正在提交站点图标重置", "后台会逐个重新获取站点订阅图标。");
+      try {
+        const result = await this.api("/api/settings/reset-icons/sites", { method: "POST" });
+        this.iconLoadFailures = {};
+        await Promise.all([this.refreshStatus(), this.refreshTasks()]);
+        this.notify("success", "站点图标任务已提交", result.message || "后台正在刷新站点订阅图标。");
+      } catch (error) {
+        this.notify("error", "站点图标重置提交失败", error.message || "请稍后重试。");
+      } finally {
+        this.resetSiteIconsRunning = false;
       }
     },
 

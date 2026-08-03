@@ -144,6 +144,7 @@ class PullManager:
         self._pause_requested = False
         self._cancel_requested = False
         self.site_syncer: Any | None = None
+        self.duplicate_service: Any | None = None
         self._event_log: deque[dict[str, Any]] = deque(maxlen=120)
         self._status: dict[str, Any] = {
             "running": False,
@@ -186,6 +187,9 @@ class PullManager:
 
     def attach_site_syncer(self, site_syncer: Any) -> None:
         self.site_syncer = site_syncer
+
+    def attach_duplicate_service(self, duplicate_service: Any) -> None:
+        self.duplicate_service = duplicate_service
 
     def _refresh_content_sidebar_counts(self) -> dict[str, Any]:
         return self.db.refresh_sidebar_count_cache(["all", "favorites", "livephoto", "review", "logs", "tasks", "subscriptions", "sites"])
@@ -308,6 +312,69 @@ class PullManager:
         queued = self._queue_or_start("storage-cleanup", "清理垃圾文件", self._run_storage_cleanup)
         return {"ok": True, "message": "已加入任务队列" if queued else "已开始清理垃圾文件", "queued": queued}
 
+    def start_duplicate_trash(self, signature: str, folder_name: str) -> dict[str, Any]:
+        if self.duplicate_service is None:
+            raise RuntimeError("重复内容服务未初始化")
+        queued = self._queue_or_start(
+            "duplicate-trash",
+            f"删除重复贴文 {folder_name}",
+            self._run_duplicate_trash,
+            str(signature),
+            str(folder_name),
+        )
+        return {
+            "ok": True,
+            "queued": queued,
+            "message": "重复贴文删除已加入后台队列",
+            "removed": [str(folder_name)],
+            "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"]),
+        }
+
+    def start_duplicate_resolve(self, signature: str, keep_folder_name: str, folder_names: list[str]) -> dict[str, Any]:
+        if self.duplicate_service is None:
+            raise RuntimeError("重复内容服务未初始化")
+        removed = [str(name) for name in folder_names if str(name) != str(keep_folder_name)]
+        queued = self._queue_or_start(
+            "duplicate-resolve",
+            f"仅保留重复贴文 {keep_folder_name}",
+            self._run_duplicate_resolve,
+            str(signature),
+            str(keep_folder_name),
+            removed,
+        )
+        return {
+            "ok": True,
+            "queued": queued,
+            "message": "仅保留贴文操作已加入后台队列",
+            "kept": str(keep_folder_name),
+            "removed": removed,
+            "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"]),
+        }
+
+    def start_duplicate_cleanup(
+        self,
+        signature: str,
+        folder_names: list[str],
+        targets: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if self.duplicate_service is None:
+            raise RuntimeError("重复内容服务未初始化")
+        queued = self._queue_or_start(
+            "duplicate-cleanup",
+            "仅清理低分辨率重复图片",
+            self._run_duplicate_cleanup,
+            str(signature),
+            [str(name) for name in folder_names],
+            [dict(target) for target in targets],
+        )
+        return {
+            "ok": True,
+            "queued": queued,
+            "message": "低分辨率重复图片清理已加入后台队列",
+            "target_count": len(targets),
+            "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"]),
+        }
+
     def storage_stats(self, refresh: bool = False) -> dict[str, Any]:
         cached = self.db.get_storage_stats_cache()
         if refresh or not cached.get("updated_at"):
@@ -318,7 +385,11 @@ class PullManager:
         return self._refresh_storage_stats_cache()
 
     def status(self) -> dict[str, Any]:
-        latest = self._latest_task_run(["pull", "review", "validate", "startup", "index", "thumbnail-rebuild", "site-sync", "storage-cleanup", "icons"])
+        latest = self._latest_task_run([
+            "pull", "review", "validate", "startup", "index", "thumbnail-rebuild", "site-sync",
+            "storage-cleanup", "icons", "subscription-icons", "site-icons", "duplicate-trash",
+            "duplicate-resolve", "duplicate-cleanup",
+        ])
         status = dict(self._status)
         if str(status.get("mode") or "").startswith("site") and self.site_syncer is not None:
             site_status = self.site_syncer.status()
@@ -582,6 +653,90 @@ class PullManager:
             "removed": removed,
             "sidebar_counts": self._refresh_delete_sidebar_counts(),
         }
+
+    def _run_duplicate_trash(self, signature: str, folder_name: str) -> None:
+        task_id = self.db.create_task_run(
+            "duplicate-trash",
+            "running",
+            f"开始删除重复贴文 {folder_name}",
+        )
+        try:
+            result = self.move_to_trash(folder_name, reason="重复内容")
+            duplicate_payload = self.duplicate_service.remove_folders([folder_name])
+            details = {
+                "folder_name": folder_name,
+                "cleanup_queued": bool(result.get("cleanup_queued")),
+                "duplicates_remaining": duplicate_payload["active_total"],
+            }
+            self.db.finish_task_run(task_id, "success", "重复贴文删除已提交", details)
+            self._status = {"running": False, "message": "重复贴文删除已提交", "mode": "idle", "stats": details}
+        except Exception as exc:
+            self.db.finish_task_run(task_id, "failed", str(exc), {"error": str(exc), "folder_name": folder_name})
+            self._status = {"running": False, "message": f"重复贴文删除失败: {exc}", "mode": "idle"}
+        finally:
+            self._release()
+            self._run_next_queued_task()
+
+    def _run_duplicate_resolve(
+        self,
+        signature: str,
+        keep_folder_name: str,
+        folder_names: list[str],
+    ) -> None:
+        task_id = self.db.create_task_run(
+            "duplicate-resolve",
+            "running",
+            f"开始仅保留重复贴文 {keep_folder_name}",
+        )
+        removed = []
+        try:
+            for folder_name in folder_names:
+                try:
+                    self.move_to_trash(folder_name, reason=f"重复内容，保留 {keep_folder_name}")
+                except RuntimeError:
+                    continue
+                removed.append(folder_name)
+            duplicate_payload = self.duplicate_service.remove_folders(removed)
+            details = {
+                "kept": keep_folder_name,
+                "removed": removed,
+                "duplicates_remaining": duplicate_payload["active_total"],
+            }
+            self.db.finish_task_run(task_id, "success", "仅保留贴文处理完成", details)
+            self._status = {"running": False, "message": "仅保留贴文处理完成", "mode": "idle", "stats": details}
+        except Exception as exc:
+            self.db.finish_task_run(task_id, "failed", str(exc), {"error": str(exc), "removed": removed})
+            self._status = {"running": False, "message": f"仅保留贴文处理失败: {exc}", "mode": "idle"}
+        finally:
+            self._release()
+            self._run_next_queued_task()
+
+    def _run_duplicate_cleanup(
+        self,
+        signature: str,
+        folder_names: list[str],
+        targets: list[dict[str, Any]],
+    ) -> None:
+        task_id = self.db.create_task_run(
+            "duplicate-cleanup",
+            "running",
+            "开始清理低分辨率重复图片",
+        )
+        try:
+            result = self.cleanup_duplicate_pairs(targets)
+            duplicate_payload = self.duplicate_service.refresh_group(signature, folder_names)
+            details = {
+                "removed": result["removed"],
+                "duplicates_remaining": duplicate_payload["active_total"],
+            }
+            self.db.finish_task_run(task_id, "success", "低分辨率重复图片清理完成", details)
+            self._status = {"running": False, "message": "低分辨率重复图片清理完成", "mode": "idle", "stats": details}
+        except Exception as exc:
+            self.db.finish_task_run(task_id, "failed", str(exc), {"error": str(exc)})
+            self._status = {"running": False, "message": f"重复图片清理失败: {exc}", "mode": "idle"}
+        finally:
+            self._release()
+            self._run_next_queued_task()
 
     def _run_background_cleanup(self, target, *args: Any) -> None:
         thread = threading.Thread(target=self._background_cleanup_entry, args=(target, args), daemon=True)
@@ -2264,6 +2419,27 @@ class PullManager:
                 thread = threading.Thread(target=self._run_site_validation, args=(source_id, max_pages), daemon=True)
             elif next_task.kind == "storage-cleanup":
                 thread = threading.Thread(target=self._run_storage_cleanup, daemon=True)
+            elif next_task.kind == "duplicate-trash":
+                args = next_task.payload.get("args", [])
+                thread = threading.Thread(
+                    target=self._run_duplicate_trash,
+                    args=(str(args[0]), str(args[1])),
+                    daemon=True,
+                )
+            elif next_task.kind == "duplicate-resolve":
+                args = next_task.payload.get("args", [])
+                thread = threading.Thread(
+                    target=self._run_duplicate_resolve,
+                    args=(str(args[0]), str(args[1]), list(args[2])),
+                    daemon=True,
+                )
+            elif next_task.kind == "duplicate-cleanup":
+                args = next_task.payload.get("args", [])
+                thread = threading.Thread(
+                    target=self._run_duplicate_cleanup,
+                    args=(str(args[0]), list(args[1]), list(args[2])),
+                    daemon=True,
+                )
             else:
                 self._release()
                 return

@@ -18,7 +18,7 @@ MAX_HASH_DISTANCE = 32
 MAX_ASPECT_LOG_DISTANCE = 0.24
 LOW_CONTRAST_LIMIT = 12
 LOW_CONTRAST_COLOR_DISTANCE = 36
-DUPLICATE_CACHE_VERSION = 2
+DUPLICATE_CACHE_VERSION = 3
 
 
 @dataclass
@@ -74,6 +74,7 @@ class DuplicateService:
         self.storage = storage
         self._cache_signature = ""
         self._cached_groups: list[dict[str, Any]] = []
+        self._signature_aliases: dict[str, str] = {}
         self._cache_lock = threading.RLock()
 
     def list_groups(self, include_ignored: bool = False, force: bool = False) -> dict[str, Any]:
@@ -81,6 +82,7 @@ class DuplicateService:
             threshold = self._image_threshold()
             signature = self._gallery_signature(threshold)
             if force or signature != self._cache_signature:
+                self._signature_aliases = {}
                 cached_groups = None if force else self.db.get_duplicate_group_cache(signature)
                 if cached_groups is None:
                     self._cached_groups = self._build_groups(threshold)
@@ -107,7 +109,8 @@ class DuplicateService:
 
     def get_group(self, signature: str, include_ignored: bool = False) -> dict[str, Any] | None:
         payload = self.list_groups(include_ignored=include_ignored)
-        return next((group for group in payload["items"] if group["signature"] == str(signature)), None)
+        resolved = self._resolve_signature(signature)
+        return next((group for group in payload["items"] if group["signature"] == resolved), None)
 
     def ignore_group(self, signature: str) -> dict[str, Any]:
         group = self.get_group(signature)
@@ -138,6 +141,9 @@ class DuplicateService:
                 updated = self._group_without_folders(group, removed)
                 if updated is not None:
                     groups.append(updated)
+                    self._signature_aliases[str(group["signature"])] = str(updated["signature"])
+                else:
+                    self._signature_aliases[str(group["signature"])] = ""
             self._cached_groups = groups
             self._cache_signature = self._gallery_signature(self._image_threshold())
             self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
@@ -146,8 +152,9 @@ class DuplicateService:
     def cleanup_plan(self, signature: str) -> dict[str, Any]:
         self.list_groups(include_ignored=True)
         with self._cache_lock:
+            resolved = self._resolve_signature(signature)
             group = next(
-                (item for item in self._cached_groups if str(item.get("signature")) == str(signature)),
+                (item for item in self._cached_groups if str(item.get("signature")) == resolved),
                 None,
             )
             if not group:
@@ -160,11 +167,12 @@ class DuplicateService:
     def refresh_group(self, signature: str, folder_names: list[str]) -> dict[str, Any]:
         affected = {str(name) for name in folder_names if str(name)}
         with self._cache_lock:
+            resolved = self._resolve_signature(signature)
             threshold = self._image_threshold()
             replacement_groups = self._build_groups(threshold, folder_names=affected)
             self._cached_groups = [
                 group for group in self._cached_groups
-                if str(group.get("signature")) != str(signature)
+                if str(group.get("signature")) != resolved
             ]
             self._cached_groups.extend(replacement_groups)
             self._cached_groups.sort(
@@ -174,6 +182,14 @@ class DuplicateService:
             self._cache_signature = self._gallery_signature(threshold)
             self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
             return self.list_groups()
+
+    def _resolve_signature(self, signature: str) -> str:
+        current = str(signature)
+        visited = set()
+        while current and current not in visited and current in self._signature_aliases:
+            visited.add(current)
+            current = self._signature_aliases[current]
+        return current
 
     def _build_groups(self, threshold: int, folder_names: set[str] | None = None) -> list[dict[str, Any]]:
         folders = {

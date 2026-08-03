@@ -53,6 +53,14 @@ class DummyLegacyImporter:
         return {"skipped": True}
 
 
+class DummyDuplicateService:
+    def remove_folders(self, _folder_names: list[str]) -> dict[str, object]:
+        return {"active_total": 0}
+
+    def refresh_group(self, _signature: str, _folder_names: list[str]) -> dict[str, object]:
+        return {"active_total": 0}
+
+
 def test_folder_name_prefers_chinese_prefix() -> None:
     used = set()
     folder = build_folder_name(1767139200, "ABC阿巴巴阿巴 world", used)
@@ -868,6 +876,33 @@ def test_cleanup_duplicate_pairs_keeps_post_when_all_images_are_removed(tmp_path
     assert db.get_folder(folder_name) is not None
     assert db.list_assets_for_folder(folder_name) == []
     assert db.get_folder(folder_name)["has_images"] == 0
+
+
+def test_duplicate_deletions_enqueue_independently_while_another_task_is_running(tmp_path: Path) -> None:
+    config = DummyConfig(tmp_path)
+    storage = StorageService(config)
+    storage.ensure()
+    db = Database(config.database_path)
+    db.init()
+    manager = PullManager(db, storage, DummyIndexer(), DummyCleanup(), DummyAuth(), DummyLegacyImporter())
+    manager.attach_duplicate_service(DummyDuplicateService())
+    manager._lock.acquire()
+    try:
+        trash_result = manager.start_duplicate_trash("group-a", "folder-a")
+        cleanup_result = manager.start_duplicate_cleanup(
+            "group-b",
+            ["folder-b", "folder-c"],
+            [{"folder_name": "folder-c", "pair_index": 1}],
+        )
+        queue = manager.status()["queue"]
+    finally:
+        manager._lock.release()
+
+    assert trash_result["queued"] is True
+    assert cleanup_result["queued"] is True
+    assert [item["kind"] for item in queue] == ["duplicate-trash", "duplicate-cleanup"]
+    assert queue[0]["payload"]["args"] == ["group-a", "folder-a"]
+    assert queue[1]["payload"]["args"][0] == "group-b"
 
 
 def test_reject_review_moves_item_to_trash_and_blacklist(tmp_path: Path) -> None:

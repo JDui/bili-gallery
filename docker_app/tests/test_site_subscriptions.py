@@ -2375,6 +2375,49 @@ def test_reset_all_icons_refreshes_up_and_site_icons(tmp_path: Path, monkeypatch
     assert cached_icon.read_bytes() == b"fake png"
 
 
+def test_subscription_and_site_icon_resets_use_separate_tasks(tmp_path: Path, monkeypatch) -> None:
+    from app import main as app_main
+
+    db, _storage, syncer = make_app(tmp_path)
+    calls = []
+
+    class FakeAuth:
+        def get_cookie_state(self):
+            return SimpleNamespace(cookie="test-cookie")
+
+    def reset_subscriptions(cookie: str | None) -> dict:
+        calls.append(("subscriptions", cookie))
+        return {
+            "message": "动态订阅图标重置完成",
+            "result": {"subscriptions": {"total": 1, "updated": 1, "fallback": 0, "failed": 0}, "errors": []},
+        }
+
+    def reset_sites() -> dict:
+        calls.append(("sites", None))
+        return {
+            "message": "站点订阅图标重置完成",
+            "result": {"sites": {"total": 1, "updated": 1, "fallback": 0, "failed": 0}, "errors": []},
+        }
+
+    monkeypatch.setattr(app_main, "db", db)
+    monkeypatch.setattr(app_main, "site_syncer", syncer)
+    monkeypatch.setattr(app_main, "auth", FakeAuth())
+    monkeypatch.setattr(app_main, "_execute_reset_subscription_icons", reset_subscriptions)
+    monkeypatch.setattr(app_main, "_execute_reset_site_icons", reset_sites)
+    client = TestClient(app_main.app)
+
+    subscription_result = client.post("/api/settings/reset-icons/subscriptions").json()
+    subscription_task = wait_for_task(db, "subscription-icons")
+    site_result = client.post("/api/settings/reset-icons/sites").json()
+    site_task = wait_for_task(db, "site-icons")
+
+    assert subscription_result["ok"] is True
+    assert site_result["ok"] is True
+    assert subscription_task["status"] == "success"
+    assert site_task["status"] == "success"
+    assert calls == [("subscriptions", "test-cookie"), ("sites", None)]
+
+
 def test_reset_all_icons_clears_stale_icons_when_missing(tmp_path: Path, monkeypatch) -> None:
     from app import main as app_main
 
