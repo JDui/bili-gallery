@@ -256,7 +256,7 @@ def test_refresh_group_after_cleanup_only_rechecks_affected_folders(tmp_path: Pa
     assert db.get_folder("low-resolution") is not None
 
 
-def test_equal_resolution_duplicates_have_no_cleanup_targets(tmp_path: Path) -> None:
+def test_equal_resolution_duplicates_keep_earlier_post(tmp_path: Path) -> None:
     db, _storage, service = make_services(tmp_path)
     first = int("a5" * 32, 16)
     second = int("3c" * 32, 16)
@@ -266,5 +266,31 @@ def test_equal_resolution_duplicates_have_no_cleanup_targets(tmp_path: Path) -> 
 
     group = service.list_groups()["items"][0]
 
-    assert group["cleanup_candidate_count"] == 0
-    assert service.cleanup_plan(group["signature"])["targets"] == []
+    assert group["cleanup_candidate_count"] == 2
+    assert {
+        (target["folder_name"], target["pair_index"], target["reason"])
+        for target in service.cleanup_plan(group["signature"])["targets"]
+    } == {("first", 1, "later_published"), ("first", 2, "later_published")}
+
+
+def test_equal_resolution_and_time_duplicates_keep_smaller_file(tmp_path: Path) -> None:
+    db, storage, service = make_services(tmp_path)
+    first = int("a5" * 32, 16)
+    second = int("3c" * 32, 16)
+    shared = [fingerprint(first), fingerprint(second)]
+    add_folder(db, "smaller-files", 1, shared)
+    add_folder(db, "larger-files", 1, shared)
+    for folder_name, file_size in (("smaller-files", 64), ("larger-files", 128)):
+        for asset in db.list_assets_for_folder(folder_name):
+            path = storage.resolve_storage_path(asset["rel_path"])
+            assert path is not None
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * file_size)
+
+    group = service.list_groups()["items"][0]
+
+    assert group["cleanup_candidate_count"] == 2
+    assert {
+        (target["folder_name"], target["pair_index"], target["reason"])
+        for target in service.cleanup_plan(group["signature"])["targets"]
+    } == {("larger-files", 1, "larger_file"), ("larger-files", 2, "larger_file")}

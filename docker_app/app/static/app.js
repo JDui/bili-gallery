@@ -4702,7 +4702,8 @@ function galleryApp() {
 
     async confirmCleanupDuplicate(group) {
       const signature = String(group?.signature || "");
-      if (!signature || this.duplicateCleanupConfirmSignature !== signature || this.duplicateActionPending("cleanup", signature)) {
+      const candidateCount = Math.max(0, Number(group?.cleanup_candidate_count) || 0);
+      if (!signature || !candidateCount || this.duplicateCleanupConfirmSignature !== signature || this.duplicateActionPending("cleanup", signature)) {
         return;
       }
       const previousGroups = [...(this.duplicateGroups || [])];

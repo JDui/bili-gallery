@@ -361,7 +361,7 @@ class PullManager:
             raise RuntimeError("重复内容服务未初始化")
         queued = self._queue_or_start(
             "duplicate-cleanup",
-            "仅清理低分辨率重复图片",
+            "仅清理重复图片",
             self._run_duplicate_cleanup,
             str(signature),
             [str(name) for name in folder_names],
@@ -370,7 +370,7 @@ class PullManager:
         return {
             "ok": True,
             "queued": queued,
-            "message": "低分辨率重复图片清理已加入后台队列",
+            "message": "重复图片清理已加入后台队列",
             "target_count": len(targets),
             "sidebar_counts": self.db.refresh_sidebar_count_cache(["tasks"]),
         }
@@ -644,7 +644,7 @@ class PullManager:
                     pair_index,
                     preserve_folder=True,
                     refresh_counts=False,
-                    reason="仅清理低分辨率重复图片",
+                    reason="仅清理重复图片",
                 )
             except RuntimeError:
                 continue
@@ -720,7 +720,7 @@ class PullManager:
         task_id = self.db.create_task_run(
             "duplicate-cleanup",
             "running",
-            "开始清理低分辨率重复图片",
+            "开始清理重复图片",
         )
         try:
             result = self.cleanup_duplicate_pairs(targets)
@@ -729,8 +729,8 @@ class PullManager:
                 "removed": result["removed"],
                 "duplicates_remaining": duplicate_payload["active_total"],
             }
-            self.db.finish_task_run(task_id, "success", "低分辨率重复图片清理完成", details)
-            self._status = {"running": False, "message": "低分辨率重复图片清理完成", "mode": "idle", "stats": details}
+            self.db.finish_task_run(task_id, "success", "重复图片清理完成", details)
+            self._status = {"running": False, "message": "重复图片清理完成", "mode": "idle", "stats": details}
         except Exception as exc:
             self.db.finish_task_run(task_id, "failed", str(exc), {"error": str(exc)})
             self._status = {"running": False, "message": f"重复图片清理失败: {exc}", "mode": "idle"}

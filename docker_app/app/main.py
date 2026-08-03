@@ -235,7 +235,7 @@ def cleanup_duplicate_images(signature: str, payload: dict[str, Any] = Body(...)
     except RuntimeError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not plan["targets"]:
-        raise HTTPException(status_code=400, detail="此分组没有分辨率更低的重复图片")
+        raise HTTPException(status_code=400, detail="此分组没有可清理的重复图片")
     return pull_manager.start_duplicate_cleanup(signature, plan["folder_names"], plan["targets"])
 
 

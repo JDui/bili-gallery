@@ -448,13 +448,13 @@
                             </div>
                             <div class="duplicate-group-actions" @click.stop>
                                 <div class="button-row" x-show="duplicateIgnoreConfirmSignature !== group.signature && duplicateCleanupConfirmSignature !== group.signature">
-                                    <button class="secondary-button" @click="askCleanupDuplicate(group.signature)" :disabled="duplicateActionPending('cleanup', group.signature) || !group.cleanup_candidate_count" :title="group.cleanup_candidate_count ? `可清理 ${group.cleanup_candidate_count} 张低分辨率重复图片` : '没有分辨率更低的重复图片'">仅清理重复</button>
+                                    <button class="secondary-button" @click="askCleanupDuplicate(group.signature)" :disabled="duplicateActionPending('cleanup', group.signature)" :title="group.cleanup_candidate_count ? `可清理 ${group.cleanup_candidate_count} 张重复图片` : '点击查看无法清理的原因'">仅清理重复</button>
                                     <button class="secondary-button" @click="askIgnoreDuplicate(group.signature)">忽略此重复项</button>
                                 </div>
                                 <div class="duplicate-confirm-box duplicate-cleanup-confirm" x-show="duplicateCleanupConfirmSignature === group.signature" x-cloak>
-                                    <span x-text="`将删除 ${group.cleanup_candidate_count} 张分辨率更低的重复图片，所有贴文都会保留。确定继续？`"></span>
-                                    <button class="secondary-button" @click="cancelCleanupDuplicate()">取消</button>
-                                    <button class="primary-button danger-confirm" @click="confirmCleanupDuplicate(group)" :disabled="duplicateActionPending('cleanup', group.signature)">二次确认，仅清理重复</button>
+                                    <span x-text="group.cleanup_candidate_count ? `将按分辨率、发布时间和文件大小规则删除 ${group.cleanup_candidate_count} 张重复图片，所有贴文都会保留。确定继续？` : '这一组没有可安全清理的重复图片。'"></span>
+                                    <button class="secondary-button" @click="cancelCleanupDuplicate()" x-text="group.cleanup_candidate_count ? '取消' : '知道了'"></button>
+                                    <button class="primary-button danger-confirm" x-show="group.cleanup_candidate_count" @click="confirmCleanupDuplicate(group)" :disabled="duplicateActionPending('cleanup', group.signature)">二次确认，仅清理重复</button>
                                 </div>
                                 <div class="duplicate-confirm-box" x-show="duplicateIgnoreConfirmSignature === group.signature" x-cloak>
                                     <span>忽略后此组将不再出现，确定继续？</span>

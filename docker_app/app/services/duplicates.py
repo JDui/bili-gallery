@@ -18,7 +18,7 @@ MAX_HASH_DISTANCE = 32
 MAX_ASPECT_LOG_DISTANCE = 0.24
 LOW_CONTRAST_LIMIT = 12
 LOW_CONTRAST_COLOR_DISTANCE = 36
-DUPLICATE_CACHE_VERSION = 3
+DUPLICATE_CACHE_VERSION = 4
 
 
 @dataclass
@@ -32,6 +32,7 @@ class DuplicateAsset:
     contrast: int
     width: int
     height: int
+    file_size_bytes: int
     preview_url: str | None
     tile: dict[str, Any]
 
@@ -309,6 +310,13 @@ class DuplicateService:
                 continue
             hash_bits, color, contrast = parsed
             tile = self._asset_tile(row)
+            source_path = self.storage.resolve_storage_path(row.get("rel_path"))
+            file_size_bytes = 0
+            if source_path:
+                try:
+                    file_size_bytes = max(0, int(source_path.stat().st_size))
+                except (FileNotFoundError, OSError):
+                    file_size_bytes = 0
             output.append(
                 DuplicateAsset(
                     id=int(row.get("id") or 0),
@@ -320,6 +328,7 @@ class DuplicateService:
                     contrast=contrast,
                     width=max(1, int(row.get("width") or 1)),
                     height=max(1, int(row.get("height") or 1)),
+                    file_size_bytes=file_size_bytes,
                     preview_url=tile.get("small_thumb_url") or tile.get("thumb_url") or tile.get("url"),
                     tile=tile,
                 )
@@ -384,19 +393,16 @@ class DuplicateService:
                 total_matches += 1
                 similarity = round((1 - distance / 256) * 100)
                 link_similarity_total += similarity
-                left_pixels = left.width * left.height
-                right_pixels = right.width * right.height
-                lower = left if left_pixels < right_pixels else right if right_pixels < left_pixels else None
-                higher_pixels = max(left_pixels, right_pixels)
-                if lower is not None:
-                    cleanup_targets[(lower.folder_name, lower.pair_index)] = {
-                        "folder_name": lower.folder_name,
-                        "pair_index": lower.pair_index,
-                        "width": lower.width,
-                        "height": lower.height,
-                        "pixels": lower.width * lower.height,
-                        "compared_pixels": higher_pixels,
-                    }
+                cleanup_asset, cleanup_reason = self._cleanup_asset(left, right, folders)
+                cleanup_targets[(cleanup_asset.folder_name, cleanup_asset.pair_index)] = {
+                    "folder_name": cleanup_asset.folder_name,
+                    "pair_index": cleanup_asset.pair_index,
+                    "width": cleanup_asset.width,
+                    "height": cleanup_asset.height,
+                    "pixels": cleanup_asset.width * cleanup_asset.height,
+                    "file_size_bytes": cleanup_asset.file_size_bytes,
+                    "reason": cleanup_reason,
+                }
                 match_rows.append(
                     {
                         "left_folder_name": left.folder_name,
@@ -468,6 +474,29 @@ class DuplicateService:
             "latest_pub_ts": max((int(item["pub_ts"]) for item in items), default=0),
             "matches": match_rows[:64],
         }
+
+    def _cleanup_asset(
+        self,
+        left: DuplicateAsset,
+        right: DuplicateAsset,
+        folders: dict[str, dict[str, Any]],
+    ) -> tuple[DuplicateAsset, str]:
+        left_pixels = left.width * left.height
+        right_pixels = right.width * right.height
+        if left_pixels != right_pixels:
+            return (left if left_pixels < right_pixels else right), "lower_resolution"
+
+        left_time = int(folders[left.folder_name].get("pub_ts") or 0)
+        right_time = int(folders[right.folder_name].get("pub_ts") or 0)
+        if left_time != right_time:
+            return (left if left_time > right_time else right), "later_published"
+
+        if left.file_size_bytes > 0 and right.file_size_bytes > 0 and left.file_size_bytes != right.file_size_bytes:
+            return (left if left.file_size_bytes > right.file_size_bytes else right), "larger_file"
+
+        left_key = (left.folder_name, left.pair_index, left.id)
+        right_key = (right.folder_name, right.pair_index, right.id)
+        return (left if left_key > right_key else right), "stable_tiebreak"
 
     def _group_without_folders(self, group: dict[str, Any], removed: set[str]) -> dict[str, Any] | None:
         items = [dict(item) for item in group["items"] if str(item["folder_name"]) not in removed]
