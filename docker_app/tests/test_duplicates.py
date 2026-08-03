@@ -226,8 +226,8 @@ def test_duplicate_actions_use_loaded_cache_while_another_cleanup_changes_databa
     }
 
 
-def test_refresh_group_after_cleanup_only_rechecks_affected_folders(tmp_path: Path) -> None:
-    db, _storage, service = make_services(tmp_path)
+def test_complete_cleanup_removes_group_cache_without_rescan(tmp_path: Path) -> None:
+    db, storage, service = make_services(tmp_path)
     first = int("a5" * 32, 16)
     second = int("3c" * 32, 16)
     shared = [fingerprint(first), fingerprint(second)]
@@ -240,20 +240,15 @@ def test_refresh_group_after_cleanup_only_rechecks_affected_folders(tmp_path: Pa
             if int(asset["pair_index"]) == int(target["pair_index"]):
                 db.delete_asset(int(asset["id"]))
 
-    original_build = service._build_groups
-    calls = []
+    service._build_groups = lambda _threshold: (_ for _ in ()).throw(AssertionError("清理后不应重新扫描重复内容"))
+    payload = service.complete_cleanup(group["signature"])
 
-    def scoped_build(threshold: int, folder_names: set[str] | None = None) -> list[dict]:
-        calls.append(folder_names)
-        return original_build(threshold, folder_names=folder_names)
-
-    service._build_groups = scoped_build
-    payload = service.refresh_group(group["signature"], plan["folder_names"])
-
-    assert calls == [{"high-resolution", "low-resolution"}]
     assert payload["items"] == []
     assert db.get_folder("high-resolution") is not None
     assert db.get_folder("low-resolution") is not None
+    restarted = DuplicateService(db, storage)
+    restarted._build_groups = lambda _threshold: (_ for _ in ()).throw(AssertionError("持久化缓存应直接复用"))
+    assert restarted.list_groups()["items"] == []
 
 
 def test_equal_resolution_duplicates_keep_earlier_post(tmp_path: Path) -> None:

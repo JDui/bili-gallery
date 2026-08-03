@@ -57,7 +57,7 @@ class DummyDuplicateService:
     def remove_folders(self, _folder_names: list[str]) -> dict[str, object]:
         return {"active_total": 0}
 
-    def refresh_group(self, _signature: str, _folder_names: list[str]) -> dict[str, object]:
+    def complete_cleanup(self, _signature: str) -> dict[str, object]:
         return {"active_total": 0}
 
 
@@ -876,6 +876,85 @@ def test_cleanup_duplicate_pairs_keeps_post_when_all_images_are_removed(tmp_path
     assert db.get_folder(folder_name) is not None
     assert db.list_assets_for_folder(folder_name) == []
     assert db.get_folder(folder_name)["has_images"] == 0
+
+
+def test_cleanup_duplicate_pairs_batches_index_and_file_maintenance(tmp_path: Path, monkeypatch) -> None:
+    config = DummyConfig(tmp_path)
+    storage = StorageService(config)
+    storage.ensure()
+    db = Database(config.database_path)
+    db.init()
+    folder_name = "20250101_批量清理"
+    db.upsert_folder(
+        {
+            "folder_name": folder_name,
+            "title": "批量清理",
+            "text_prefix": "测试",
+            "pub_ts": 1,
+            "pub_time": "1970-01-01 00:00:01",
+            "top_dynamic_id": "top-batch",
+            "source_dynamic_id": "src-batch",
+            "has_images": True,
+            "has_livephoto": False,
+        }
+    )
+    db.replace_folder_assets(
+        folder_name,
+        "image",
+        [
+            {"pair_index": index, "filename": f"{index:02d}.jpg", "rel_path": f"data/images/{folder_name}/{index:02d}.jpg"}
+            for index in range(1, 4)
+        ],
+    )
+
+    class CountingIndexer(DummyIndexer):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def _replace_gallery_index(self, folder: dict, assets: list[dict]) -> None:
+            self.calls += 1
+
+    class CountingCleanup(DummyCleanup):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self) -> dict[str, int]:
+            self.calls += 1
+            return super().run()
+
+    indexer = CountingIndexer()
+    cleanup = CountingCleanup()
+    manager = PullManager(db, storage, indexer, cleanup, DummyAuth(), DummyLegacyImporter())
+    background_calls = []
+    removed_file_assets = []
+    storage_stat_calls = []
+    monkeypatch.setattr(storage, "remove_asset_files", lambda asset: removed_file_assets.append(int(asset["id"])) or 1)
+    monkeypatch.setattr(manager, "_refresh_storage_stats_cache", lambda: storage_stat_calls.append(True) or {})
+    monkeypatch.setattr(
+        manager,
+        "_run_background_cleanup",
+        lambda target, *args: background_calls.append(target.__name__) or target(*args),
+    )
+    monkeypatch.setattr(db, "list_folders", lambda: (_ for _ in ()).throw(AssertionError("不应按图片重复扫描全部贴文")))
+
+    result = manager.cleanup_duplicate_pairs(
+        [
+            {"folder_name": folder_name, "pair_index": 1},
+            {"folder_name": folder_name, "pair_index": 2},
+        ]
+    )
+
+    assert result["removed"] == [
+        {"folder_name": folder_name, "pair_index": 1},
+        {"folder_name": folder_name, "pair_index": 2},
+    ]
+    assert [int(asset["pair_index"]) for asset in db.list_assets_for_folder(folder_name)] == [3]
+    assert db.list_deleted_pair_indices("top-batch", "src-batch") == {1, 2}
+    assert indexer.calls == 1
+    assert background_calls == ["_remove_duplicate_pair_files"]
+    assert len(removed_file_assets) == 2
+    assert cleanup.calls == 1
+    assert len(storage_stat_calls) == 1
 
 
 def test_duplicate_deletions_enqueue_independently_while_another_task_is_running(tmp_path: Path) -> None:

@@ -629,26 +629,56 @@ class PullManager:
         }
 
     def cleanup_duplicate_pairs(self, targets: list[dict[str, Any]]) -> dict[str, Any]:
-        removed = []
-        seen: set[tuple[str, int]] = set()
+        targets_by_folder: dict[str, set[int]] = {}
         for target in targets:
             folder_name = str(target.get("folder_name") or "")
             pair_index = int(target.get("pair_index") or 0)
-            key = (folder_name, pair_index)
-            if not folder_name or pair_index <= 0 or key in seen:
+            if not folder_name or pair_index <= 0:
                 continue
-            seen.add(key)
-            try:
-                self.delete_pair(
-                    folder_name,
-                    pair_index,
-                    preserve_folder=True,
-                    refresh_counts=False,
-                    reason="仅清理重复图片",
-                )
-            except RuntimeError:
+            targets_by_folder.setdefault(folder_name, set()).add(pair_index)
+
+        removed = []
+        removed_assets: list[dict[str, Any]] = []
+        deleted_pair_marks: list[dict[str, Any]] = []
+        folder_updates: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        for folder_name, pair_indices in targets_by_folder.items():
+            folder = self.db.get_folder(folder_name)
+            if not folder:
                 continue
-            removed.append({"folder_name": folder_name, "pair_index": pair_index})
+            assets = self.db.list_assets_for_folder(folder_name)
+            selected_assets = [asset for asset in assets if int(asset.get("pair_index") or 0) in pair_indices]
+            if not selected_assets:
+                continue
+            selected_asset_ids = {int(asset["id"]) for asset in selected_assets}
+            selected_pair_indices = sorted({int(asset["pair_index"]) for asset in selected_assets})
+            remaining_assets = [asset for asset in assets if int(asset["id"]) not in selected_asset_ids]
+            removed_assets.extend(dict(asset) for asset in selected_assets)
+            removed.extend({"folder_name": folder_name, "pair_index": pair_index} for pair_index in selected_pair_indices)
+            deleted_pair_marks.extend(
+                {
+                    "top_dynamic_id": folder["top_dynamic_id"],
+                    "source_dynamic_id": folder["source_dynamic_id"],
+                    "folder_name": folder_name,
+                    "pair_index": pair_index,
+                    "reason": "仅清理重复图片",
+                }
+                for pair_index in selected_pair_indices
+            )
+            folder_updates.append((folder, remaining_assets))
+
+        self.db.add_deleted_pair_marks(deleted_pair_marks, reason="仅清理重复图片")
+        self.db.delete_assets([int(asset["id"]) for asset in removed_assets])
+        for folder, remaining_assets in folder_updates:
+            folder_name = str(folder["folder_name"])
+            has_images = any(asset.get("media_type") == "image" for asset in remaining_assets)
+            has_livephoto = any(asset.get("media_type") == "livephoto" for asset in remaining_assets)
+            self.db.update_folder_media_flags(folder_name, has_images, has_livephoto)
+            self.indexer._replace_gallery_index(
+                {**folder, "has_images": has_images, "has_livephoto": has_livephoto},
+                remaining_assets,
+            )
+        if removed_assets:
+            self._run_background_cleanup(self._remove_duplicate_pair_files, removed_assets)
         return {
             "removed": removed,
             "sidebar_counts": self._refresh_delete_sidebar_counts(),
@@ -714,7 +744,7 @@ class PullManager:
     def _run_duplicate_cleanup(
         self,
         signature: str,
-        folder_names: list[str],
+        _folder_names: list[str],
         targets: list[dict[str, Any]],
     ) -> None:
         task_id = self.db.create_task_run(
@@ -724,7 +754,7 @@ class PullManager:
         )
         try:
             result = self.cleanup_duplicate_pairs(targets)
-            duplicate_payload = self.duplicate_service.refresh_group(signature, folder_names)
+            duplicate_payload = self.duplicate_service.complete_cleanup(signature)
             details = {
                 "removed": result["removed"],
                 "duplicates_remaining": duplicate_payload["active_total"],
@@ -758,6 +788,12 @@ class PullManager:
             self.storage.remove_asset_files(asset)
         if remove_empty_folder:
             self.storage.remove_folder_assets(folder_name)
+        self.cleanup.run()
+        self._refresh_storage_stats_cache()
+
+    def _remove_duplicate_pair_files(self, assets: list[dict[str, Any]]) -> None:
+        for asset in assets:
+            self.storage.remove_asset_files(asset)
         self.cleanup.run()
         self._refresh_storage_stats_cache()
 

@@ -1701,6 +1701,14 @@ class Database:
         with self.connect() as conn:
             conn.execute("delete from assets where id = ?", (asset_id,))
 
+    def delete_assets(self, asset_ids: list[int]) -> int:
+        normalized = sorted({int(asset_id) for asset_id in asset_ids if int(asset_id) > 0})
+        if not normalized:
+            return 0
+        with self.connect() as conn:
+            conn.executemany("delete from assets where id = ?", [(asset_id,) for asset_id in normalized])
+        return len(normalized)
+
     def update_folder_media_flags(self, folder_name: str, has_images: bool, has_livephoto: bool) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -1749,6 +1757,41 @@ class Database:
                 """,
                 (str(top_dynamic_id), str(source_dynamic_id), folder_name, int(pair_index), reason, now_iso()),
             )
+
+    def add_deleted_pair_marks(self, marks: list[dict[str, Any]], reason: str = "手动删除") -> int:
+        normalized: dict[tuple[str, str, int], tuple[str, str, str, int, str, str]] = {}
+        created_at = now_iso()
+        for mark in marks:
+            top_dynamic_id = str(mark.get("top_dynamic_id") or "")
+            source_dynamic_id = str(mark.get("source_dynamic_id") or "")
+            folder_name = str(mark.get("folder_name") or "")
+            pair_index = int(mark.get("pair_index") or 0)
+            if not top_dynamic_id or not source_dynamic_id or not folder_name or pair_index <= 0:
+                continue
+            normalized[(top_dynamic_id, source_dynamic_id, pair_index)] = (
+                top_dynamic_id,
+                source_dynamic_id,
+                folder_name,
+                pair_index,
+                str(mark.get("reason") or reason),
+                created_at,
+            )
+        if not normalized:
+            return 0
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                insert into deleted_pair_marks(
+                    top_dynamic_id, source_dynamic_id, folder_name, pair_index, reason, created_at
+                )
+                values (?, ?, ?, ?, ?, ?)
+                on conflict(top_dynamic_id, source_dynamic_id, pair_index) do update set
+                    folder_name = excluded.folder_name,
+                    reason = excluded.reason
+                """,
+                list(normalized.values()),
+            )
+        return len(normalized)
 
     def list_deleted_pair_indices(self, top_dynamic_id: str, source_dynamic_id: str) -> set[int]:
         with self.connect() as conn:

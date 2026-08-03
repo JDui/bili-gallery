@@ -175,6 +175,21 @@ class DuplicateService:
                 "targets": [dict(target) for target in group.get("_cleanup_targets", [])],
             }
 
+    def complete_cleanup(self, signature: str) -> dict[str, Any]:
+        self._ensure_operation_cache()
+        with self._cache_lock:
+            resolved = self._resolve_signature(signature)
+            self._cached_groups = [
+                group for group in self._cached_groups
+                if str(group.get("signature")) != resolved
+            ]
+            self._signature_aliases[str(signature)] = ""
+            if resolved and resolved != str(signature):
+                self._signature_aliases[resolved] = ""
+            self._cache_signature = self._gallery_signature(self._image_threshold())
+            self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
+            return self.list_groups()
+
     def refresh_group(self, signature: str, folder_names: list[str]) -> dict[str, Any]:
         affected = {str(name) for name in folder_names if str(name)}
         with self._cache_lock:
