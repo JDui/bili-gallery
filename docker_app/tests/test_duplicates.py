@@ -198,6 +198,34 @@ def test_cleanup_plan_only_selects_lower_resolution_duplicates(tmp_path: Path) -
     } == {("low-resolution", 1), ("low-resolution", 2)}
 
 
+def test_duplicate_actions_use_loaded_cache_while_another_cleanup_changes_database(tmp_path: Path) -> None:
+    db, _storage, service = make_services(tmp_path)
+    first = int("a5" * 32, 16)
+    second = int("3c" * 32, 16)
+    third = int("f0" * 32, 16)
+    fourth = int("0f" * 32, 16)
+    add_folder(db, "group-a-high", 4, [fingerprint(first), fingerprint(second)], width=2400, height=1800)
+    add_folder(db, "group-a-low", 3, [fingerprint(first ^ 1), fingerprint(second ^ 3)], width=1200, height=900)
+    add_folder(db, "group-b-high", 2, [fingerprint(third), fingerprint(fourth)], width=2400, height=1800)
+    add_folder(db, "group-b-low", 1, [fingerprint(third ^ 1), fingerprint(fourth ^ 3)], width=1200, height=900)
+    groups = service.list_groups()["items"]
+    target_group = next(group for group in groups if any(item["folder_name"] == "group-b-high" for item in group["items"]))
+
+    changing_asset = db.list_assets_for_folder("group-a-low")[0]
+    db.delete_asset(int(changing_asset["id"]))
+    service._build_groups = lambda _threshold: (_ for _ in ()).throw(AssertionError("操作期间不应重新全局检测"))
+
+    plan = service.cleanup_plan(target_group["signature"])
+    loaded_group = service.get_group(target_group["signature"])
+
+    assert loaded_group is not None
+    assert {item["folder_name"] for item in loaded_group["items"]} == {"group-b-high", "group-b-low"}
+    assert {(target["folder_name"], target["pair_index"]) for target in plan["targets"]} == {
+        ("group-b-low", 1),
+        ("group-b-low", 2),
+    }
+
+
 def test_refresh_group_after_cleanup_only_rechecks_affected_folders(tmp_path: Path) -> None:
     db, _storage, service = make_services(tmp_path)
     first = int("a5" * 32, 16)

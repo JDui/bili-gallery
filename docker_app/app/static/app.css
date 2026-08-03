@@ -4814,6 +4814,7 @@ html.is-interacting .detail-thumb::before {
 .settings-icon-reset-grid {
     display: grid;
     gap: 8px;
+    container-type: inline-size;
 }
 
 .settings-icon-reset-row {
@@ -4827,6 +4828,10 @@ html.is-interacting .detail-thumb::before {
     background: rgba(246, 249, 253, 0.9);
 }
 
+.settings-icon-reset-row > div {
+    min-width: 0;
+}
+
 .settings-icon-reset-row > div:first-child {
     display: grid;
     gap: 3px;
@@ -4835,6 +4840,24 @@ html.is-interacting .detail-thumb::before {
 .settings-icon-reset-row span {
     color: var(--muted);
     font-size: 12px;
+}
+
+@container (max-width: 520px) {
+    .settings-icon-reset-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .workspace .settings-icon-reset-row .button-row {
+        width: 100%;
+        min-width: 0;
+        justify-content: stretch;
+    }
+
+    .workspace .settings-icon-reset-row .button-row > .confirm-anchor {
+        width: 100%;
+        min-width: 0;
+        flex: 1 1 auto;
+    }
 }
 
 @keyframes review-card-remove {
@@ -4875,11 +4898,19 @@ html.is-interacting .detail-thumb::before {
     }
 
     .settings-icon-reset-row {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .settings-icon-reset-row .button-row {
-        justify-content: flex-start;
+        width: 100%;
+        min-width: 0;
+        justify-content: stretch;
+    }
+
+    .workspace .settings-icon-reset-row .button-row > .confirm-anchor {
+        width: 100%;
+        min-width: 0;
+        flex: 1 1 auto;
     }
 }
 

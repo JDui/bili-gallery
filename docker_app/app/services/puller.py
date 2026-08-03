@@ -1452,8 +1452,8 @@ class PullManager:
             else:
                 self.db.set_gallery_index_rebuilding(False)
             self._cooperate()
-            self._set_progress("startup", "正在统计存储占用", processed=4, total=5, next_step="写入任务日志")
-            storage_stats = self._refresh_storage_stats_cache()
+            self._set_progress("startup", "正在读取存储统计", processed=4, total=5, next_step="写入任务日志")
+            storage_stats = self.storage_stats()
             details = {
                 "import": import_stats,
                 "cleanup": cleanup_stats,

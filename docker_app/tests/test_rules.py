@@ -905,6 +905,39 @@ def test_duplicate_deletions_enqueue_independently_while_another_task_is_running
     assert queue[1]["payload"]["args"][0] == "group-b"
 
 
+def test_startup_sync_reuses_persistent_storage_stats_cache(tmp_path: Path, monkeypatch) -> None:
+    config = DummyConfig(tmp_path)
+    storage = StorageService(config)
+    storage.ensure()
+    db = Database(config.database_path)
+    db.init()
+    cached_stats = {
+        "image_bytes": 1024,
+        "thumbnail_bytes": 256,
+        "trash_bytes": 0,
+        "image_files": 10,
+        "thumbnail_files": 20,
+        "trash_files": 0,
+        "updated_at": "2026-08-04T00:00:00+08:00",
+    }
+    db.set_storage_stats_cache(cached_stats)
+    monkeypatch.setattr(db, "list_folders", lambda: [{"folder_name": "cached-folder"}])
+    monkeypatch.setattr(db, "gallery_index_needs_rebuild", lambda: False)
+    monkeypatch.setattr(db, "gallery_index_status", lambda: {"stale": False})
+
+    def fail_if_scanned(_trash_items) -> dict[str, int]:
+        raise AssertionError("启动时不应再次扫描存储目录")
+
+    monkeypatch.setattr(storage, "storage_usage_stats", fail_if_scanned)
+    manager = PullManager(db, storage, DummyIndexer(), DummyCleanup(), DummyAuth(), DummyLegacyImporter())
+    manager._lock.acquire()
+
+    manager._run_startup_sync()
+
+    assert manager.status()["running"] is False
+    assert manager.status()["stats"]["storage_stats"] == cached_stats
+
+
 def test_reject_review_moves_item_to_trash_and_blacklist(tmp_path: Path) -> None:
     config = DummyConfig(tmp_path)
     storage = StorageService(config)

@@ -108,9 +108,19 @@ class DuplicateService:
             }
 
     def get_group(self, signature: str, include_ignored: bool = False) -> dict[str, Any] | None:
-        payload = self.list_groups(include_ignored=include_ignored)
-        resolved = self._resolve_signature(signature)
-        return next((group for group in payload["items"] if group["signature"] == resolved), None)
+        self._ensure_operation_cache()
+        with self._cache_lock:
+            resolved = self._resolve_signature(signature)
+            group = next(
+                (item for item in self._cached_groups if str(item.get("signature")) == resolved),
+                None,
+            )
+            if not group:
+                return None
+            ignored = resolved in self.db.list_ignored_duplicate_signatures()
+            if ignored and not include_ignored:
+                return None
+            return self._public_group(group, ignored=ignored)
 
     def ignore_group(self, signature: str) -> dict[str, Any]:
         group = self.get_group(signature)
@@ -150,7 +160,7 @@ class DuplicateService:
             return self.list_groups()
 
     def cleanup_plan(self, signature: str) -> dict[str, Any]:
-        self.list_groups(include_ignored=True)
+        self._ensure_operation_cache()
         with self._cache_lock:
             resolved = self._resolve_signature(signature)
             group = next(
@@ -168,8 +178,9 @@ class DuplicateService:
         affected = {str(name) for name in folder_names if str(name)}
         with self._cache_lock:
             resolved = self._resolve_signature(signature)
-            threshold = self._image_threshold()
-            replacement_groups = self._build_groups(threshold, folder_names=affected)
+        threshold = self._image_threshold()
+        replacement_groups = self._build_groups(threshold, folder_names=affected)
+        with self._cache_lock:
             self._cached_groups = [
                 group for group in self._cached_groups
                 if str(group.get("signature")) != resolved
@@ -182,6 +193,12 @@ class DuplicateService:
             self._cache_signature = self._gallery_signature(threshold)
             self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
             return self.list_groups()
+
+    def _ensure_operation_cache(self) -> None:
+        with self._cache_lock:
+            loaded = bool(self._cache_signature)
+        if not loaded:
+            self.list_groups(include_ignored=True)
 
     def _resolve_signature(self, signature: str) -> str:
         current = str(signature)
