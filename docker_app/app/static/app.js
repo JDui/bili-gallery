@@ -128,6 +128,9 @@ function galleryApp() {
     duplicateGroups: [],
     duplicateLoading: false,
     duplicateImageThreshold: 2,
+    duplicateHasCache: false,
+    duplicateCacheStale: false,
+    duplicateCacheUpdatedAt: null,
     duplicatePendingActions: {},
     duplicateIgnoreConfirmSignature: null,
     duplicateCleanupConfirmSignature: null,
@@ -4561,6 +4564,9 @@ function galleryApp() {
     applyDuplicatePayload(payload) {
       this.duplicateGroups = payload?.items || [];
       this.duplicateImageThreshold = Math.max(1, Number(payload?.image_threshold) || 2);
+      this.duplicateHasCache = !!payload?.has_cache;
+      this.duplicateCacheStale = !!payload?.cache_stale;
+      this.duplicateCacheUpdatedAt = payload?.cache_updated_at || null;
       this.sidebarCounts = { ...this.sidebarCounts, duplicates: Number(payload?.active_total) || 0 };
       this.lazyLoaded.duplicates = true;
       const signatures = new Set(this.duplicateGroups.map((group) => group.signature));

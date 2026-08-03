@@ -11,14 +11,14 @@ from typing import Any
 from app.db import Database
 from app.services.image_similarity import color_distance, hamming_distance, image_fingerprint, parse_fingerprint
 from app.services.storage import StorageService
-from app.services.utils import loads_json
+from app.services.utils import loads_json, now_iso
 
 
 MAX_HASH_DISTANCE = 32
 MAX_ASPECT_LOG_DISTANCE = 0.24
 LOW_CONTRAST_LIMIT = 12
 LOW_CONTRAST_COLOR_DISTANCE = 36
-DUPLICATE_CACHE_VERSION = 4
+DUPLICATE_CACHE_VERSION = 5
 
 
 @dataclass
@@ -75,23 +75,40 @@ class DuplicateService:
         self.storage = storage
         self._cache_signature = ""
         self._cached_groups: list[dict[str, Any]] = []
+        self._cache_updated_at: str | None = None
+        self._has_cache = False
+        self._cache_stale = True
         self._signature_aliases: dict[str, str] = {}
         self._cache_lock = threading.RLock()
 
     def list_groups(self, include_ignored: bool = False, force: bool = False) -> dict[str, Any]:
         with self._cache_lock:
             threshold = self._image_threshold()
-            signature = self._gallery_signature(threshold)
-            if force or signature != self._cache_signature:
+            cache_key = self._cache_key(threshold)
+            if force:
                 self._signature_aliases = {}
-                cached_groups = None if force else self.db.get_duplicate_group_cache(signature)
-                if cached_groups is None:
-                    self._cached_groups = self._build_groups(threshold)
-                    signature = self._gallery_signature(threshold)
-                    self.db.set_duplicate_group_cache(signature, self._cached_groups)
+                self._cached_groups = self._build_groups(threshold)
+                self.db.set_duplicate_group_cache(cache_key, self._cached_groups)
+                self._cache_signature = cache_key
+                self._cache_updated_at = now_iso()
+                self._has_cache = True
+                self._cache_stale = False
+            elif not self._cache_signature:
+                cached = self.db.get_latest_duplicate_group_cache()
+                if cached and str(cached["cache_key"]).startswith(f"v{DUPLICATE_CACHE_VERSION}:"):
+                    self._cached_groups = list(cached["groups"])
+                    self._cache_signature = str(cached["cache_key"])
+                    self._cache_updated_at = cached.get("updated_at")
+                    self._has_cache = True
+                    self._cache_stale = self._cache_signature != cache_key
                 else:
-                    self._cached_groups = cached_groups
-                self._cache_signature = signature
+                    self._cached_groups = []
+                    self._cache_signature = cache_key
+                    self._cache_updated_at = None
+                    self._has_cache = False
+                    self._cache_stale = True
+            else:
+                self._cache_stale = not self._has_cache or self._cache_signature != cache_key
             ignored = self.db.list_ignored_duplicate_signatures()
             groups = [
                 self._public_group(group, ignored=group["signature"] in ignored)
@@ -105,7 +122,9 @@ class DuplicateService:
                 "total": len(groups),
                 "active_total": active_total,
                 "image_threshold": threshold,
-                "scanned_folders": len(self.db.list_folders()),
+                "has_cache": self._has_cache,
+                "cache_stale": self._cache_stale,
+                "cache_updated_at": self._cache_updated_at,
             }
 
     def get_group(self, signature: str, include_ignored: bool = False) -> dict[str, Any] | None:
@@ -140,6 +159,7 @@ class DuplicateService:
         }
 
     def remove_folders(self, folder_names: list[str]) -> dict[str, Any]:
+        self._ensure_operation_cache()
         removed = {str(name) for name in folder_names if str(name)}
         if not removed:
             return self.list_groups()
@@ -156,8 +176,7 @@ class DuplicateService:
                 else:
                     self._signature_aliases[str(group["signature"])] = ""
             self._cached_groups = groups
-            self._cache_signature = self._gallery_signature(self._image_threshold())
-            self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
+            self._persist_incremental_cache()
             return self.list_groups()
 
     def cleanup_plan(self, signature: str) -> dict[str, Any]:
@@ -186,29 +205,15 @@ class DuplicateService:
             self._signature_aliases[str(signature)] = ""
             if resolved and resolved != str(signature):
                 self._signature_aliases[resolved] = ""
-            self._cache_signature = self._gallery_signature(self._image_threshold())
-            self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
+            self._persist_incremental_cache()
             return self.list_groups()
 
-    def refresh_group(self, signature: str, folder_names: list[str]) -> dict[str, Any]:
-        affected = {str(name) for name in folder_names if str(name)}
-        with self._cache_lock:
-            resolved = self._resolve_signature(signature)
-        threshold = self._image_threshold()
-        replacement_groups = self._build_groups(threshold, folder_names=affected)
-        with self._cache_lock:
-            self._cached_groups = [
-                group for group in self._cached_groups
-                if str(group.get("signature")) != resolved
-            ]
-            self._cached_groups.extend(replacement_groups)
-            self._cached_groups.sort(
-                key=lambda group: (group["latest_pub_ts"], group["similarity"]),
-                reverse=True,
-            )
-            self._cache_signature = self._gallery_signature(threshold)
-            self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
-            return self.list_groups()
+    def _persist_incremental_cache(self) -> None:
+        if not self._cache_stale:
+            self._cache_signature = self._cache_key(self._image_threshold())
+        self.db.set_duplicate_group_cache(self._cache_signature, self._cached_groups)
+        self._cache_updated_at = now_iso()
+        self._has_cache = True
 
     def _ensure_operation_cache(self) -> None:
         with self._cache_lock:
@@ -303,8 +308,8 @@ class DuplicateService:
         except (TypeError, ValueError):
             return 2
 
-    def _gallery_signature(self, threshold: int) -> str:
-        return f"v{DUPLICATE_CACHE_VERSION}:{self.db.duplicate_content_signature()}:{threshold}"
+    def _cache_key(self, threshold: int) -> str:
+        return f"v{DUPLICATE_CACHE_VERSION}:{threshold}"
 
     def _duplicate_assets(self, folders: dict[str, dict[str, Any]]) -> list[DuplicateAsset]:
         output = []

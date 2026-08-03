@@ -74,6 +74,38 @@ def add_folder(
     )
 
 
+def test_duplicate_detection_only_runs_when_forced(tmp_path: Path) -> None:
+    db, _storage, service = make_services(tmp_path)
+    first = int("a5" * 32, 16)
+    second = int("3c" * 32, 16)
+    add_folder(db, "folder-a", 2, [fingerprint(first), fingerprint(second)])
+    add_folder(db, "folder-b", 1, [fingerprint(first ^ 1), fingerprint(second ^ 3)])
+    original_build = service._build_groups
+    calls = []
+
+    def unexpected_content_scan() -> str:
+        raise AssertionError("普通缓存读取不应统计全量图片内容")
+
+    def tracked_build(threshold: int, folder_names: set[str] | None = None) -> list[dict]:
+        calls.append((threshold, folder_names))
+        return original_build(threshold, folder_names=folder_names)
+
+    service._build_groups = tracked_build
+    db.duplicate_content_signature = unexpected_content_scan
+
+    initial = service.list_groups()
+    scanned = service.list_groups(force=True)
+    db.save_settings({"duplicate_image_threshold": 3})
+    stale = service.list_groups()
+
+    assert initial["has_cache"] is False
+    assert initial["items"] == []
+    assert scanned["active_total"] == 1
+    assert stale["active_total"] == 1
+    assert stale["cache_stale"] is True
+    assert calls == [(2, None)]
+
+
 def test_duplicate_groups_require_persisted_image_threshold(tmp_path: Path) -> None:
     db, _storage, service = make_services(tmp_path)
     first = int("a5" * 32, 16)
@@ -83,7 +115,8 @@ def test_duplicate_groups_require_persisted_image_threshold(tmp_path: Path) -> N
     add_folder(db, "folder-b", 2, [fingerprint(first ^ 1), fingerprint(second ^ 3), fingerprint(int("0f" * 32, 16))])
     add_folder(db, "folder-c", 1, [fingerprint(first ^ 2), fingerprint(int("55" * 32, 16)), fingerprint(int("99" * 32, 16))])
 
-    payload = service.list_groups()
+    assert service.list_groups()["has_cache"] is False
+    payload = service.list_groups(force=True)
 
     assert payload["image_threshold"] == 2
     assert payload["active_total"] == 1
@@ -102,7 +135,10 @@ def test_duplicate_groups_require_persisted_image_threshold(tmp_path: Path) -> N
 
     db.save_settings({"duplicate_image_threshold": 3})
     assert Database(db.db_path).get_settings()["duplicate_image_threshold"] == 3
-    assert service.list_groups()["active_total"] == 0
+    stale_payload = service.list_groups()
+    assert stale_payload["active_total"] == 1
+    assert stale_payload["cache_stale"] is True
+    assert service.list_groups(force=True)["active_total"] == 0
 
 
 def test_ignored_duplicate_group_stays_hidden(tmp_path: Path) -> None:
@@ -111,7 +147,7 @@ def test_ignored_duplicate_group_stays_hidden(tmp_path: Path) -> None:
     second = int("3c" * 32, 16)
     add_folder(db, "folder-a", 2, [fingerprint(first), fingerprint(second)])
     add_folder(db, "folder-b", 1, [fingerprint(first ^ 1), fingerprint(second ^ 3)])
-    group = service.list_groups()["items"][0]
+    group = service.list_groups(force=True)["items"][0]
 
     result = service.ignore_group(group["signature"])
 
@@ -137,7 +173,7 @@ def test_low_contrast_images_with_different_colors_are_not_duplicates(tmp_path: 
         [fingerprint(flat_hash, "3040d0", 4), fingerprint(flat_hash, "3040d0", 4)],
     )
 
-    assert service.list_groups()["items"] == []
+    assert service.list_groups(force=True)["items"] == []
 
 
 def test_removing_duplicate_folders_updates_cache_without_global_rescan(tmp_path: Path) -> None:
@@ -149,7 +185,7 @@ def test_removing_duplicate_folders_updates_cache_without_global_rescan(tmp_path
     add_folder(db, "more-images", 2, [*shared, fingerprint(int("f0" * 32, 16))])
     add_folder(db, "earlier", 1, shared)
 
-    group = service.list_groups()["items"][0]
+    group = service.list_groups(force=True)["items"][0]
     tags = {item["folder_name"]: item["feature_tags"] for item in group["items"]}
     assert "更高分辨率" in tags["high-resolution"]
     assert "更多图片" in tags["more-images"]
@@ -183,7 +219,7 @@ def test_cleanup_plan_only_selects_lower_resolution_duplicates(tmp_path: Path) -
     add_folder(db, "high-resolution", 2, shared, width=2400, height=1800)
     add_folder(db, "low-resolution", 1, shared, width=1200, height=900)
 
-    group = service.list_groups()["items"][0]
+    group = service.list_groups(force=True)["items"][0]
     assert group["cleanup_candidate_count"] == 2
     assert {item["duplicate_ratio"] for item in group["items"]} == {100}
 
@@ -208,7 +244,7 @@ def test_duplicate_actions_use_loaded_cache_while_another_cleanup_changes_databa
     add_folder(db, "group-a-low", 3, [fingerprint(first ^ 1), fingerprint(second ^ 3)], width=1200, height=900)
     add_folder(db, "group-b-high", 2, [fingerprint(third), fingerprint(fourth)], width=2400, height=1800)
     add_folder(db, "group-b-low", 1, [fingerprint(third ^ 1), fingerprint(fourth ^ 3)], width=1200, height=900)
-    groups = service.list_groups()["items"]
+    groups = service.list_groups(force=True)["items"]
     target_group = next(group for group in groups if any(item["folder_name"] == "group-b-high" for item in group["items"]))
 
     changing_asset = db.list_assets_for_folder("group-a-low")[0]
@@ -233,7 +269,7 @@ def test_complete_cleanup_removes_group_cache_without_rescan(tmp_path: Path) -> 
     shared = [fingerprint(first), fingerprint(second)]
     add_folder(db, "high-resolution", 2, shared, width=2400, height=1800)
     add_folder(db, "low-resolution", 1, shared, width=1200, height=900)
-    group = service.list_groups()["items"][0]
+    group = service.list_groups(force=True)["items"][0]
     plan = service.cleanup_plan(group["signature"])
     for target in plan["targets"]:
         for asset in db.list_assets_for_folder(target["folder_name"]):
@@ -259,7 +295,7 @@ def test_equal_resolution_duplicates_keep_earlier_post(tmp_path: Path) -> None:
     add_folder(db, "first", 2, shared)
     add_folder(db, "second", 1, shared)
 
-    group = service.list_groups()["items"][0]
+    group = service.list_groups(force=True)["items"][0]
 
     assert group["cleanup_candidate_count"] == 2
     assert {
@@ -282,7 +318,7 @@ def test_equal_resolution_and_time_duplicates_keep_smaller_file(tmp_path: Path) 
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"x" * file_size)
 
-    group = service.list_groups()["items"][0]
+    group = service.list_groups(force=True)["items"][0]
 
     assert group["cleanup_candidate_count"] == 2
     assert {

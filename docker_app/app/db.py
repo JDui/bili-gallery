@@ -1644,6 +1644,22 @@ class Database:
             return None
         return [dict(group) for group in payload if isinstance(group, dict)]
 
+    def get_latest_duplicate_group_cache(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select cache_key, groups_json, updated_at from duplicate_group_cache where id = 1",
+            ).fetchone()
+        if not row:
+            return None
+        groups = loads_json(row["groups_json"], None)
+        if not isinstance(groups, list):
+            return None
+        return {
+            "cache_key": str(row["cache_key"]),
+            "groups": [dict(group) for group in groups if isinstance(group, dict)],
+            "updated_at": row["updated_at"],
+        }
+
     def set_duplicate_group_cache(self, cache_key: str, groups: list[dict[str, Any]]) -> None:
         with self.connect() as conn:
             conn.execute(

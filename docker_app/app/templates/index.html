@@ -432,8 +432,13 @@
                     </div>
                     <div class="button-row">
                         <span class="inline-tag" x-text="`至少 ${duplicateImageThreshold} 张相似图片`"></span>
-                        <button class="secondary-button" @click="refreshDuplicates(true)" :disabled="duplicateLoading" x-text="duplicateLoading ? '检测中' : '重新检测'"></button>
+                        <span class="inline-tag" x-show="duplicateCacheStale" x-cloak>检测结果已过期</span>
+                        <button class="secondary-button" @click="refreshDuplicates(true)" :disabled="duplicateLoading" x-text="duplicateLoading ? '检测中' : (duplicateHasCache ? '重新检测' : '开始检测')"></button>
                     </div>
+                </div>
+                <div class="empty-card compact-empty" x-show="!duplicateHasCache && !duplicateLoading" x-cloak>
+                    <strong>尚未执行重复内容检测</strong>
+                    <p>系统不会自动扫描图库。需要时请点击“开始检测”。</p>
                 </div>
                 <template x-for="(group, groupIndex) in duplicateGroups" :key="group.group_key || group.signature">
                     <article class="duplicate-group-card" x-transition.opacity.duration.180ms>
