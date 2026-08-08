@@ -31,6 +31,7 @@ from app.services.legacy_bridge import (
 )
 from app.services.media_indexer import MediaIndexer
 from app.services.storage import StorageService
+from app.services.task_priority import BACKGROUND, TaskPriorityCoordinator
 from app.services.utils import build_folder_name, compact_text, dumps_json, extract_chinese_prefix, loads_json
 from app.services.utils import now_iso
 
@@ -65,6 +66,7 @@ class QueuedTask:
     label: str
     payload: dict[str, Any] = field(default_factory=dict)
     queued_at: str = field(default_factory=now_iso)
+    priority: str = BACKGROUND
 
 
 def live_url(pic: dict) -> str:
@@ -130,6 +132,7 @@ class PullManager:
         cleanup: CleanupService,
         auth: BilibiliAuthService,
         legacy_importer: LegacyImporter,
+        priority: TaskPriorityCoordinator | None = None,
     ) -> None:
         self.db = db
         self.storage = storage
@@ -137,6 +140,7 @@ class PullManager:
         self.cleanup = cleanup
         self.auth = auth
         self.legacy_importer = legacy_importer
+        self.priority = priority
         self._lock = threading.Lock()
         self._queue_lock = threading.Lock()
         self._queue: deque[QueuedTask] = deque()
@@ -245,6 +249,7 @@ class PullManager:
         }
 
     def unsubscribe_and_delete(self, uid: str) -> dict[str, Any]:
+        self._background_checkpoint()
         subscription = self.db.get_subscription(uid)
         if not subscription:
             raise RuntimeError("订阅不存在")
@@ -406,6 +411,8 @@ class PullManager:
             queue.append({**task.__dict__, "position": position})
         return {
             **status,
+            "priority": BACKGROUND if status.get("running") else "idle",
+            "priority_scheduler": self.priority.snapshot() if self.priority is not None else {},
             "paused": self._pause_requested,
             "cancel_requested": self._cancel_requested,
             "queue": queue,
@@ -498,6 +505,7 @@ class PullManager:
         raise RuntimeError("当前任务不支持重试")
 
     def move_to_trash(self, folder_name: str, reason: str = "不喜欢") -> dict[str, Any]:
+        self._background_checkpoint()
         folder = next((item for item in self.db.list_folders() if item["folder_name"] == folder_name), None)
         if not folder:
             raise RuntimeError("动态不存在")
@@ -565,6 +573,7 @@ class PullManager:
         return {"ok": True, "message": "已忽略并移入垃圾桶"}
 
     def clear_all_content(self) -> dict[str, Any]:
+        self._background_checkpoint()
         if not self._acquire(mode="clear", message="正在清空内容数据"):
             raise RuntimeError("已有任务正在执行")
         try:
@@ -588,6 +597,7 @@ class PullManager:
         refresh_counts: bool = True,
         reason: str = "手动删除",
     ) -> dict[str, Any]:
+        self._background_checkpoint()
         folder = next((item for item in self.db.list_folders() if item["folder_name"] == folder_name), None)
         if not folder:
             raise RuntimeError("动态不存在")
@@ -629,6 +639,7 @@ class PullManager:
         }
 
     def cleanup_duplicate_pairs(self, targets: list[dict[str, Any]]) -> dict[str, Any]:
+        self._background_checkpoint()
         targets_by_folder: dict[str, set[int]] = {}
         for target in targets:
             folder_name = str(target.get("folder_name") or "")
@@ -642,6 +653,7 @@ class PullManager:
         deleted_pair_marks: list[dict[str, Any]] = []
         folder_updates: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
         for folder_name, pair_indices in targets_by_folder.items():
+            self._background_checkpoint()
             folder = self.db.get_folder(folder_name)
             if not folder:
                 continue
@@ -774,6 +786,7 @@ class PullManager:
 
     def _background_cleanup_entry(self, target, args: tuple[Any, ...]) -> None:
         try:
+            self._background_checkpoint()
             target(*args)
         except Exception:
             return
@@ -785,6 +798,7 @@ class PullManager:
 
     def _remove_pair_files(self, assets: list[dict[str, Any]], folder_name: str, remove_empty_folder: bool) -> None:
         for asset in assets:
+            self._background_checkpoint()
             self.storage.remove_asset_files(asset)
         if remove_empty_folder:
             self.storage.remove_folder_assets(folder_name)
@@ -793,6 +807,7 @@ class PullManager:
 
     def _remove_duplicate_pair_files(self, assets: list[dict[str, Any]]) -> None:
         for asset in assets:
+            self._background_checkpoint()
             self.storage.remove_asset_files(asset)
         self.cleanup.run()
         self._refresh_storage_stats_cache()
@@ -2482,11 +2497,25 @@ class PullManager:
             thread.start()
 
     def _cooperate(self) -> None:
+        waited = self._background_checkpoint()
+        if waited > 0:
+            self._status = {
+                **self._status,
+                "running": True,
+                "priority": BACKGROUND,
+                "message": self._status.get("message") or "后台任务执行中",
+                "foreground_yields": int(self._status.get("foreground_yields") or 0) + 1,
+            }
         while self._pause_requested and not self._cancel_requested:
             self._status = {**self._status, "running": True, "message": "任务已暂停，等待继续", "paused": True}
             time.sleep(0.25)
         if self._cancel_requested:
             raise RuntimeError("任务已取消")
+
+    def _background_checkpoint(self) -> float:
+        if self.priority is None:
+            return 0.0
+        return self.priority.background_checkpoint()
 
     def _latest_task_run(self, task_types: list[str]) -> dict[str, Any] | None:
         latest = None

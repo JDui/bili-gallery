@@ -11,6 +11,7 @@ from typing import Any
 from app.db import Database
 from app.services.image_similarity import color_distance, hamming_distance, image_fingerprint, parse_fingerprint
 from app.services.storage import StorageService
+from app.services.task_priority import TaskPriorityCoordinator
 from app.services.utils import loads_json, now_iso
 
 
@@ -70,9 +71,15 @@ class BKNode:
 
 
 class DuplicateService:
-    def __init__(self, db: Database, storage: StorageService) -> None:
+    def __init__(
+        self,
+        db: Database,
+        storage: StorageService,
+        priority: TaskPriorityCoordinator | None = None,
+    ) -> None:
         self.db = db
         self.storage = storage
+        self.priority = priority
         self._cache_signature = ""
         self._cached_groups: list[dict[str, Any]] = []
         self._cache_updated_at: str | None = None
@@ -82,18 +89,21 @@ class DuplicateService:
         self._cache_lock = threading.RLock()
 
     def list_groups(self, include_ignored: bool = False, force: bool = False) -> dict[str, Any]:
-        with self._cache_lock:
-            threshold = self._image_threshold()
-            cache_key = self._cache_key(threshold)
-            if force:
+        threshold = self._image_threshold()
+        cache_key = self._cache_key(threshold)
+        if force:
+            rebuilt_groups = self._build_groups(threshold)
+            with self._cache_lock:
                 self._signature_aliases = {}
-                self._cached_groups = self._build_groups(threshold)
+                self._cached_groups = rebuilt_groups
                 self.db.set_duplicate_group_cache(cache_key, self._cached_groups)
                 self._cache_signature = cache_key
                 self._cache_updated_at = now_iso()
                 self._has_cache = True
                 self._cache_stale = False
-            elif not self._cache_signature:
+
+        with self._cache_lock:
+            if not self._cache_signature:
                 cached = self.db.get_latest_duplicate_group_cache()
                 if cached and str(cached["cache_key"]).startswith(f"v{DUPLICATE_CACHE_VERSION}:"):
                     self._cached_groups = list(cached["groups"])
@@ -230,6 +240,7 @@ class DuplicateService:
         return current
 
     def _build_groups(self, threshold: int, folder_names: set[str] | None = None) -> list[dict[str, Any]]:
+        self._background_checkpoint()
         folders = {
             str(item["folder_name"]): item
             for item in self.db.list_folders()
@@ -241,6 +252,7 @@ class DuplicateService:
         candidates: dict[tuple[str, str], list[tuple[int, int, int]]] = defaultdict(list)
         root: BKNode | None = None
         for index, asset in enumerate(assets):
+            self._background_checkpoint()
             matches: list[int] = []
             if root is not None:
                 root.query(asset.hash_bits, MAX_HASH_DISTANCE, matches)
@@ -259,6 +271,7 @@ class DuplicateService:
 
         accepted_links: dict[tuple[str, str], list[tuple[int, int, int]]] = {}
         for folder_pair, pair_matches in candidates.items():
+            self._background_checkpoint()
             selected = self._greedy_matches(pair_matches)
             if len(selected) >= threshold:
                 accepted_links[folder_pair] = selected
@@ -290,6 +303,7 @@ class DuplicateService:
         for asset in assets:
             assets_by_folder[asset.folder_name].append(asset)
         for member_names in components.values():
+            self._background_checkpoint()
             if len(member_names) < 2:
                 continue
             links = {
@@ -315,6 +329,7 @@ class DuplicateService:
         output = []
         fingerprint_updates: dict[int, str] = {}
         for row in self.db.list_all_assets():
+            self._background_checkpoint()
             if row.get("media_type") != "image" or row.get("folder_name") not in folders:
                 continue
             fingerprint = str(row.get("duplicate_fingerprint") or "")
@@ -365,6 +380,10 @@ class DuplicateService:
         if max(left.contrast, right.contrast) <= LOW_CONTRAST_LIMIT:
             return color_distance(left.color, right.color) <= LOW_CONTRAST_COLOR_DISTANCE
         return True
+
+    def _background_checkpoint(self) -> None:
+        if self.priority is not None:
+            self.priority.background_checkpoint()
 
     def _greedy_matches(self, matches: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
         selected = []

@@ -5,11 +5,13 @@ from pathlib import Path
 
 from app.config import AppConfig
 from app.services.utils import date_key, loads_json, safe_slug
+from app.services.task_priority import TaskPriorityCoordinator
 
 
 class StorageService:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, priority: TaskPriorityCoordinator | None = None) -> None:
         self.config = config
+        self.priority = priority
 
     def ensure(self) -> None:
         self.config.config_dir.mkdir(parents=True, exist_ok=True)
@@ -34,6 +36,7 @@ class StorageService:
         return folder
 
     def remove_site_source_assets(self, source_slug: str) -> int:
+        self._background_checkpoint()
         folder = self.config.data_dir / "sites" / safe_slug(source_slug, "source")
         if not folder.exists():
             return 0
@@ -44,6 +47,7 @@ class StorageService:
     def remove_folder_assets(self, folder_name: str) -> int:
         removed = 0
         for folder in (self.image_folder(folder_name), self.livephoto_folder(folder_name)):
+            self._background_checkpoint()
             if folder.exists():
                 shutil.rmtree(folder)
                 removed += 1
@@ -52,6 +56,7 @@ class StorageService:
     def clear_folder_thumbnail_derivatives(self, folder_name: str) -> int:
         removed = 0
         for folder in (self.image_folder(folder_name), self.livephoto_folder(folder_name)):
+            self._background_checkpoint()
             thumbs = folder / ".thumbs"
             if not thumbs.exists():
                 continue
@@ -74,9 +79,11 @@ class StorageService:
             if not root.exists():
                 continue
             for thumbs in root.rglob(".thumbs"):
+                self._background_checkpoint()
                 if not thumbs.is_dir():
                     continue
                 for target in targets[level](thumbs):
+                    self._background_checkpoint()
                     target.unlink(missing_ok=True)
                     removed += 1
         return removed
@@ -89,6 +96,7 @@ class StorageService:
     def remove_asset_files(self, asset: dict) -> int:
         removed = 0
         for key in ("rel_path", "thumb_rel_path", "small_thumb_rel_path", "tiny_thumb_rel_path", "cover_rel_path", "reverse_rel_path"):
+            self._background_checkpoint()
             path = self.resolve_storage_path(asset.get(key))
             if path and path.exists():
                 path.unlink(missing_ok=True)
@@ -104,6 +112,7 @@ class StorageService:
     def clear_library_data(self) -> dict[str, int]:
         removed = {"images": 0, "livephoto": 0}
         for key, folder in (("images", self.config.images_dir), ("livephoto", self.config.livephoto_dir)):
+            self._background_checkpoint()
             if folder.exists():
                 children = list(folder.iterdir())
                 removed[key] = len(children)
@@ -140,6 +149,7 @@ class StorageService:
         removed_bytes = self._sum_file_sizes(files)
         removed_files = 0
         for path in files:
+            self._background_checkpoint()
             if path.exists() and path.is_file():
                 path.unlink(missing_ok=True)
                 removed_files += 1
@@ -149,7 +159,9 @@ class StorageService:
         files: list[Path] = []
         seen: set[Path] = set()
         for item in trash_items:
+            self._background_checkpoint()
             for asset in loads_json(item.get("assets_json"), []):
+                self._background_checkpoint()
                 for key in ("rel_path", "thumb_rel_path", "small_thumb_rel_path", "tiny_thumb_rel_path", "cover_rel_path", "reverse_rel_path"):
                     path = self.resolve_storage_path(asset.get(key))
                     if path and path.exists() and path.is_file() and path not in seen:
@@ -162,6 +174,7 @@ class StorageService:
             return []
         files = []
         for path in root.rglob("*"):
+            self._background_checkpoint()
             if not path.is_file():
                 continue
             parts = set(path.parts)
@@ -177,8 +190,13 @@ class StorageService:
     def _sum_file_sizes(self, files: list[Path]) -> int:
         total = 0
         for path in files:
+            self._background_checkpoint()
             try:
                 total += path.stat().st_size
             except FileNotFoundError:
                 continue
         return total
+
+    def _background_checkpoint(self) -> None:
+        if self.priority is not None:
+            self.priority.background_checkpoint()

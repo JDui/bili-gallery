@@ -13,6 +13,7 @@ from app.services.image_similarity import image_fingerprint
 from app.services.sidecar import SidecarRunner
 from app.services.storage import StorageService
 from app.services.thumbnailer import ThumbnailService
+from app.services.task_priority import TaskPriorityCoordinator
 from app.services.utils import dumps_json, format_pub_time, loads_json, now_iso
 
 
@@ -26,10 +27,17 @@ CooperateCallback = Callable[[], None]
 
 
 class MediaIndexer:
-    def __init__(self, db: Database, storage: StorageService, thumbnailer: ThumbnailService) -> None:
+    def __init__(
+        self,
+        db: Database,
+        storage: StorageService,
+        thumbnailer: ThumbnailService,
+        priority: TaskPriorityCoordinator | None = None,
+    ) -> None:
         self.db = db
         self.storage = storage
         self.thumbnailer = thumbnailer
+        self.priority = priority
         self.sidecar = SidecarRunner()
 
     def index_folder(
@@ -275,6 +283,7 @@ class MediaIndexer:
         return output
 
     def _ensure_asset_thumbnails(self, asset: dict) -> tuple[str | None, str | None, str | None]:
+        self._background_checkpoint()
         media_type = asset.get("media_type")
         if media_type == "image":
             source = self.storage.resolve_storage_path(asset.get("rel_path"))
@@ -380,6 +389,7 @@ class MediaIndexer:
         )
         next_pair_index = 1
         for file_path in files:
+            self._background_checkpoint()
             explicit_pair_index = self._extract_pair_index(file_path.name)
             pair_index = explicit_pair_index or next_pair_index
             next_pair_index = max(next_pair_index, pair_index + 1)
@@ -449,6 +459,7 @@ class MediaIndexer:
         used_pairs: set[int] = set()
         next_pair_index = max([asset["pair_index"] for asset in image_assets], default=0) + 1
         for fallback_index, file_path in enumerate(video_files, start=1):
+            self._background_checkpoint()
             cover_path = folder_path / ".covers" / f"{file_path.stem}.jpg"
             cover_webp = folder_path / ".thumbs" / f"{file_path.stem}.webp"
             small_cover_webp = folder_path / ".thumbs" / "small" / f"{file_path.stem}.webp"
@@ -543,6 +554,10 @@ class MediaIndexer:
 
     def _hamming_distance(self, left: int, right: int) -> int:
         return (left ^ right).bit_count()
+
+    def _background_checkpoint(self) -> None:
+        if self.priority is not None:
+            self.priority.background_checkpoint()
 
     def _asset_json(self, asset: dict | None) -> dict | None:
         if not asset:

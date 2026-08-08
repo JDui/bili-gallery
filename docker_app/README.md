@@ -1,4 +1,4 @@
-# Docker 化 B 站动态相簿 v9.4
+# Docker 化 B 站动态相簿 v9.5
 
 ## 启动
 
@@ -12,7 +12,7 @@ AMD64 NAS 可以直接使用 [docker-compose.nas-amd64.yml](/Users/muxinzheng/De
 
 建议流程：
 
-1. 先把镜像包导入 NAS：`docker load -i zzs-bili-gallery_v9.4_amd64.tar`
+1. 先把镜像包导入 NAS：`docker load -i zzs-bili-gallery_v9.5_amd64.tar`
 2. 按你的 NAS 实际目录修改 compose 里的两个挂载路径
 3. 执行 `docker compose -f docker-compose.nas-amd64.yml up -d`
 
@@ -38,6 +38,13 @@ AMD64 NAS 可以直接使用 [docker-compose.nas-amd64.yml](/Users/muxinzheng/De
 - 缩略图 WebP 预生成
 - Live Photo 预览、循环、乒乓、单次、不播放
 - 原始媒体删除后的缩略图销毁与索引清理
+- 前台加载优先调度，后台拉取、删除、图标刷新和重复检测会主动让行
+
+## 任务优先级
+
+- 前台任务：页面、瀑布流、详情、缩略图及媒体内容加载
+- 后台任务：拉取、删除与文件清理、图标获取、重复检测、索引和缩略图重建
+- 前后台同时发生时，后台任务会在处理步骤之间等待前台请求完成；缩略图后台并发默认限制为 1
 
 ## 数据目录
 
