@@ -105,7 +105,7 @@ class SiteSyncManager:
             details["sidebar_counts"] = self.db.refresh_sidebar_count_cache(["all", "favorites", "livephoto", "review", "logs", "tasks", "subscriptions", "sites"])
             self._status = {"running": False, "message": "站点同步完成"}
         except Exception as exc:
-            details = {"sources": 0, "posts": 0, "downloaded": 0, "blocked": 0, "errors": 0}
+            details = {"sources": 0, "posts": 0, "downloaded": 0, "blocked": 0, "errors": 0, "added_items": []}
             details["errors"] += 1
             self.db.finish_task_run(task_id, "failed", str(exc), details)
             self.db.refresh_sidebar_count_cache(["tasks"])
@@ -121,7 +121,7 @@ class SiteSyncManager:
             details["sidebar_counts"] = self.db.refresh_sidebar_count_cache(["all", "favorites", "livephoto", "review", "logs", "tasks", "subscriptions", "sites"])
             self._status = {"running": False, "message": "站点全量校验完成"}
         except Exception as exc:
-            details = {"sources": 0, "posts": 0, "downloaded": 0, "blocked": 0, "errors": 1}
+            details = {"sources": 0, "posts": 0, "downloaded": 0, "blocked": 0, "errors": 1, "added_items": []}
             self.db.finish_task_run(task_id, "failed", str(exc), details)
             self.db.refresh_sidebar_count_cache(["tasks"])
             self._status = {"running": False, "message": f"站点全量校验失败: {exc}"}
@@ -139,6 +139,7 @@ class SiteSyncManager:
             "skipped": 0,
             "no_media": 0,
             "errors": 0,
+            "added_items": [],
             "proxy": self._site_proxy_summary(settings),
         }
         self._status = {"running": True, "message": "正在同步站点来源"}
@@ -171,6 +172,10 @@ class SiteSyncManager:
                 )
                 continue
             for key, value in result.items():
+                if key == "added_items":
+                    if isinstance(value, list):
+                        details["added_items"].extend(item for item in value if isinstance(item, dict))
+                    continue
                 details[key] = int(details.get(key, 0)) + int(value)
             if not result.get("discovered"):
                 self._log_site_event(
@@ -232,7 +237,7 @@ class SiteSyncManager:
         self._status = {"running": False, "message": "站点全量校验完成"}
         return result
 
-    def _sync_source(self, source: dict[str, Any], cooperate=None, max_pages: int | None = None) -> dict[str, int]:
+    def _sync_source(self, source: dict[str, Any], cooperate=None, max_pages: int | None = None) -> dict[str, Any]:
         settings = self.db.get_settings()
         source_settings = self._settings_for_source(settings, source)
         fetcher = PageFetcher(
@@ -246,7 +251,16 @@ class SiteSyncManager:
         incremental_cutoff_date = self._latest_site_sync_date(source)
         request_sleep = max(float(settings.get("site_request_sleep") or 0), 0)
         max_media = max(int(settings.get("site_max_media_per_post") or 100), 1)
-        counters = {"discovered": 0, "posts": 0, "downloaded": 0, "blocked": 0, "skipped": 0, "no_media": 0, "errors": 0}
+        counters: dict[str, Any] = {
+            "discovered": 0,
+            "posts": 0,
+            "downloaded": 0,
+            "blocked": 0,
+            "skipped": 0,
+            "no_media": 0,
+            "errors": 0,
+            "added_items": [],
+        }
 
         parse_source = source
         if max_pages:
@@ -316,6 +330,7 @@ class SiteSyncManager:
                 mark_processed(index)
                 continue
             counters["posts"] += 1
+            existing_post = self.db.get_site_post_by_source_url(source["id"], parsed.url)
             post = self.db.upsert_site_post(source["id"], self._post_payload(parsed))
             dynamic_id = f"site:{source['id']}:{post['id']}"
             if self.db.is_blacklisted(dynamic_id, dynamic_id):
@@ -341,6 +356,7 @@ class SiteSyncManager:
                 counters["no_media"] += 1
                 self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "no-media", "未发现可下载媒体")
             download_jobs = []
+            saved_files = 0
             seen_urls: set[str] = set()
             for index, asset in enumerate(download_assets, start=1):
                 if cooperate:
@@ -366,15 +382,72 @@ class SiteSyncManager:
                     target = result["target"]
                     self.db.set_site_asset_result(result["asset_id"], "ready", self.storage.relative_to_storage(target))
                     counters["downloaded"] += 1
+                    saved_files += 1
                 except Exception as exc:
                     self.db.set_site_asset_result(result["asset_id"], "failed", error=str(exc))
                     self.db.add_site_filter_log(source["id"], parsed.url, parsed.title, "download-error", f"下载失败: {exc}")
                     counters["errors"] += 1
             self.dedupe_post_images(post["id"])
             self.db.update_site_post_counts(post["id"])
-            self._mirror_post_to_gallery(source, self.db.get_site_post(post["id"]) or post, parsed)
+            mirrored = self._mirror_post_to_gallery(source, self.db.get_site_post(post["id"]) or post, parsed)
+            self._record_added_item(
+                counters,
+                source,
+                self.db.get_site_post(post["id"]) or post,
+                parsed,
+                saved_files,
+                existing_post is None,
+                mirrored,
+            )
             mark_processed(index)
         return counters
+
+    def _record_added_item(
+        self,
+        counters: dict[str, Any],
+        source: dict[str, Any],
+        post: dict[str, Any],
+        parsed: ParsedPost,
+        saved_files: int,
+        is_new_post: bool,
+        mirrored: bool,
+    ) -> None:
+        if saved_files <= 0 or not mirrored:
+            return
+        folder_name = self._gallery_folder_name(source, post)
+        folder = self.db.get_folder(folder_name)
+        if not folder:
+            return
+        assets = self.db.list_assets_for_folder(folder_name)
+        image_count = sum(1 for asset in assets if asset.get("media_type") == "image")
+        if image_count <= 0:
+            return
+        top_dynamic_id = f"site:{source['id']}:{post['id']}"
+        source_dynamic_id = top_dynamic_id
+        item = {
+            "top_dynamic_id": top_dynamic_id,
+            "source_dynamic_id": source_dynamic_id,
+            "title": str(folder.get("title") or post.get("title") or parsed.title or folder_name),
+            "subscription_uid": self.site_subscription_uid(source["id"]),
+            "subscription_name": str(folder.get("subscription_name") or source.get("name") or f"站点 {source['id']}"),
+            "pub_time": str(folder.get("pub_time") or parsed.pub_date or ""),
+            "image_count": image_count,
+            "livephoto_count": 0,
+            "saved_files": int(saved_files),
+            "change_type": "new" if is_new_post else "updated",
+        }
+        items = counters.setdefault("added_items", [])
+        key = (top_dynamic_id, source_dynamic_id)
+        for existing in items:
+            if (
+                str(existing.get("top_dynamic_id") or ""),
+                str(existing.get("source_dynamic_id") or ""),
+            ) == key:
+                existing["saved_files"] = int(existing.get("saved_files") or 0) + int(saved_files)
+                existing["image_count"] = image_count
+                existing["change_type"] = "new" if existing.get("change_type") == "new" or is_new_post else "updated"
+                return
+        items.append(item)
 
     def dedupe_post_images(self, post_id: int) -> int:
         ready_images = [
@@ -994,7 +1067,7 @@ class SiteSyncManager:
         for folder_name in folder_names:
             self.storage.remove_folder_assets(folder_name)
 
-    def _mirror_post_to_gallery(self, source: dict[str, Any], post: dict[str, Any], parsed: ParsedPost) -> None:
+    def _mirror_post_to_gallery(self, source: dict[str, Any], post: dict[str, Any], parsed: ParsedPost) -> bool:
         ready_images = [
             asset
             for asset in self.db.list_site_assets(int(post["id"]))
@@ -1006,7 +1079,7 @@ class SiteSyncManager:
             if asset.get("status") == "ready" and asset.get("rel_path") and asset.get("media_type") == "video"
         ]
         if not ready_images:
-            return
+            return False
 
         folder_name = self._gallery_folder_name(source, post)
         image_folder = self.storage.image_folder(folder_name)
@@ -1048,7 +1121,7 @@ class SiteSyncManager:
                 metadata=metadata,
             )
             self._replace_gallery_videos(folder_name, ready_videos)
-            return
+            return True
 
         image_assets = [
             {
@@ -1078,6 +1151,7 @@ class SiteSyncManager:
         )
         self.db.replace_folder_assets(folder_name, "image", image_assets)
         self._replace_gallery_videos(folder_name, ready_videos)
+        return bool(image_assets)
 
     def _replace_gallery_videos(self, folder_name: str, ready_videos: list[dict[str, Any]]) -> None:
         video_assets = []

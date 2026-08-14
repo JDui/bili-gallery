@@ -1361,7 +1361,15 @@ def test_site_sync_downloads_allowed_posts_and_is_idempotent(tmp_path: Path) -> 
 
     assert first["posts"] == 1
     assert first["downloaded"] == 2
+    assert len(first["added_items"]) == 1
+    assert first["added_items"][0]["top_dynamic_id"] == f"site:{source['id']}:1"
+    assert first["added_items"][0]["source_dynamic_id"] == f"site:{source['id']}:1"
+    assert first["added_items"][0]["subscription_uid"] == f"site:{source['id']}"
+    assert first["added_items"][0]["image_count"] == 1
+    assert first["added_items"][0]["saved_files"] == 2
+    assert first["added_items"][0]["change_type"] == "new"
     assert second["downloaded"] == 0
+    assert second["added_items"] == []
     assert len(posts) == 1
     assert posts[0]["downloaded_count"] == 2
     assert all(asset["status"] == "ready" for asset in assets)
@@ -1371,6 +1379,48 @@ def test_site_sync_downloads_allowed_posts_and_is_idempotent(tmp_path: Path) -> 
     assert gallery_detail["folder"]["original_url"] == fixture_url("post1.html")
     assert gallery_detail and len(gallery_detail["videos"]) == 1
     assert any(log["reason"] == "早于起始日期" for log in logs)
+
+
+def test_site_sync_merges_added_items_across_sources(tmp_path: Path, monkeypatch) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    first_source = create_fixture_source(db)
+    second_source = db.create_site_source(
+        {
+            "name": "Second Fixture",
+            "slug": "second-fixture",
+            **html_source(),
+            "enabled": True,
+        }
+    )
+
+    def fake_sync(source: dict, cooperate=None, max_pages=None) -> dict:
+        dynamic_id = f"site:{source['id']}:post"
+        return {
+            "discovered": 1,
+            "posts": 1,
+            "downloaded": 1,
+            "blocked": 0,
+            "skipped": 0,
+            "no_media": 0,
+            "errors": 0,
+            "added_items": [
+                {
+                    "top_dynamic_id": dynamic_id,
+                    "source_dynamic_id": dynamic_id,
+                    "saved_files": 1,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(syncer, "_sync_source", fake_sync)
+    result = syncer.execute_sync()
+
+    assert result["sources"] == 2
+    assert result["downloaded"] == 2
+    assert {item["top_dynamic_id"] for item in result["added_items"]} == {
+        f"site:{first_source['id']}:post",
+        f"site:{second_source['id']}:post",
+    }
 
 
 def test_site_sync_stores_rule_matched_posts_with_date_fallback(tmp_path: Path) -> None:

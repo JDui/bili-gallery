@@ -32,6 +32,9 @@ function galleryApp() {
     ],
     searchTags: ["九图", "Live Photo", "收藏", "站点订阅", "COS", "写真", "视频", "转发"],
     gallery: { items: [], total: 0, page: 1, page_size: 36, total_pages: 1 },
+    recentUpdates: { groups: [], total_groups: 0, total_items: 0 },
+    recentUpdatesLoading: false,
+    recentUpdatesRequestId: 0,
     galleryRenderStart: 0,
     galleryRenderEnd: 0,
     galleryEstimatedPageHeight: 980,
@@ -290,6 +293,7 @@ function galleryApp() {
       review: false,
       logs: false,
       tasks: false,
+      recentUpdates: false,
       trash: false,
       sites: false,
       settings: false,
@@ -871,6 +875,7 @@ function galleryApp() {
     },
 
     currentSectionLabel() {
+      if (this.currentView === "recent-updates") return "Smart Album";
       if (this.currentView === "duplicates") return "Duplicates";
       if (this.currentView === "review") return "Review";
       if (this.currentView === "logs") return "Filter Log";
@@ -884,6 +889,7 @@ function galleryApp() {
     },
 
     currentSectionTitle() {
+      if (this.currentView === "recent-updates") return "最近更新";
       if (this.currentView === "duplicates") return "重复内容";
       if (this.currentView === "review") return "待审核动态";
       if (this.currentView === "logs") return "过滤日志";
@@ -900,6 +906,7 @@ function galleryApp() {
     },
 
     currentSectionHeadline() {
+      if (this.currentView === "recent-updates") return "按每次 B 站拉取与站点同步回看刚刚加入图库的动态";
       if (this.currentView === "duplicates") return "把相似图片贴文放在一起集中处理";
       if (this.currentView === "review") return "把推广动态拦在相簿之前";
       if (this.currentView === "logs") return "知道每一条动态为什么被筛出去";
@@ -1088,6 +1095,9 @@ function galleryApp() {
         }
         if (extras.tasks || this.currentView === "tasks" || this.lazyLoaded.tasks) {
           tasks.push(this.refreshTasks().catch(() => {}));
+        }
+        if (extras.recentUpdates || this.currentView === "recent-updates" || this.lazyLoaded.recentUpdates) {
+          tasks.push(this.refreshRecentUpdates().catch(() => {}));
         }
         if (this.currentView === "duplicates" || this.lazyLoaded.duplicates) {
           tasks.push(this.refreshDuplicates().catch(() => {}));
@@ -1610,7 +1620,7 @@ function galleryApp() {
       if (this.isSiteGalleryItem(folder)) {
         return String(folder.title || folder.text_prefix || "动态内容").trim();
       }
-      return String(folder.text_prefix || folder.title || "动态内容").trim();
+      return String(folder.title || folder.text_prefix || "动态内容").trim();
     },
 
     detailTextExpandable() {
@@ -2565,6 +2575,14 @@ function galleryApp() {
       this.scrollViewTop();
       this.refreshLogs();
       this.refreshSidebarCounts(["logs"]).catch(() => {});
+    },
+
+    openRecentUpdates() {
+      this.closeGalleryLayers();
+      this.currentView = "recent-updates";
+      this.closeSidebarDrawer();
+      this.scrollViewTop();
+      this.refreshRecentUpdates();
     },
 
     selectSubscription(uid) {
@@ -4586,6 +4604,7 @@ function galleryApp() {
       if (!removed.size) {
         return;
       }
+      this.removeFolderFromRecentUpdates([...removed]);
       const items = (this.gallery.items || []).filter((item) => !removed.has(String(item?.folder_name || "")));
       this.gallery = {
         ...this.gallery,
@@ -4773,6 +4792,7 @@ function galleryApp() {
       const previousGroups = [...(this.duplicateGroups || [])];
       const previousDuplicateCount = Number(this.sidebarCounts.duplicates || 0);
       const previousGallery = { ...this.gallery, items: [...(this.gallery.items || [])] };
+      const previousRecentUpdates = this.cloneRecentUpdates();
       const removedFolders = (group.items || [])
         .map((item) => String(item.folder_name))
         .filter((folderName) => folderName !== keepFolderName);
@@ -4791,6 +4811,7 @@ function galleryApp() {
         this.duplicateGroups = previousGroups;
         this.sidebarCounts = { ...this.sidebarCounts, duplicates: previousDuplicateCount };
         this.gallery = previousGallery;
+        this.recentUpdates = previousRecentUpdates;
         this.clearLocalGalleryCaches();
         this.notify("error", "重复内容处理失败", error.message || "请稍后重试。");
       } finally {
@@ -4807,6 +4828,7 @@ function galleryApp() {
       const previousGroups = [...(this.duplicateGroups || [])];
       const previousDuplicateCount = Number(this.sidebarCounts.duplicates || 0);
       const previousGallery = { ...this.gallery, items: [...(this.gallery.items || [])] };
+      const previousRecentUpdates = this.cloneRecentUpdates();
       this.setDuplicateActionPending("trash", signature, folderName, true);
       this.removeDuplicateFoldersLocally(signature, [folderName]);
       this.removeFoldersFromLocalGallery([folderName]);
@@ -4820,6 +4842,7 @@ function galleryApp() {
         this.duplicateGroups = previousGroups;
         this.sidebarCounts = { ...this.sidebarCounts, duplicates: previousDuplicateCount };
         this.gallery = previousGallery;
+        this.recentUpdates = previousRecentUpdates;
         this.clearLocalGalleryCaches();
         this.notify("error", "删除失败", error.message || "请稍后重试。");
       } finally {
@@ -4836,6 +4859,84 @@ function galleryApp() {
       if (this.queuedCancelConfirmId && !this.queuedTasks.some((item) => Number(item.queue_id) === this.queuedCancelConfirmId)) {
         this.queuedCancelConfirmId = null;
       }
+    },
+
+    async refreshRecentUpdates() {
+      if (this.recentUpdatesLoading) {
+        return;
+      }
+      const requestId = ++this.recentUpdatesRequestId;
+      this.recentUpdatesLoading = true;
+      try {
+        const payload = await this.api("/api/gallery/recent-updates?limit=50");
+        if (requestId !== this.recentUpdatesRequestId) {
+          return;
+        }
+        const groups = Array.isArray(payload?.groups) ? payload.groups : [];
+        this.recentUpdates = {
+          groups,
+          total_groups: Number(payload?.total_groups) || groups.length,
+          total_items: Number(payload?.total_items) || groups.reduce((total, group) => total + (group.items || []).length, 0),
+        };
+        this.lazyLoaded.recentUpdates = true;
+      } finally {
+        if (requestId === this.recentUpdatesRequestId) {
+          this.recentUpdatesLoading = false;
+        }
+      }
+    },
+
+    recentUpdateGroupTime(group) {
+      return this.formatDateTime(group?.updated_at || group?.finished_at || group?.created_at) || "未知时间";
+    },
+
+    recentUpdateTaskLabel(group) {
+      return group?.task_type === "site-sync" ? "站点同步" : "B站拉取";
+    },
+
+    recentUpdateImageText(item) {
+      const imageCount = Number(item?.image_count || item?.asset_count || 0);
+      const livephotoCount = Number(item?.livephoto_count || 0);
+      if (imageCount && livephotoCount) {
+        return `${imageCount} 图 · ${livephotoCount} 动图`;
+      }
+      if (livephotoCount) {
+        return `${livephotoCount} 个 Live Photo`;
+      }
+      return `${imageCount} 张图片`;
+    },
+
+    cloneRecentUpdates() {
+      return {
+        ...this.recentUpdates,
+        groups: (this.recentUpdates?.groups || []).map((group) => ({
+          ...group,
+          items: [...(group.items || [])],
+        })),
+      };
+    },
+
+    removeFolderFromRecentUpdates(folderNames) {
+      const removed = new Set(
+        (Array.isArray(folderNames) ? folderNames : [folderNames])
+          .map((name) => String(name || ""))
+          .filter(Boolean),
+      );
+      if (!removed.size || !this.recentUpdates?.groups?.length) {
+        return;
+      }
+      const groups = (this.recentUpdates.groups || [])
+        .map((group) => ({
+          ...group,
+          items: (group.items || []).filter((item) => !removed.has(String(item?.folder_name || ""))),
+        }))
+        .filter((group) => group.items.length);
+      this.recentUpdates = {
+        ...this.recentUpdates,
+        groups,
+        total_groups: groups.length,
+        total_items: groups.reduce((total, group) => total + group.items.length, 0),
+      };
     },
 
     visibleTaskRuns() {
@@ -5183,15 +5284,20 @@ function galleryApp() {
         return;
       }
       const previousTaskRuns = [...(this.taskRuns || [])];
+      const previousRecentUpdates = this.cloneRecentUpdates();
       this.taskRuns = (this.taskRuns || []).filter((item) => item.status === "running");
       this.clearTaskLogsConfirmStep = 0;
       this.notify("info", "正在清理任务日志", "页面已先更新，后台正在处理。");
       try {
         const result = await this.api("/api/tasks/clear-finished", { method: "POST" });
-        await this.refreshTasks();
+        await Promise.all([
+          this.refreshTasks(),
+          this.lazyLoaded.recentUpdates || this.currentView === "recent-updates" ? this.refreshRecentUpdates() : Promise.resolve(),
+        ]);
         this.notify("success", "任务日志已清理", result.message);
       } catch (error) {
         this.taskRuns = previousTaskRuns;
+        this.recentUpdates = previousRecentUpdates;
         this.notify("error", "清理失败", error.message || "任务日志已恢复。");
       }
     },
@@ -6304,6 +6410,7 @@ function galleryApp() {
         taskRuns: [...(this.taskRuns || [])],
         queuedTasks: [...(this.queuedTasks || [])],
         trashItems: [...(this.trashItems || [])],
+        recentUpdates: this.cloneRecentUpdates(),
       };
       this.clearDataConfirmStep = 0;
       this.closeGalleryLayers();
@@ -6314,6 +6421,7 @@ function galleryApp() {
       this.taskRuns = [];
       this.queuedTasks = [];
       this.trashItems = [];
+      this.recentUpdates = { groups: [], total_groups: 0, total_items: 0 };
       this.notify("info", "正在清空全部内容", "页面已先清空，后台正在处理。");
       try {
         const result = await this.api("/api/settings/clear-data", { method: "POST" });
@@ -6334,6 +6442,7 @@ function galleryApp() {
         this.taskRuns = previousState.taskRuns;
         this.queuedTasks = previousState.queuedTasks;
         this.trashItems = previousState.trashItems;
+        this.recentUpdates = previousState.recentUpdates;
         this.notify("error", "清空失败", error.message || "页面内容已恢复。");
       }
     },
@@ -6397,6 +6506,7 @@ function galleryApp() {
           this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates() : Promise.resolve(),
           this.lazyLoaded.logs || this.currentView === "logs" ? this.refreshLogs() : Promise.resolve(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
+          this.lazyLoaded.recentUpdates || this.currentView === "recent-updates" ? this.refreshRecentUpdates() : Promise.resolve(),
           this.lazyLoaded.trash || this.currentView === "trash" ? this.refreshTrash() : Promise.resolve(),
           this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
@@ -6407,6 +6517,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
+          this.lazyLoaded.recentUpdates || this.currentView === "recent-updates" ? this.refreshRecentUpdates() : Promise.resolve(),
           this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates() : Promise.resolve(),
           this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),
@@ -6613,6 +6724,7 @@ function galleryApp() {
       }
       const previousGalleryItems = [...(this.gallery.items || [])];
       const previousGalleryTotal = this.gallery.total || 0;
+      const previousRecentUpdates = this.cloneRecentUpdates();
       const previousDetail = {
         open: this.detail.open,
         pairs: [...(this.detail.pairs || [])],
@@ -6643,6 +6755,7 @@ function galleryApp() {
           items: previousGalleryItems,
           total: previousGalleryTotal,
         };
+        this.recentUpdates = previousRecentUpdates;
         if (!this.viewer.open && !this.detail.open && previousDetail.folder?.folder_name === folderName) {
           this.detail = previousDetail;
         }
@@ -6661,6 +6774,7 @@ function galleryApp() {
       const folder = (this.gallery.items || []).find((item) => item.folder_name === folderName);
       const previousGalleryItems = [...(this.gallery.items || [])];
       const previousGalleryTotal = this.gallery.total || 0;
+      const previousRecentUpdates = this.cloneRecentUpdates();
       const previousCache = this.detailCache[folderName] ? this.cloneDetailPayload(this.detailCache[folderName]) : null;
       this.pendingTrashFolder = null;
       if (this.detail.folder?.folder_name === folderName) {
@@ -6682,6 +6796,7 @@ function galleryApp() {
           items: previousGalleryItems,
           total: previousGalleryTotal,
         };
+        this.recentUpdates = previousRecentUpdates;
       if (previousCache) {
           this.cacheDetailPayload(folderName, previousCache);
         }
@@ -6693,6 +6808,7 @@ function galleryApp() {
     },
 
     removeFolderFromGallery(folderName, options = {}) {
+      this.removeFolderFromRecentUpdates(folderName);
       const currentItems = this.gallery.items || [];
       const firstIndex = currentItems.findIndex((item) => item.folder_name === folderName && !item.__deleted_placeholder);
       const sourceItem = firstIndex >= 0 ? currentItems[firstIndex] : null;

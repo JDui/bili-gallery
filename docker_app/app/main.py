@@ -193,6 +193,11 @@ def get_gallery_meta() -> dict[str, Any]:
     return gallery.get_gallery_meta()
 
 
+@app.get("/api/gallery/recent-updates")
+def get_recent_updates(limit: int = 50) -> dict[str, Any]:
+    return gallery.get_recent_updates(limit=max(1, min(50, int(limit))))
+
+
 @app.get("/api/gallery/folders/{folder_name}")
 def get_folder_detail(folder_name: str) -> dict[str, Any]:
     detail = gallery.get_folder_detail(folder_name)

@@ -1584,6 +1584,31 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_folders_by_dynamic_pairs(self, pairs: list[tuple[str, str]]) -> list[dict[str, Any]]:
+        normalized = sorted(
+            {
+                (str(top_dynamic_id), str(source_dynamic_id))
+                for top_dynamic_id, source_dynamic_id in (pairs or [])
+                if str(top_dynamic_id).strip() and str(source_dynamic_id).strip()
+            }
+        )
+        if not normalized:
+            return []
+        rows: list[sqlite3.Row] = []
+        chunk_size = 300
+        with self.connect() as conn:
+            for index in range(0, len(normalized), chunk_size):
+                chunk = normalized[index:index + chunk_size]
+                clauses = ["(top_dynamic_id = ? and source_dynamic_id = ?)" for _ in chunk]
+                params = [value for pair in chunk for value in pair]
+                rows.extend(
+                    conn.execute(
+                        f"select * from folders where {' or '.join(clauses)}",
+                        params,
+                    ).fetchall()
+                )
+        return [dict(row) for row in rows]
+
     def list_folders(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute("select * from folders order by pub_ts desc, folder_name desc").fetchall()
@@ -1602,6 +1627,24 @@ class Database:
                 "select * from assets where folder_name = ? order by media_type, pair_index, filename",
                 (folder_name,),
             ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_assets_for_folders(self, folder_names: list[str]) -> list[dict[str, Any]]:
+        normalized = sorted({str(folder_name) for folder_name in (folder_names or []) if str(folder_name).strip()})
+        if not normalized:
+            return []
+        rows: list[sqlite3.Row] = []
+        chunk_size = 500
+        with self.connect() as conn:
+            for index in range(0, len(normalized), chunk_size):
+                chunk = normalized[index:index + chunk_size]
+                placeholders = ", ".join("?" for _ in chunk)
+                rows.extend(
+                    conn.execute(
+                        f"select * from assets where folder_name in ({placeholders}) order by folder_name, media_type, pair_index, filename",
+                        chunk,
+                    ).fetchall()
+                )
         return [dict(row) for row in rows]
 
     def set_asset_duplicate_fingerprints(self, fingerprints: dict[int, str]) -> None:

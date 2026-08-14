@@ -75,6 +75,11 @@
 
             <section class="nav-section">
                 <div class="section-label" x-show="!sidebarCollapsed">智能相簿</div>
+                <button class="sidebar-link" data-testid="nav-recent-updates" :class="{ active: currentView === 'recent-updates' }" title="最近更新" @click="openRecentUpdates()">
+                    <span class="link-badge">新</span>
+                    <span class="link-text" x-show="!sidebarCollapsed">最近更新</span>
+                    <span class="link-count" x-show="!sidebarCollapsed" x-text="recentUpdates.total_items || 0"></span>
+                </button>
                 <button class="sidebar-link" data-testid="nav-duplicates" :class="{ active: currentView === 'duplicates' }" title="重复内容" @click="openDuplicates()">
                     <span class="link-badge">重</span>
                     <span class="link-text" x-show="!sidebarCollapsed">重复内容</span>
@@ -421,6 +426,72 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </section>
+
+            <section class="panel-view recent-updates-view" data-testid="section-recent-updates" x-show="currentView === 'recent-updates'" x-cloak>
+                <div class="section-heading">
+                    <div>
+                        <p>智能相簿</p>
+                        <h3>最近更新</h3>
+                    </div>
+                    <div class="button-row">
+                        <span class="inline-tag" x-show="recentUpdates.total_items" x-text="`${recentUpdates.total_items} 条动态 · ${recentUpdates.total_groups} 次更新`" x-cloak></span>
+                        <button class="secondary-button" @click="refreshRecentUpdates()" :disabled="recentUpdatesLoading" x-text="recentUpdatesLoading ? '加载中' : '刷新'"></button>
+                    </div>
+                </div>
+                <div class="recent-updates-timeline" x-show="recentUpdates.groups.length" x-cloak>
+                    <template x-for="(group, groupIndex) in recentUpdates.groups" :key="group.task_id">
+                        <article class="recent-update-group">
+                            <div class="recent-update-rail" aria-hidden="true">
+                                <span class="recent-update-dot"></span>
+                            </div>
+                            <div class="recent-update-group-main">
+                                <header class="recent-update-group-head">
+                                    <div>
+                                        <p x-text="`第 ${groupIndex + 1} 次 ${recentUpdateTaskLabel(group)}`"></p>
+                                        <h4 x-text="recentUpdateGroupTime(group)"></h4>
+                                    <small x-text="group.message || (group.task_type === 'site-sync' ? '站点同步完成' : '拉取完成')"></small>
+                                    </div>
+                                    <span class="inline-tag accent" x-text="`${group.items.length} 条动态`"></span>
+                                </header>
+                                <div class="recent-update-grid">
+                                    <template x-for="item in group.items" :key="`${group.task_id}-${item.folder_name}`">
+                                        <article class="photo-card recent-update-card" @click="openFolder(item.folder_name)">
+                                            <div class="photo-visual" :style="galleryItemTinyStyle(item)">
+                                                <div class="photo-collage" :class="`tiles-${Math.min((item.preview_tiles || []).length, 4) || 1}`">
+                                                    <template x-for="tile in (item.preview_tiles || []).slice(0, 4)" :key="tile.id">
+                                                        <div class="photo-collage-tile" :style="tileTinyStyle(tile)">
+                                                            <img loading="lazy" decoding="async" :src="galleryTileUrl(tile)" :alt="cardPrimaryText(item)" @load="fadeLoadedImage($event)">
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                                <div class="photo-badges">
+                                                    <span class="photo-badge" x-text="item.pub_time || '未知时间'"></span>
+                                                </div>
+                                            </div>
+                                            <div class="photo-meta recent-update-card-meta">
+                                                <h4 x-text="cardPrimaryText(item)"></h4>
+                                                <div class="photo-stats">
+                                                    <span x-text="item.subscription_name || '默认订阅'"></span>
+                                                    <span x-text="item.pub_time || '未知发布时间'"></span>
+                                                    <span x-text="recentUpdateImageText(item)"></span>
+                                                </div>
+                                            </div>
+                                        </article>
+                                    </template>
+                                </div>
+                            </div>
+                        </article>
+                    </template>
+                </div>
+                <div class="empty-state" x-show="!recentUpdatesLoading && recentUpdates.groups.length === 0" x-cloak>
+                    <strong>还没有最近更新</strong>
+                    <p>成功拉取或同步并加入图库的动态会按任务时间显示在这里。</p>
+                </div>
+                <div class="empty-state" x-show="recentUpdatesLoading && recentUpdates.groups.length === 0" x-cloak>
+                    <strong>正在加载最近更新</strong>
+                    <p>正在读取近期拉取、同步任务与当前图库内容。</p>
                 </div>
             </section>
 

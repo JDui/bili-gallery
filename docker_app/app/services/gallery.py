@@ -165,6 +165,91 @@ class GalleryService:
             return self._fallback_gallery_meta()
         return self.db.gallery_meta_from_index()
 
+    def get_recent_updates(self, limit: int = 50) -> dict:
+        normalized_limit = max(1, min(50, int(limit or 50)))
+        scan_limit = max(200, normalized_limit * 5)
+        task_runs = self.db.list_task_runs(limit=scan_limit)
+        task_runs.sort(
+            key=lambda task: (
+                str(task.get("finished_at") or task.get("created_at") or ""),
+                int(task.get("id") or 0),
+            ),
+            reverse=True,
+        )
+        candidates: list[tuple[dict, list[dict]]] = []
+        dynamic_pairs: list[tuple[str, str]] = []
+        for task in task_runs:
+            if task.get("task_type") not in {"pull", "site-sync"} or task.get("status") != "success":
+                continue
+            details = loads_json(task.get("details_json"), {})
+            added_items = details.get("added_items") if isinstance(details, dict) else None
+            if not isinstance(added_items, list) or not added_items:
+                continue
+            entries = []
+            seen_pairs: set[tuple[str, str]] = set()
+            for item in added_items:
+                if not isinstance(item, dict):
+                    continue
+                pair = (str(item.get("top_dynamic_id") or "").strip(), str(item.get("source_dynamic_id") or "").strip())
+                if not all(pair) or pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                entries.append(item)
+                dynamic_pairs.append(pair)
+            if entries:
+                candidates.append((task, entries))
+
+        if not candidates:
+            return {"groups": [], "total_groups": 0, "total_items": 0}
+
+        folders_by_pair = {
+            (str(folder.get("top_dynamic_id") or ""), str(folder.get("source_dynamic_id") or "")): folder
+            for folder in self.db.list_folders_by_dynamic_pairs(dynamic_pairs)
+        }
+        folder_names = [folder.get("folder_name") for folder in folders_by_pair.values() if folder.get("folder_name")]
+        assets_by_folder: dict[str, list[dict]] = {}
+        for asset in self.db.list_assets_for_folders(folder_names):
+            assets_by_folder.setdefault(str(asset.get("folder_name") or ""), []).append(asset)
+
+        groups = []
+        for task, entries in candidates:
+            items = []
+            seen_folders: set[str] = set()
+            for entry in entries:
+                pair = (str(entry.get("top_dynamic_id") or "").strip(), str(entry.get("source_dynamic_id") or "").strip())
+                folder = folders_by_pair.get(pair)
+                if not folder:
+                    continue
+                folder_name = str(folder.get("folder_name") or "")
+                if not folder_name or folder_name in seen_folders:
+                    continue
+                seen_folders.add(folder_name)
+                card = self._folder_card_from_folder(folder, assets_by_folder.get(folder_name, []))
+                if card:
+                    items.append(card)
+            if not items:
+                continue
+            updated_at = task.get("finished_at") or task.get("created_at") or ""
+            groups.append(
+                {
+                    "task_id": int(task.get("id") or 0),
+                    "task_type": str(task.get("task_type") or ""),
+                    "status": "success",
+                    "message": task.get("message") or ("站点同步完成" if task.get("task_type") == "site-sync" else "拉取完成"),
+                    "created_at": task.get("created_at") or "",
+                    "finished_at": task.get("finished_at") or "",
+                    "updated_at": updated_at,
+                    "items": items,
+                }
+            )
+            if len(groups) >= normalized_limit:
+                break
+        return {
+            "groups": groups,
+            "total_groups": len(groups),
+            "total_items": sum(len(group["items"]) for group in groups),
+        }
+
     def get_folder_detail(self, folder_name: str) -> dict | None:
         folder = self.db.get_folder(folder_name)
         if not folder:
@@ -238,8 +323,8 @@ class GalleryService:
             "asset_count": image_count,
         }
 
-    def _folder_card_from_folder(self, folder: dict) -> dict:
-        assets = self.db.list_assets_for_folder(folder["folder_name"])
+    def _folder_card_from_folder(self, folder: dict, assets: list[dict] | None = None) -> dict:
+        assets = self.db.list_assets_for_folder(folder["folder_name"]) if assets is None else assets
         if not assets:
             return {}
         image_assets = [asset for asset in assets if asset["media_type"] == "image"]
