@@ -2267,6 +2267,20 @@ html.is-interacting .detail-thumb::before {
     gap: 14px;
 }
 
+.recent-update-grid.is-collapsed {
+    max-height: var(--recent-update-collapsed-height);
+    overflow: hidden;
+}
+
+.recent-update-grid.is-expanded {
+    max-height: none;
+    overflow: visible;
+}
+
+.recent-update-toggle {
+    margin-top: 14px;
+}
+
 .recent-update-card {
     min-width: 0;
     margin: 0;

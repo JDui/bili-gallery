@@ -35,6 +35,10 @@ function galleryApp() {
     recentUpdates: { groups: [], total_groups: 0, total_items: 0 },
     recentUpdatesLoading: false,
     recentUpdatesRequestId: 0,
+    recentUpdateExpanded: {},
+    recentUpdateExpandable: {},
+    recentUpdateRowHeights: {},
+    recentUpdateMeasureRaf: null,
     galleryRenderStart: 0,
     galleryRenderEnd: 0,
     galleryEstimatedPageHeight: 980,
@@ -660,12 +664,16 @@ function galleryApp() {
     toggleSidebar() {
       if (this.compactViewport) {
         this.sidebarDrawerOpen = !this.sidebarDrawerOpen;
+        this.$nextTick(() => this.scheduleRecentUpdatesMeasure());
         return;
       }
       this.sidebarCollapsed = !this.sidebarCollapsed;
       localStorage.setItem("gallery_sidebar_collapsed", this.sidebarCollapsed ? "1" : "0");
       document.documentElement.style.setProperty("--sidebar-state", this.sidebarCollapsed ? "collapsed" : "expanded");
-      this.$nextTick(() => this.scheduleFixedLayoutMetrics());
+      this.$nextTick(() => {
+        this.scheduleFixedLayoutMetrics();
+        this.scheduleRecentUpdatesMeasure();
+      });
     },
 
     updateViewportMode() {
@@ -681,6 +689,7 @@ function galleryApp() {
         this.observeGalleryLoadSentinel();
         this.scheduleFixedLayoutMetrics();
         this.refreshDetailTextOverflow();
+        this.scheduleRecentUpdatesMeasure();
       });
     },
 
@@ -906,7 +915,7 @@ function galleryApp() {
     },
 
     currentSectionHeadline() {
-      if (this.currentView === "recent-updates") return "按每次 B 站拉取与站点同步回看刚刚加入图库的动态";
+      if (this.currentView === "recent-updates") return "按 B 站拉取与站点同步回看刚刚加入图库的动态";
       if (this.currentView === "duplicates") return "把相似图片贴文放在一起集中处理";
       if (this.currentView === "review") return "把推广动态拦在相簿之前";
       if (this.currentView === "logs") return "知道每一条动态为什么被筛出去";
@@ -1113,7 +1122,10 @@ function galleryApp() {
       }
       const targets = [this.$refs.shell, this.$refs.sidebar, this.$refs.workspace, this.$refs.topbar].filter(Boolean);
       if (typeof ResizeObserver === "function") {
-        this.layoutResizeObserver = new ResizeObserver(() => this.scheduleFixedLayoutMetrics());
+        this.layoutResizeObserver = new ResizeObserver(() => {
+          this.scheduleFixedLayoutMetrics();
+          this.scheduleRecentUpdatesMeasure();
+        });
         targets.forEach((target) => this.layoutResizeObserver.observe(target));
       }
       this.scheduleFixedLayoutMetrics();
@@ -2583,6 +2595,7 @@ function galleryApp() {
       this.closeSidebarDrawer();
       this.scrollViewTop();
       this.refreshRecentUpdates();
+      this.$nextTick(() => this.scheduleRecentUpdatesMeasure());
     },
 
     selectSubscription(uid) {
@@ -4873,12 +4886,14 @@ function galleryApp() {
           return;
         }
         const groups = Array.isArray(payload?.groups) ? payload.groups : [];
+        this.resetRecentUpdateDisclosure();
         this.recentUpdates = {
           groups,
           total_groups: Number(payload?.total_groups) || groups.length,
           total_items: Number(payload?.total_items) || groups.reduce((total, group) => total + (group.items || []).length, 0),
         };
         this.lazyLoaded.recentUpdates = true;
+        this.$nextTick(() => this.scheduleRecentUpdatesMeasure());
       } finally {
         if (requestId === this.recentUpdatesRequestId) {
           this.recentUpdatesLoading = false;
@@ -4892,6 +4907,133 @@ function galleryApp() {
 
     recentUpdateTaskLabel(group) {
       return group?.task_type === "site-sync" ? "站点同步" : "B站拉取";
+    },
+
+    recentUpdateTaskKey(taskId) {
+      return String(taskId ?? "");
+    },
+
+    recentUpdateGroupKey(group) {
+      return this.recentUpdateTaskKey(group?.task_id);
+    },
+
+    isRecentUpdateExpanded(group) {
+      return !!this.recentUpdateExpanded[this.recentUpdateGroupKey(group)];
+    },
+
+    isRecentUpdateExpandable(group) {
+      return !!this.recentUpdateExpandable[this.recentUpdateGroupKey(group)];
+    },
+
+    isRecentUpdateCollapsed(group) {
+      return this.isRecentUpdateExpandable(group) && !this.isRecentUpdateExpanded(group);
+    },
+
+    recentUpdateGridStyle(group) {
+      const height = Number(this.recentUpdateRowHeights[this.recentUpdateGroupKey(group)] || 0);
+      return height > 0 ? `--recent-update-collapsed-height: ${height}px;` : "";
+    },
+
+    resetRecentUpdateDisclosure() {
+      this.recentUpdateExpanded = {};
+      this.recentUpdateExpandable = {};
+      this.recentUpdateRowHeights = {};
+    },
+
+    toggleRecentUpdateExpanded(taskId) {
+      const key = this.recentUpdateTaskKey(taskId);
+      if (!this.recentUpdateExpandable[key] && !this.recentUpdateExpanded[key]) {
+        return;
+      }
+      this.recentUpdateExpanded = {
+        ...this.recentUpdateExpanded,
+        [key]: !this.recentUpdateExpanded[key],
+      };
+    },
+
+    scheduleRecentUpdatesMeasure() {
+      if (this.currentView !== "recent-updates" || this.recentUpdateMeasureRaf !== null) {
+        return;
+      }
+      const requestFrame = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 0));
+      this.recentUpdateMeasureRaf = requestFrame(() => {
+        this.recentUpdateMeasureRaf = null;
+        this.measureRecentUpdates();
+      });
+    },
+
+    measureRecentUpdates() {
+      if (this.currentView !== "recent-updates") {
+        return;
+      }
+      const grids = Array.from(document.querySelectorAll("[data-recent-update-grid]"));
+      if (!grids.length) {
+        return;
+      }
+      const nextExpandable = { ...this.recentUpdateExpandable };
+      const nextRowHeights = { ...this.recentUpdateRowHeights };
+      const measuredKeys = new Set();
+      let measured = false;
+      grids.forEach((grid) => {
+        const key = this.recentUpdateTaskKey(grid.dataset?.recentUpdateTaskId);
+        if (!key) {
+          return;
+        }
+        const gridRect = grid.getBoundingClientRect();
+        if (!gridRect.width || !gridRect.height) {
+          return;
+        }
+        const cards = Array.from(grid.querySelectorAll(".recent-update-card"));
+        if (!cards.length) {
+          return;
+        }
+        const firstTop = cards[0].getBoundingClientRect().top;
+        const firstRowCards = cards.filter((card) => Math.abs(card.getBoundingClientRect().top - firstTop) <= 1);
+        const firstRowBottom = Math.max(
+          ...firstRowCards.map((card) => card.getBoundingClientRect().bottom - gridRect.top),
+        );
+        const hasSecondRow = cards.some((card) => card.getBoundingClientRect().top - firstTop > 1);
+        measuredKeys.add(key);
+        nextExpandable[key] = hasSecondRow;
+        if (firstRowBottom > 0) {
+          nextRowHeights[key] = Math.ceil(firstRowBottom);
+        }
+        if (!hasSecondRow) {
+          delete nextExpandable[key];
+          delete nextRowHeights[key];
+        }
+        measured = true;
+      });
+      if (!measured) {
+        return;
+      }
+      Object.keys(nextExpandable).forEach((key) => {
+        if (!measuredKeys.has(key)) {
+          delete nextExpandable[key];
+        }
+      });
+      Object.keys(nextRowHeights).forEach((key) => {
+        if (!measuredKeys.has(key)) {
+          delete nextRowHeights[key];
+        }
+      });
+      const nextExpanded = Object.fromEntries(
+        Object.entries(this.recentUpdateExpanded).filter(([key]) => measuredKeys.has(key) && nextExpandable[key]),
+      );
+      const mapsEqual = (left, right) => {
+        const leftKeys = Object.keys(left);
+        const rightKeys = Object.keys(right);
+        return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key]);
+      };
+      if (!mapsEqual(this.recentUpdateExpandable, nextExpandable)) {
+        this.recentUpdateExpandable = nextExpandable;
+      }
+      if (!mapsEqual(this.recentUpdateRowHeights, nextRowHeights)) {
+        this.recentUpdateRowHeights = nextRowHeights;
+      }
+      if (!mapsEqual(this.recentUpdateExpanded, nextExpanded)) {
+        this.recentUpdateExpanded = nextExpanded;
+      }
     },
 
     recentUpdateImageText(item) {
@@ -4937,6 +5079,17 @@ function galleryApp() {
         total_groups: groups.length,
         total_items: groups.reduce((total, group) => total + group.items.length, 0),
       };
+      const activeKeys = new Set(groups.map((group) => this.recentUpdateGroupKey(group)));
+      this.recentUpdateExpanded = Object.fromEntries(
+        Object.entries(this.recentUpdateExpanded).filter(([key]) => activeKeys.has(key)),
+      );
+      this.recentUpdateExpandable = Object.fromEntries(
+        Object.entries(this.recentUpdateExpandable).filter(([key]) => activeKeys.has(key)),
+      );
+      this.recentUpdateRowHeights = Object.fromEntries(
+        Object.entries(this.recentUpdateRowHeights).filter(([key]) => activeKeys.has(key)),
+      );
+      this.$nextTick(() => this.scheduleRecentUpdatesMeasure());
     },
 
     visibleTaskRuns() {
@@ -6421,6 +6574,7 @@ function galleryApp() {
       this.taskRuns = [];
       this.queuedTasks = [];
       this.trashItems = [];
+      this.resetRecentUpdateDisclosure();
       this.recentUpdates = { groups: [], total_groups: 0, total_items: 0 };
       this.notify("info", "正在清空全部内容", "页面已先清空，后台正在处理。");
       try {
@@ -6529,6 +6683,7 @@ function galleryApp() {
           this.refreshMeta(),
           this.loadSubscriptions(),
           this.lazyLoaded.tasks || this.currentView === "tasks" ? this.refreshTasks() : Promise.resolve(),
+          this.lazyLoaded.recentUpdates || this.currentView === "recent-updates" ? this.refreshRecentUpdates() : Promise.resolve(),
           this.lazyLoaded.duplicates || this.currentView === "duplicates" ? this.refreshDuplicates() : Promise.resolve(),
           this.lazyLoaded.sites || this.isSitePanelActive() ? this.refreshSites() : Promise.resolve(),
           this.currentView === "gallery" ? this.refreshGallery(true) : Promise.resolve(),

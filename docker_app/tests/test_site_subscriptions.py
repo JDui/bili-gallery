@@ -561,6 +561,77 @@ def test_scheduler_registers_up_and_site_jobs_independently(tmp_path: Path) -> N
     assert site_calls["count"] == 1
 
 
+def test_scheduled_site_sync_uses_site_sync_start_sync_entrypoint(tmp_path: Path, monkeypatch) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    calls: list[int | None] = []
+
+    def start_sync(source_id: int | None = None) -> dict:
+        calls.append(source_id)
+        return {"ok": True, "queued": False}
+
+    monkeypatch.setattr(syncer, "start_sync", start_sync)
+    service = SchedulerService(db, object(), syncer)
+
+    service.start_scheduled_site_sync()
+
+    assert calls == [None]
+
+
+def test_site_sync_task_history_persists_added_items(tmp_path: Path) -> None:
+    db, _storage, syncer = make_app(tmp_path)
+    source = create_fixture_source(db)
+
+    syncer._lock.acquire()
+    syncer._run_sync_thread(source["id"])
+
+    task = db.last_task_run("site-sync")
+    details = loads_json(task["details_json"], {}) if task else {}
+    assert task and task["status"] == "success"
+    assert details["added_items"]
+    item = details["added_items"][0]
+    assert item["top_dynamic_id"] == item["source_dynamic_id"]
+    assert item["top_dynamic_id"].startswith(f"site:{source['id']}:")
+    assert item["subscription_uid"] == f"site:{source['id']}"
+
+
+def test_queued_site_sync_task_history_persists_added_items(tmp_path: Path, monkeypatch) -> None:
+    db, storage, syncer = make_app(tmp_path)
+    source = create_fixture_source(db)
+    puller = PullManager(db, storage, None, None, None, None)
+    puller.attach_site_syncer(syncer)
+    dynamic_id = f"site:{source['id']}:queued-post"
+
+    monkeypatch.setattr(
+        syncer,
+        "execute_sync",
+        lambda source_id, cooperate=None: {
+            "sources": 1,
+            "discovered": 1,
+            "posts": 1,
+            "downloaded": 1,
+            "blocked": 0,
+            "skipped": 0,
+            "no_media": 0,
+            "errors": 0,
+            "added_items": [
+                {
+                    "top_dynamic_id": dynamic_id,
+                    "source_dynamic_id": dynamic_id,
+                    "subscription_uid": f"site:{source['id']}",
+                    "saved_files": 1,
+                }
+            ],
+        },
+    )
+    puller._lock.acquire()
+    puller._run_site_sync(source["id"])
+
+    task = db.last_task_run("site-sync")
+    details = loads_json(task["details_json"], {}) if task else {}
+    assert task and task["status"] == "success"
+    assert details["added_items"][0]["top_dynamic_id"] == dynamic_id
+
+
 def test_new_databases_keep_site_scheduler_disabled_by_default(tmp_path: Path) -> None:
     db, _storage, _syncer = make_app(tmp_path)
     settings = db.get_settings()
