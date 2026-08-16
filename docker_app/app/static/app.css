@@ -2281,6 +2281,14 @@ html.is-interacting .detail-thumb::before {
     margin-top: 14px;
 }
 
+.recent-updates-collapse-button {
+    position: fixed;
+    right: max(24px, env(safe-area-inset-right));
+    bottom: max(24px, env(safe-area-inset-bottom));
+    z-index: 20;
+    box-shadow: 0 12px 28px rgba(31, 48, 80, 0.2);
+}
+
 .recent-update-card {
     min-width: 0;
     margin: 0;
@@ -4189,6 +4197,11 @@ html.is-interacting .detail-thumb::before {
 }
 
 @media (max-width: 680px) {
+    .recent-updates-collapse-button {
+        right: max(14px, env(safe-area-inset-right));
+        bottom: max(14px, env(safe-area-inset-bottom));
+    }
+
     .recent-updates-timeline {
         padding-left: 22px;
     }

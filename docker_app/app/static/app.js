@@ -4806,6 +4806,7 @@ function galleryApp() {
       const previousDuplicateCount = Number(this.sidebarCounts.duplicates || 0);
       const previousGallery = { ...this.gallery, items: [...(this.gallery.items || [])] };
       const previousRecentUpdates = this.cloneRecentUpdates();
+      const previousRecentUpdateDisclosure = this.cloneRecentUpdateDisclosure();
       const removedFolders = (group.items || [])
         .map((item) => String(item.folder_name))
         .filter((folderName) => folderName !== keepFolderName);
@@ -4825,6 +4826,7 @@ function galleryApp() {
         this.sidebarCounts = { ...this.sidebarCounts, duplicates: previousDuplicateCount };
         this.gallery = previousGallery;
         this.recentUpdates = previousRecentUpdates;
+        this.restoreRecentUpdateDisclosure(previousRecentUpdateDisclosure);
         this.clearLocalGalleryCaches();
         this.notify("error", "重复内容处理失败", error.message || "请稍后重试。");
       } finally {
@@ -4842,6 +4844,7 @@ function galleryApp() {
       const previousDuplicateCount = Number(this.sidebarCounts.duplicates || 0);
       const previousGallery = { ...this.gallery, items: [...(this.gallery.items || [])] };
       const previousRecentUpdates = this.cloneRecentUpdates();
+      const previousRecentUpdateDisclosure = this.cloneRecentUpdateDisclosure();
       this.setDuplicateActionPending("trash", signature, folderName, true);
       this.removeDuplicateFoldersLocally(signature, [folderName]);
       this.removeFoldersFromLocalGallery([folderName]);
@@ -4856,6 +4859,7 @@ function galleryApp() {
         this.sidebarCounts = { ...this.sidebarCounts, duplicates: previousDuplicateCount };
         this.gallery = previousGallery;
         this.recentUpdates = previousRecentUpdates;
+        this.restoreRecentUpdateDisclosure(previousRecentUpdateDisclosure);
         this.clearLocalGalleryCaches();
         this.notify("error", "删除失败", error.message || "请稍后重试。");
       } finally {
@@ -4886,7 +4890,7 @@ function galleryApp() {
           return;
         }
         const groups = Array.isArray(payload?.groups) ? payload.groups : [];
-        this.resetRecentUpdateDisclosure();
+        this.reconcileRecentUpdateDisclosure(groups);
         this.recentUpdates = {
           groups,
           total_groups: Number(payload?.total_groups) || groups.length,
@@ -4940,15 +4944,38 @@ function galleryApp() {
       this.recentUpdateRowHeights = {};
     },
 
-    toggleRecentUpdateExpanded(taskId) {
+    reconcileRecentUpdateDisclosure(groups) {
+      const activeKeys = new Set((groups || []).map((group) => this.recentUpdateGroupKey(group)));
+      const filterActive = (state) => Object.fromEntries(
+        Object.entries(state).filter(([key]) => activeKeys.has(key)),
+      );
+      this.recentUpdateExpanded = filterActive(this.recentUpdateExpanded);
+      this.recentUpdateExpandable = filterActive(this.recentUpdateExpandable);
+      this.recentUpdateRowHeights = filterActive(this.recentUpdateRowHeights);
+    },
+
+    expandRecentUpdate(taskId) {
       const key = this.recentUpdateTaskKey(taskId);
-      if (!this.recentUpdateExpandable[key] && !this.recentUpdateExpanded[key]) {
+      if (!this.recentUpdateExpandable[key] || this.recentUpdateExpanded[key]) {
         return;
       }
       this.recentUpdateExpanded = {
         ...this.recentUpdateExpanded,
-        [key]: !this.recentUpdateExpanded[key],
+        [key]: true,
       };
+    },
+
+    hasRecentUpdateExpanded() {
+      const activeKeys = new Set((this.recentUpdates?.groups || []).map((group) => this.recentUpdateGroupKey(group)));
+      return Object.entries(this.recentUpdateExpanded).some(([key, expanded]) => expanded && activeKeys.has(key));
+    },
+
+    collapseRecentUpdates() {
+      if (!this.hasRecentUpdateExpanded()) {
+        return;
+      }
+      this.recentUpdateExpanded = {};
+      this.$nextTick(() => this.scheduleRecentUpdatesMeasure());
     },
 
     scheduleRecentUpdatesMeasure() {
@@ -4972,7 +4999,6 @@ function galleryApp() {
       }
       const nextExpandable = { ...this.recentUpdateExpandable };
       const nextRowHeights = { ...this.recentUpdateRowHeights };
-      const measuredKeys = new Set();
       let measured = false;
       grids.forEach((grid) => {
         const key = this.recentUpdateTaskKey(grid.dataset?.recentUpdateTaskId);
@@ -4993,7 +5019,6 @@ function galleryApp() {
           ...firstRowCards.map((card) => card.getBoundingClientRect().bottom - gridRect.top),
         );
         const hasSecondRow = cards.some((card) => card.getBoundingClientRect().top - firstTop > 1);
-        measuredKeys.add(key);
         nextExpandable[key] = hasSecondRow;
         if (firstRowBottom > 0) {
           nextRowHeights[key] = Math.ceil(firstRowBottom);
@@ -5007,18 +5032,9 @@ function galleryApp() {
       if (!measured) {
         return;
       }
-      Object.keys(nextExpandable).forEach((key) => {
-        if (!measuredKeys.has(key)) {
-          delete nextExpandable[key];
-        }
-      });
-      Object.keys(nextRowHeights).forEach((key) => {
-        if (!measuredKeys.has(key)) {
-          delete nextRowHeights[key];
-        }
-      });
+      const activeKeys = new Set((this.recentUpdates?.groups || []).map((group) => this.recentUpdateGroupKey(group)));
       const nextExpanded = Object.fromEntries(
-        Object.entries(this.recentUpdateExpanded).filter(([key]) => measuredKeys.has(key) && nextExpandable[key]),
+        Object.entries(this.recentUpdateExpanded).filter(([key, expanded]) => expanded && activeKeys.has(key)),
       );
       const mapsEqual = (left, right) => {
         const leftKeys = Object.keys(left);
@@ -5058,6 +5074,23 @@ function galleryApp() {
       };
     },
 
+    cloneRecentUpdateDisclosure() {
+      return {
+        expanded: { ...this.recentUpdateExpanded },
+        expandable: { ...this.recentUpdateExpandable },
+        rowHeights: { ...this.recentUpdateRowHeights },
+      };
+    },
+
+    restoreRecentUpdateDisclosure(snapshot) {
+      if (!snapshot) {
+        return;
+      }
+      this.recentUpdateExpanded = { ...(snapshot.expanded || {}) };
+      this.recentUpdateExpandable = { ...(snapshot.expandable || {}) };
+      this.recentUpdateRowHeights = { ...(snapshot.rowHeights || {}) };
+    },
+
     removeFolderFromRecentUpdates(folderNames) {
       const removed = new Set(
         (Array.isArray(folderNames) ? folderNames : [folderNames])
@@ -5079,16 +5112,7 @@ function galleryApp() {
         total_groups: groups.length,
         total_items: groups.reduce((total, group) => total + group.items.length, 0),
       };
-      const activeKeys = new Set(groups.map((group) => this.recentUpdateGroupKey(group)));
-      this.recentUpdateExpanded = Object.fromEntries(
-        Object.entries(this.recentUpdateExpanded).filter(([key]) => activeKeys.has(key)),
-      );
-      this.recentUpdateExpandable = Object.fromEntries(
-        Object.entries(this.recentUpdateExpandable).filter(([key]) => activeKeys.has(key)),
-      );
-      this.recentUpdateRowHeights = Object.fromEntries(
-        Object.entries(this.recentUpdateRowHeights).filter(([key]) => activeKeys.has(key)),
-      );
+      this.reconcileRecentUpdateDisclosure(groups);
       this.$nextTick(() => this.scheduleRecentUpdatesMeasure());
     },
 
@@ -5438,6 +5462,7 @@ function galleryApp() {
       }
       const previousTaskRuns = [...(this.taskRuns || [])];
       const previousRecentUpdates = this.cloneRecentUpdates();
+      const previousRecentUpdateDisclosure = this.cloneRecentUpdateDisclosure();
       this.taskRuns = (this.taskRuns || []).filter((item) => item.status === "running");
       this.clearTaskLogsConfirmStep = 0;
       this.notify("info", "正在清理任务日志", "页面已先更新，后台正在处理。");
@@ -5451,6 +5476,7 @@ function galleryApp() {
       } catch (error) {
         this.taskRuns = previousTaskRuns;
         this.recentUpdates = previousRecentUpdates;
+        this.restoreRecentUpdateDisclosure(previousRecentUpdateDisclosure);
         this.notify("error", "清理失败", error.message || "任务日志已恢复。");
       }
     },
@@ -6564,6 +6590,7 @@ function galleryApp() {
         queuedTasks: [...(this.queuedTasks || [])],
         trashItems: [...(this.trashItems || [])],
         recentUpdates: this.cloneRecentUpdates(),
+        recentUpdateDisclosure: this.cloneRecentUpdateDisclosure(),
       };
       this.clearDataConfirmStep = 0;
       this.closeGalleryLayers();
@@ -6597,6 +6624,7 @@ function galleryApp() {
         this.queuedTasks = previousState.queuedTasks;
         this.trashItems = previousState.trashItems;
         this.recentUpdates = previousState.recentUpdates;
+        this.restoreRecentUpdateDisclosure(previousState.recentUpdateDisclosure);
         this.notify("error", "清空失败", error.message || "页面内容已恢复。");
       }
     },
@@ -6880,6 +6908,7 @@ function galleryApp() {
       const previousGalleryItems = [...(this.gallery.items || [])];
       const previousGalleryTotal = this.gallery.total || 0;
       const previousRecentUpdates = this.cloneRecentUpdates();
+      const previousRecentUpdateDisclosure = this.cloneRecentUpdateDisclosure();
       const previousDetail = {
         open: this.detail.open,
         pairs: [...(this.detail.pairs || [])],
@@ -6911,6 +6940,7 @@ function galleryApp() {
           total: previousGalleryTotal,
         };
         this.recentUpdates = previousRecentUpdates;
+        this.restoreRecentUpdateDisclosure(previousRecentUpdateDisclosure);
         if (!this.viewer.open && !this.detail.open && previousDetail.folder?.folder_name === folderName) {
           this.detail = previousDetail;
         }
@@ -6930,6 +6960,7 @@ function galleryApp() {
       const previousGalleryItems = [...(this.gallery.items || [])];
       const previousGalleryTotal = this.gallery.total || 0;
       const previousRecentUpdates = this.cloneRecentUpdates();
+      const previousRecentUpdateDisclosure = this.cloneRecentUpdateDisclosure();
       const previousCache = this.detailCache[folderName] ? this.cloneDetailPayload(this.detailCache[folderName]) : null;
       this.pendingTrashFolder = null;
       if (this.detail.folder?.folder_name === folderName) {
@@ -6952,7 +6983,8 @@ function galleryApp() {
           total: previousGalleryTotal,
         };
         this.recentUpdates = previousRecentUpdates;
-      if (previousCache) {
+        this.restoreRecentUpdateDisclosure(previousRecentUpdateDisclosure);
+        if (previousCache) {
           this.cacheDetailPayload(folderName, previousCache);
         }
         if (folder && !this.gallery.items.find((item) => item.folder_name === folderName)) {
