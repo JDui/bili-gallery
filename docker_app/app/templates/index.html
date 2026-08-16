@@ -440,14 +440,6 @@
                         <button class="secondary-button" @click="refreshRecentUpdates()" :disabled="recentUpdatesLoading" x-text="recentUpdatesLoading ? '加载中' : '刷新'"></button>
                     </div>
                 </div>
-                <button
-                    type="button"
-                    class="secondary-button recent-updates-collapse-button"
-                    data-testid="recent-updates-collapse"
-                    x-show="hasRecentUpdateExpanded()"
-                    @click="collapseRecentUpdates()"
-                    x-cloak
-                >收纳更新</button>
                 <div class="recent-updates-timeline" x-show="recentUpdates.groups.length" x-cloak>
                     <template x-for="group in recentUpdates.groups" :key="group.task_id">
                         <article class="recent-update-group">
@@ -463,6 +455,13 @@
                                     </div>
                                     <span class="inline-tag accent" x-text="`${group.items.length} 条动态`"></span>
                                 </header>
+                                <button
+                                    type="button"
+                                    class="secondary-button recent-update-collapse-button"
+                                    x-show="isRecentUpdateExpanded(group)"
+                                    @click="collapseRecentUpdate(group.task_id)"
+                                    x-cloak
+                                >收纳更新</button>
                                 <div
                                     class="recent-update-grid"
                                     data-recent-update-grid
@@ -1586,7 +1585,7 @@
                         >
                             <div class="detail-thumb" :style="detailThumbStyle(pair)">
                                 <template x-if="!pair.placeholder">
-                                    <img class="hover-preview-image detail-preview-image" decoding="async" loading="lazy" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`" @load="fadeLoadedImage($event)">
+                                    <img class="hover-preview-image detail-preview-image" decoding="async" loading="lazy" :src="detailPairPreviewUrl(pair)" :alt="`第 ${pair.pair_index} 组`" @load="fadeDetailPreviewImage($event)">
                                 </template>
                                 <template x-if="pair.placeholder">
                                     <div class="detail-placeholder-wash"></div>

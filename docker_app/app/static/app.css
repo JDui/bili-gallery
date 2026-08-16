@@ -2281,12 +2281,14 @@ html.is-interacting .detail-thumb::before {
     margin-top: 14px;
 }
 
-.recent-updates-collapse-button {
-    position: fixed;
-    right: max(24px, env(safe-area-inset-right));
-    bottom: max(24px, env(safe-area-inset-bottom));
-    z-index: 20;
-    box-shadow: 0 12px 28px rgba(31, 48, 80, 0.2);
+.recent-update-collapse-button {
+    position: sticky;
+    top: calc(var(--layout-topbar-top) + 76px);
+    z-index: 3;
+    display: block;
+    width: fit-content;
+    margin: -4px 0 14px auto;
+    box-shadow: 0 10px 22px rgba(45, 58, 75, 0.14);
 }
 
 .recent-update-card {
@@ -3231,8 +3233,6 @@ html.is-interacting .detail-thumb::before {
     border: 1px solid rgba(214, 223, 235, 0.9);
     box-shadow: var(--shadow-card);
     contain: layout paint style;
-    content-visibility: auto;
-    contain-intrinsic-size: 240px;
     transition: transform var(--duration-base) var(--ease-fluid), border-color var(--duration-fast) var(--ease-soft), box-shadow var(--duration-base) var(--ease-fluid);
 }
 
@@ -4197,9 +4197,9 @@ html.is-interacting .detail-thumb::before {
 }
 
 @media (max-width: 680px) {
-    .recent-updates-collapse-button {
-        right: max(14px, env(safe-area-inset-right));
-        bottom: max(14px, env(safe-area-inset-bottom));
+    .recent-update-collapse-button {
+        top: 68px;
+        margin-bottom: 12px;
     }
 
     .recent-updates-timeline {

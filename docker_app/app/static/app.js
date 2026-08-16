@@ -111,9 +111,13 @@ function galleryApp() {
     detailRenderStart: 0,
     detailRenderEnd: 0,
     detailEstimatedRowHeight: 270,
+    detailGridGap: 14,
     detailWindowRowCount: 10,
     detailWindowShiftRaf: null,
     detailWindowShiftLock: false,
+    detailScrollSettleTimer: null,
+    detailScrollSettling: false,
+    detailPromotionToken: 0,
     detailLoading: false,
     detailRequestId: 0,
     detailClosing: false,
@@ -823,6 +827,14 @@ function galleryApp() {
       image.classList.add("image-loaded");
     },
 
+    fadeDetailPreviewImage(event) {
+      const image = event?.target;
+      if (!image || !image.classList || image.classList.contains("image-loaded")) {
+        return;
+      }
+      image.classList.add("image-loaded");
+    },
+
     closeToast() {
       if (this.toastTimer) {
         window.clearTimeout(this.toastTimer);
@@ -1282,7 +1294,9 @@ function galleryApp() {
       const end = Math.min(pairs.length, Math.max(start, this.detailRenderEnd || start + this.detailWindowSize()));
       const rowsBefore = Math.ceil(start / columns);
       const rowsAfter = Math.ceil(Math.max(0, pairs.length - end) / columns);
-      const height = (position === "top" ? rowsBefore : rowsAfter) * Math.max(180, this.detailEstimatedRowHeight || 270);
+      const rows = position === "top" ? rowsBefore : rowsAfter;
+      const rowHeight = Math.max(180, this.detailEstimatedRowHeight || 270);
+      const height = rows > 0 ? Math.max(0, rows * rowHeight - Math.max(0, this.detailGridGap || 0)) : 0;
       return height > 0 ? `height: ${Math.round(height)}px;` : "display: none;";
     },
 
@@ -1290,6 +1304,7 @@ function galleryApp() {
       this.detailRenderStart = 0;
       this.detailRenderEnd = Math.min((this.detail.pairs || []).length, this.detailWindowSize());
       this.detailEstimatedRowHeight = 270;
+      this.detailGridGap = 14;
       this.detailWindowShiftLock = false;
       if (this.detailWindowShiftRaf) {
         window.cancelAnimationFrame(this.detailWindowShiftRaf);
@@ -1312,6 +1327,7 @@ function galleryApp() {
       const gap = Number.parseFloat(styles.rowGap || styles.gap || 0) || 0;
       const rowHeight = height + gap;
       if (Number.isFinite(rowHeight) && rowHeight > 120) {
+        this.detailGridGap = gap;
         this.detailEstimatedRowHeight = Math.round(Math.max(180, Math.min(720, rowHeight)));
       }
     },
@@ -1321,7 +1337,22 @@ function galleryApp() {
     },
 
     scheduleDetailWindowShift() {
-      if (this.detailWindowShiftRaf || this.detailWindowShiftLock || !this.detail.open || (this.detail.pairs || []).length <= this.detailWindowSize()) {
+      if (!this.detail.open) {
+        return;
+      }
+      this.detailPromotionToken += 1;
+      this.detailScrollSettling = true;
+      if (this.detailScrollSettleTimer) {
+        window.clearTimeout(this.detailScrollSettleTimer);
+      }
+      const folderName = this.detail.folder?.folder_name;
+      const requestId = this.detailRequestId;
+      this.detailScrollSettleTimer = window.setTimeout(() => {
+        this.detailScrollSettleTimer = null;
+        this.detailScrollSettling = false;
+        this.scheduleDetailThumbnailPromotion(folderName, requestId);
+      }, 180);
+      if (this.detailWindowShiftRaf || this.detailWindowShiftLock || (this.detail.pairs || []).length <= this.detailWindowSize()) {
         return;
       }
       this.detailWindowShiftRaf = window.requestAnimationFrame(() => {
@@ -1684,6 +1715,7 @@ function galleryApp() {
       this.$nextTick(() => {
         this.measureDetailWindow();
         this.scheduleDetailWindowShift();
+        this.scheduleDetailThumbnailPromotion(this.detail.folder?.folder_name, this.detailRequestId);
       });
     },
 
@@ -2766,6 +2798,12 @@ function galleryApp() {
         window.clearTimeout(this.detailCloseTimer);
         this.detailCloseTimer = null;
       }
+      this.detailPromotionToken += 1;
+      this.detailScrollSettling = false;
+      if (this.detailScrollSettleTimer) {
+        window.clearTimeout(this.detailScrollSettleTimer);
+        this.detailScrollSettleTimer = null;
+      }
       const resetDetailScroll = () => this.$nextTick(() => this.scrollDetailTop());
       this.detailTextExpanded = false;
       this.detailTextOverflowing = false;
@@ -3033,27 +3071,40 @@ function galleryApp() {
     },
 
     scheduleDetailThumbnailPromotion(folderName, requestId) {
-      const promoteNext = (index = 0) => {
-        if (requestId !== this.detailRequestId || this.detail.folder?.folder_name !== folderName) {
+      if (!folderName || requestId !== this.detailRequestId || this.detail.folder?.folder_name !== folderName || this.detailScrollSettling) {
+        return;
+      }
+      const token = this.detailPromotionToken + 1;
+      this.detailPromotionToken = token;
+      const pairs = this.detail.pairs || [];
+      const start = Math.max(0, this.detailRenderStart || 0);
+      const end = Math.min(pairs.length, Math.max(start, this.detailRenderEnd || start + this.detailWindowSize()));
+      const pairIndexes = pairs
+        .slice(start, end)
+        .filter((pair) => !pair.placeholder && !pair.promote_preview)
+        .map((pair) => Number(pair.pair_index));
+      const promoteNext = (offset = 0) => {
+        if (
+          token !== this.detailPromotionToken
+          || requestId !== this.detailRequestId
+          || this.detail.folder?.folder_name !== folderName
+          || this.detailScrollSettling
+        ) {
           return;
         }
-        const pairs = this.detail.pairs || [];
-        if (index >= pairs.length) {
+        if (offset >= pairIndexes.length) {
           this.cacheDetailPayload(folderName, this.detail);
           return;
         }
-        const end = Math.min(index + 6, pairs.length);
-        this.detail = {
-          ...this.detail,
-          pairs: pairs.map((pair, pairIndex) => (
-            pairIndex >= index && pairIndex < end && !pair.placeholder
-              ? { ...pair, promote_preview: true }
-              : pair
-          )),
-        };
-        this.scheduleIdleWork(() => promoteNext(end), 240);
+        const batch = new Set(pairIndexes.slice(offset, offset + 6));
+        for (const pair of this.detail.pairs || []) {
+          if (batch.has(Number(pair.pair_index))) {
+            pair.promote_preview = true;
+          }
+        }
+        this.scheduleIdleWork(() => promoteNext(offset + batch.size), 320);
       };
-      window.setTimeout(() => promoteNext(0), 80);
+      this.scheduleIdleWork(() => promoteNext(0), 180);
     },
 
     openPair(pairIndex) {
@@ -3245,6 +3296,12 @@ function galleryApp() {
         this.detailCloseTimer = null;
       }
       this.detailRequestId += 1;
+      this.detailPromotionToken += 1;
+      this.detailScrollSettling = false;
+      if (this.detailScrollSettleTimer) {
+        window.clearTimeout(this.detailScrollSettleTimer);
+        this.detailScrollSettleTimer = null;
+      }
       this.detailLoading = false;
       this.detailClosing = !skipAnimation;
       this.detail = { ...this.detail, open: false };
@@ -4965,16 +5022,14 @@ function galleryApp() {
       };
     },
 
-    hasRecentUpdateExpanded() {
-      const activeKeys = new Set((this.recentUpdates?.groups || []).map((group) => this.recentUpdateGroupKey(group)));
-      return Object.entries(this.recentUpdateExpanded).some(([key, expanded]) => expanded && activeKeys.has(key));
-    },
-
-    collapseRecentUpdates() {
-      if (!this.hasRecentUpdateExpanded()) {
+    collapseRecentUpdate(taskId) {
+      const key = this.recentUpdateTaskKey(taskId);
+      if (!this.recentUpdateExpanded[key]) {
         return;
       }
-      this.recentUpdateExpanded = {};
+      const nextExpanded = { ...this.recentUpdateExpanded };
+      delete nextExpanded[key];
+      this.recentUpdateExpanded = nextExpanded;
       this.$nextTick(() => this.scheduleRecentUpdatesMeasure());
     },
 
