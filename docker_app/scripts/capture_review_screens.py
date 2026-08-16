@@ -103,12 +103,10 @@ def main() -> None:
 
         page.get_by_test_id("nav-settings").click()
         expect(page.locator("[data-testid='section-settings']")).to_be_visible()
-        page.get_by_role("button", name="生成二维码").click()
-        expect(page.locator(".qr-box img")).to_be_visible(timeout=10000)
         save(page, output_dir, "settings.png")
 
-        page.get_by_test_id("nav-subscriptions").click()
-        expect(page.locator("[data-testid='section-subscriptions']")).to_be_visible()
+        page.get_by_test_id("nav-subscriptions-inline").click()
+        expect(page.locator("[data-testid='section-subscription-overview']")).to_be_visible()
         save(page, output_dir, "subscriptions.png")
 
         browser.close()
