@@ -1,4 +1,4 @@
-# Docker 化 B 站动态相簿 v9.9
+# Docker 化 B 站动态相簿 v10.0
 
 ## 启动
 
@@ -8,11 +8,11 @@
 
 ## NAS 部署
 
-AMD64 NAS 可以直接使用 [docker-compose.nas-amd64.yml](/Users/muxinzheng/Desktop/ZZS/docker_app/docker-compose.nas-amd64.yml)。
+AMD64 NAS 可以直接使用 [docker-compose.nas-amd64.yml](docker-compose.nas-amd64.yml)。
 
 建议流程：
 
-1. 先把镜像包导入 NAS：`docker load -i zzs-bili-gallery_v9.9_amd64.tar`
+1. 先把镜像包导入 NAS：`docker load -i zzs-bili-gallery_v10.0_amd64.tar`
 2. 按你的 NAS 实际目录修改 compose 里的两个挂载路径
 3. 执行 `docker compose -f docker-compose.nas-amd64.yml up -d`
 
@@ -39,6 +39,14 @@ AMD64 NAS 可以直接使用 [docker-compose.nas-amd64.yml](/Users/muxinzheng/De
 - Live Photo 预览、循环、乒乓、单次、不播放
 - 原始媒体删除后的缩略图销毁与索引清理
 - 前台加载优先调度，后台拉取、删除、图标刷新和重复检测会主动让行
+
+## 界面与动效
+
+界面使用浅色液态玻璃风格，统一导航、图库、审核、任务、订阅、设置及详情浮层的材质、圆角和光影。导航使用内置 SVG 图标，选项控件带滑动指示块，页面切换、按钮按压与筛选展开都有轻量动效；桌面导航和顶栏支持随鼠标移动的高光。
+
+在「设置」中选择低功耗模式会关闭背景模糊和鼠标高光。系统开启「减少动态效果」时，界面会减少过渡并关闭新增的位移动效。浏览器不支持背景模糊时使用清晰的实色面板。玻璃效果不会改变原图与视频的颜色。
+
+视觉样式与动效分别维护在 `app/static/liquid-glass.css` 和 `app/static/liquid-glass.js`。前端资源使用独立的样式修订号刷新缓存；升级现有 Docker 部署需要重新构建镜像。
 
 ## 任务优先级
 

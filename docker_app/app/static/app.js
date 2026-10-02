@@ -308,6 +308,12 @@ function galleryApp() {
     },
 
     async init() {
+      ["currentView", "subscriptionPanel"].forEach((key) => {
+        this.$watch(key, () => this.$nextTick(() => window.GalleryGlass?.refresh({ viewChanged: true })));
+      });
+      ["compactViewport", "sidebarCollapsed"].forEach((key) => {
+        this.$watch(key, () => this.$nextTick(() => window.GalleryGlass?.refresh()));
+      });
       this.updateViewportMode();
       this.resetSiteSourceForm();
       window.addEventListener("scroll", () => this.scheduleScrollEffects(), { passive: true });

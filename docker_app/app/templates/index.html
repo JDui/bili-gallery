@@ -1,25 +1,49 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+    {% set ui_revision = app_version ~ '-glass-1' %}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ app_title }}</title>
-    <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
-    <script defer src="/static/app.js?v={{ app_version }}"></script>
+    <meta name="theme-color" content="#eaf0fb">
+    <link rel="stylesheet" href="/static/app.css?v={{ ui_revision }}">
+    <link rel="stylesheet" href="/static/liquid-glass.css?v={{ ui_revision }}">
+    <script defer src="/static/app.js?v={{ ui_revision }}"></script>
+    <script defer src="/static/liquid-glass.js?v={{ ui_revision }}"></script>
     <script defer src="/static/vendor/alpinejs.min.js?v={{ app_version }}"></script>
 </head>
 <body x-data="galleryApp()">
+    <svg class="ui-icon-definitions" xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true" focusable="false">
+        <defs>
+            <symbol id="icon-all" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+            <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+            <symbol id="icon-favorites" viewBox="0 0 24 24"><path d="M20.4 4.6a5.5 5.5 0 0 0-7.8 0l-.6.6-.6-.6a5.5 5.5 0 0 0-7.8 7.8L12 21l8.4-8.6a5.5 5.5 0 0 0 0-7.8Z"/></symbol>
+            <symbol id="icon-livephoto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke-dasharray="1 3"/><circle cx="12" cy="12" r="5.5"/><circle cx="12" cy="12" r="2"/></symbol>
+            <symbol id="icon-subscriptions" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="14" rx="3"/><path d="M6 3h12M8 11h8M8 15h5"/></symbol>
+            <symbol id="icon-recent-updates" viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2.5 7M3 4v7h7M12 7v5l3 2"/></symbol>
+            <symbol id="icon-duplicates" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="3"/><path d="M16 4a2 2 0 0 0-2-1H5a2 2 0 0 0-2 2v9a2 2 0 0 0 1 2"/></symbol>
+            <symbol id="icon-review" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></symbol>
+            <symbol id="icon-logs" viewBox="0 0 24 24"><path d="M4 5h16l-6 7v6l-4 2v-8L4 5Z"/></symbol>
+            <symbol id="icon-tasks" viewBox="0 0 24 24"><path d="m3 6 1.5 1.5L7 5M10 6h11M3 12h4M10 12h11M3 18h4M10 18h11"/></symbol>
+            <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
+            <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="var(--surface-strong)"/><circle cx="16" cy="12" r="2" fill="var(--surface-strong)"/><circle cx="10" cy="18" r="2" fill="var(--surface-strong)"/></symbol>
+            <symbol id="icon-library" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM7 4h10M8 11h8M8 15h5"/></symbol>
+        </defs>
+    </svg>
     <div class="shell" x-ref="shell" :class="{ 'sidebar-collapsed': sidebarCollapsed && !compactViewport, 'compact-layout': compactViewport, 'sidebar-drawer-open': sidebarDrawerOpen }">
         <div class="sidebar-backdrop" x-show="compactViewport && sidebarDrawerOpen" x-transition.opacity @click="closeSidebarDrawer()" x-cloak></div>
-        <aside class="sidebar" x-ref="sidebar" :class="{ collapsed: sidebarCollapsed && !compactViewport, open: sidebarDrawerOpen, compact: compactViewport }">
+        <aside class="sidebar" x-ref="sidebar" aria-label="相簿导航" :class="{ collapsed: sidebarCollapsed && !compactViewport, open: sidebarDrawerOpen, compact: compactViewport }">
             <div class="sidebar-head">
                 <button class="icon-button mobile-only" @click="toggleSidebar()" aria-label="切换边栏">
                     <span></span>
                     <span></span>
                 </button>
                 <div class="brand-block" x-show="!sidebarCollapsed">
-                    <h1>{{ app_title }}</h1>
-                    <p class="brand-version">v{{ app_version }}</p>
+                    <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+                    <div class="brand-identity">
+                        <h1>{{ app_title | replace(' v' ~ app_version, '') }}</h1>
+                        <p class="brand-version">私人相簿 · v{{ app_version }}</p>
+                    </div>
                 </div>
                 <button class="icon-button desktop-only" @click="toggleSidebar()" aria-label="切换边栏">
                     <span></span>
@@ -34,11 +58,11 @@
                     <button
                         class="sidebar-link"
                         :data-testid="`nav-${item.key}`"
-                        :class="{ active: currentView === 'gallery' && category === item.key }"
+                        :class="{ active: currentView === 'gallery' && category === item.key }" :aria-current="(currentView === 'gallery' && category === item.key) ? 'page' : null"
                         :title="item.label"
                         @click="openGallery(item.key)"
                     >
-                        <span class="link-badge" x-text="item.short"></span>
+                        <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use :href="'#icon-' + item.key"></use></svg></span>
                         <span class="link-text" x-show="!sidebarCollapsed" x-text="item.label"></span>
                         <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount(item.key)"></span>
                     </button>
@@ -50,14 +74,14 @@
                     <span>订阅</span>
                     <span class="section-label-chevron" :class="{ open: !subscriptionSectionCollapsed }"></span>
                 </button>
-                <button class="sidebar-link subscription-manage-link" data-testid="nav-subscriptions-inline" :class="{ active: currentView === 'subscriptions' }" title="订阅管理" @click="openSubscriptions('overview')">
-                    <span class="link-badge search-link-badge"><span class="tab-search-icon" aria-hidden="true"></span></span>
+                <button class="sidebar-link subscription-manage-link" data-testid="nav-subscriptions-inline" :class="{ active: currentView === 'subscriptions' }" :aria-current="(currentView === 'subscriptions') ? 'page' : null" title="订阅管理" @click="openSubscriptions('overview')">
+                    <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-subscriptions"></use></svg></span>
                     <span class="link-text" x-show="!sidebarCollapsed">订阅管理</span>
                     <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('subscriptions')"></span>
                 </button>
                 <div class="sidebar-subscription-list" x-show="!subscriptionSectionCollapsed" x-transition.opacity.duration.160ms x-cloak>
                     <template x-for="item in subscriptions" :key="item.uid">
-                        <button class="sidebar-link" :class="{ active: currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid }" :title="item.uname || item.uid" @click="selectSubscription(item.uid)">
+                        <button class="sidebar-link" :class="{ active: currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid }" :aria-current="(currentView === 'gallery' && selectedSubscriptionUids.length === 1 && selectedSubscriptionUids[0] === item.uid) ? 'page' : null" :title="item.uname || item.uid" @click="selectSubscription(item.uid)">
                             <span class="link-badge subscription-link-badge" :class="{ image: subscriptionIconUrl(item) }" :style="subscriptionIconTinyStyle(item)">
                                 <template x-if="subscriptionIconUrl(item)">
                                     <img :src="subscriptionIconUrl(item)" :alt="item.uname || item.uid" loading="lazy" decoding="async" @load="fadeLoadedImage($event)" @error="handleSubscriptionIconError(item)">
@@ -75,44 +99,47 @@
 
             <section class="nav-section">
                 <div class="section-label" x-show="!sidebarCollapsed">智能相簿</div>
-                <button class="sidebar-link" data-testid="nav-recent-updates" :class="{ active: currentView === 'recent-updates' }" title="最近更新" @click="openRecentUpdates()">
-                    <span class="link-badge">新</span>
+                <button class="sidebar-link" data-testid="nav-recent-updates" :class="{ active: currentView === 'recent-updates' }" :aria-current="(currentView === 'recent-updates') ? 'page' : null" title="最近更新" @click="openRecentUpdates()">
+                    <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-recent-updates"></use></svg></span>
                     <span class="link-text" x-show="!sidebarCollapsed">最近更新</span>
                     <span class="link-count" x-show="!sidebarCollapsed" x-text="recentUpdates.total_items || 0"></span>
                 </button>
-                <button class="sidebar-link" data-testid="nav-duplicates" :class="{ active: currentView === 'duplicates' }" title="重复内容" @click="openDuplicates()">
-                    <span class="link-badge">重</span>
+                <button class="sidebar-link" data-testid="nav-duplicates" :class="{ active: currentView === 'duplicates' }" :aria-current="(currentView === 'duplicates') ? 'page' : null" title="重复内容" @click="openDuplicates()">
+                    <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-duplicates"></use></svg></span>
                     <span class="link-text" x-show="!sidebarCollapsed">重复内容</span>
                     <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('duplicates')"></span>
                 </button>
-                <button class="sidebar-link" data-testid="nav-review" :class="{ active: currentView === 'review' }" title="待审核" @click="openReview()">
-                    <span class="link-badge">审</span>
+                <button class="sidebar-link" data-testid="nav-review" :class="{ active: currentView === 'review' }" :aria-current="(currentView === 'review') ? 'page' : null" title="待审核" @click="openReview()">
+                    <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-review"></use></svg></span>
                     <span class="link-text" x-show="!sidebarCollapsed">待审核</span>
                     <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('review')"></span>
                 </button>
-                <button class="sidebar-link" data-testid="nav-logs" :class="{ active: currentView === 'logs' }" title="过滤日志" @click="openLogs()">
-                    <span class="link-badge">滤</span>
+                <button class="sidebar-link" data-testid="nav-logs" :class="{ active: currentView === 'logs' }" :aria-current="(currentView === 'logs') ? 'page' : null" title="过滤日志" @click="openLogs()">
+                    <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-logs"></use></svg></span>
                     <span class="link-text" x-show="!sidebarCollapsed">过滤日志</span>
                     <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('logs')"></span>
                 </button>
-                <button class="sidebar-link" data-testid="nav-tasks" :class="{ active: currentView === 'tasks' }" title="任务队列" @click="openTasks()">
-                    <span class="link-badge">队</span>
+                <button class="sidebar-link" data-testid="nav-tasks" :class="{ active: currentView === 'tasks' }" :aria-current="(currentView === 'tasks') ? 'page' : null" title="任务队列" @click="openTasks()">
+                    <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-tasks"></use></svg></span>
                     <span class="link-text" x-show="!sidebarCollapsed">任务队列</span>
                     <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('tasks')"></span>
                 </button>
-                <button class="sidebar-link" data-testid="nav-trash" :class="{ active: currentView === 'trash' }" title="内容垃圾桶" @click="openTrash()">
-                    <span class="link-badge">桶</span>
+                <button class="sidebar-link" data-testid="nav-trash" :class="{ active: currentView === 'trash' }" :aria-current="(currentView === 'trash') ? 'page' : null" title="内容垃圾桶" @click="openTrash()">
+                    <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-trash"></use></svg></span>
                     <span class="link-text" x-show="!sidebarCollapsed">内容垃圾桶</span>
                     <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('trash')"></span>
                 </button>
-                <button class="sidebar-link" data-testid="nav-settings" :class="{ active: currentView === 'settings' }" title="拉取与设置" @click="openSettings()">
-                    <span class="link-badge">设</span>
+                <button class="sidebar-link" data-testid="nav-settings" :class="{ active: currentView === 'settings' }" :aria-current="(currentView === 'settings') ? 'page' : null" title="拉取与设置" @click="openSettings()">
+                    <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-settings"></use></svg></span>
                     <span class="link-text" x-show="!sidebarCollapsed">拉取与设置</span>
                     <span class="link-count" x-show="!sidebarCollapsed">控制</span>
                 </button>
             </section>
             </div>
-
+            <div class="sidebar-footer" x-show="!sidebarCollapsed">
+                <span class="sidebar-footer-mark"><svg class="nav-icon" aria-hidden="true"><use href="#icon-library"></use></svg></span>
+                <div><strong>本地收藏空间</strong><span>让每一刻都有归处</span></div>
+            </div>
         </aside>
 
         <main class="workspace" x-ref="workspace">
@@ -130,7 +157,7 @@
                                 <template x-for="option in sourceKindOptions" :key="option.key">
                                     <button
                                         class="chip-button"
-                                        :class="{ active: sourceKind === option.key }"
+                                        :class="{ active: sourceKind === option.key }" :aria-pressed="sourceKind === option.key"
                                         :data-testid="`source-kind-${option.key}`"
                                         @click="setSourceKind(option.key)"
                                         x-text="option.label"
@@ -169,8 +196,8 @@
                         </label>
                         <button class="secondary-button" @click="toggleTimeFilter()" x-text="timeFilterOpen ? '收起瀑布流选项' : '瀑布流选项'"></button>
                         <div class="mode-switch" x-show="!compactViewport" x-cloak>
-                            <button class="chip-button" :class="{ active: galleryViewMode === 'folder' }" @click="setGalleryViewMode('folder')">动态视图</button>
-                            <button class="chip-button" :class="{ active: galleryViewMode === 'pair' }" @click="setGalleryViewMode('pair')">图片视图</button>
+                            <button class="chip-button" :class="{ active: galleryViewMode === 'folder' }" :aria-pressed="galleryViewMode === 'folder'" @click="setGalleryViewMode('folder')">动态视图</button>
+                            <button class="chip-button" :class="{ active: galleryViewMode === 'pair' }" :aria-pressed="galleryViewMode === 'pair'" @click="setGalleryViewMode('pair')">图片视图</button>
                         </div>
                     </div>
                 </div>
@@ -185,11 +212,11 @@
                     </form>
                     <div class="search-tag-row search-tab-row">
                         <template x-for="tag in searchTags" :key="tag">
-                            <button class="chip-button subtle search-tab" :class="{ active: searchQuery === tag }" @click="applySearch(tag)" x-text="tag"></button>
+                            <button class="chip-button subtle search-tab" :class="{ active: searchQuery === tag }" :aria-pressed="searchQuery === tag" @click="applySearch(tag)" x-text="tag"></button>
                         </template>
                     </div>
                 </section>
-                <section class="time-filter-panel" x-show="timeFilterOpen" x-cloak>
+                <section class="time-filter-panel" x-show="timeFilterOpen" x-transition.opacity.duration.180ms x-cloak>
                     <div class="time-filter-copy">
                         <p>瀑布流选项</p>
                         <strong x-text="timeFilterSummary()"></strong>
@@ -218,13 +245,13 @@
                     </div>
                     <div class="button-row time-filter-actions">
                         <div class="mode-switch time-filter-sort-switch">
-                            <button class="chip-button" :class="{ active: timeSortMode === 'desc' }" @click="setTimeSortMode('desc')">时间倒序</button>
-                            <button class="chip-button" :class="{ active: timeSortMode === 'asc' }" @click="setTimeSortMode('asc')">时间正序</button>
-                            <button class="chip-button" :class="{ active: timeSortMode === 'random' }" @click="setTimeSortMode('random')">随机时间</button>
+                            <button class="chip-button" :class="{ active: timeSortMode === 'desc' }" :aria-pressed="timeSortMode === 'desc'" @click="setTimeSortMode('desc')">时间倒序</button>
+                            <button class="chip-button" :class="{ active: timeSortMode === 'asc' }" :aria-pressed="timeSortMode === 'asc'" @click="setTimeSortMode('asc')">时间正序</button>
+                            <button class="chip-button" :class="{ active: timeSortMode === 'random' }" :aria-pressed="timeSortMode === 'random'" @click="setTimeSortMode('random')">随机时间</button>
                         </div>
                         <div class="mode-switch" x-show="compactViewport" x-cloak>
-                            <button class="chip-button" :class="{ active: galleryViewMode === 'folder' }" @click="setGalleryViewMode('folder')">动态视图</button>
-                            <button class="chip-button" :class="{ active: galleryViewMode === 'pair' }" @click="setGalleryViewMode('pair')">图片视图</button>
+                            <button class="chip-button" :class="{ active: galleryViewMode === 'folder' }" :aria-pressed="galleryViewMode === 'folder'" @click="setGalleryViewMode('folder')">动态视图</button>
+                            <button class="chip-button" :class="{ active: galleryViewMode === 'pair' }" :aria-pressed="galleryViewMode === 'pair'" @click="setGalleryViewMode('pair')">图片视图</button>
                         </div>
                         <div class="filter-subscriptions" x-show="subscriptions.length" x-cloak>
                             <template x-for="item in subscriptions" :key="`filter-${item.uid}`">
@@ -282,7 +309,7 @@
                                                     <span class="photo-badge live photo-badge-corner" x-show="item.has_livephoto">Live Photo</span>
                                                     <div class="photo-count-badge" x-text="`${item.asset_count} 项`"></div>
                                                     </div>
-                                                    <button class="favorite-button" :class="{ active: item.is_favorite }" @click.stop="toggleFavorite(item, $event)" aria-label="收藏">
+                                                    <button class="favorite-button" :class="{ active: item.is_favorite }" :aria-pressed="item.is_favorite" @click.stop="toggleFavorite(item, $event)" aria-label="收藏">
                                                         <span>❤</span>
                                                     </button>
                                                     <div class="card-trash-zone" @click.stop>
@@ -1103,11 +1130,11 @@
                         <h3>概览</h3>
                     </div>
                     <div class="button-row">
-                        <div class="segmented-pill subscription-segmented" role="tablist" aria-label="订阅页面切换">
+                        <div class="segmented-pill subscription-segmented" role="group" aria-label="订阅页面切换">
                             <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
-                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')"><span class="tab-search-icon" aria-hidden="true"></span>概览</button>
-                            <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
-                            <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" :aria-pressed="subscriptionPanel === 'overview'" @click="setSubscriptionPanel('overview')"><span class="tab-search-icon" aria-hidden="true"></span>概览</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'up' }" :aria-pressed="subscriptionPanel === 'up'" @click="setSubscriptionPanel('up')">UP 主动态</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'site' }" :aria-pressed="subscriptionPanel === 'site'" @click="setSubscriptionPanel('site')">站点订阅</button>
                         </div>
                     </div>
                 </div>
@@ -1166,11 +1193,11 @@
                         <h3>订阅管理</h3>
                     </div>
                     <div class="button-row">
-                        <div class="segmented-pill subscription-segmented" role="tablist" aria-label="订阅页面切换">
+                        <div class="segmented-pill subscription-segmented" role="group" aria-label="订阅页面切换">
                             <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
-                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')"><span class="tab-search-icon" aria-hidden="true"></span>概览</button>
-                            <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
-                            <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" :aria-pressed="subscriptionPanel === 'overview'" @click="setSubscriptionPanel('overview')"><span class="tab-search-icon" aria-hidden="true"></span>概览</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'up' }" :aria-pressed="subscriptionPanel === 'up'" @click="setSubscriptionPanel('up')">UP 主动态</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'site' }" :aria-pressed="subscriptionPanel === 'site'" @click="setSubscriptionPanel('site')">站点订阅</button>
                         </div>
                         <input class="subscription-input" type="number" placeholder="输入 UID" x-model="newSubscriptionUid">
                         <button class="primary-button" @click="createSubscription()">添加订阅</button>
@@ -1258,11 +1285,11 @@
                         <h3>订阅管理</h3>
                     </div>
                     <div class="button-row">
-                        <div class="segmented-pill subscription-segmented" role="tablist" aria-label="订阅页面切换">
+                        <div class="segmented-pill subscription-segmented" role="group" aria-label="订阅页面切换">
                             <span class="segmented-pill-indicator" :style="subscriptionPanelIndicatorStyle()"></span>
-                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" @click="setSubscriptionPanel('overview')"><span class="tab-search-icon" aria-hidden="true"></span>概览</button>
-                            <button type="button" :class="{ active: subscriptionPanel === 'up' }" @click="setSubscriptionPanel('up')">UP 主动态</button>
-                            <button type="button" :class="{ active: subscriptionPanel === 'site' }" @click="setSubscriptionPanel('site')">站点订阅</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'overview' }" :aria-pressed="subscriptionPanel === 'overview'" @click="setSubscriptionPanel('overview')"><span class="tab-search-icon" aria-hidden="true"></span>概览</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'up' }" :aria-pressed="subscriptionPanel === 'up'" @click="setSubscriptionPanel('up')">UP 主动态</button>
+                            <button type="button" :class="{ active: subscriptionPanel === 'site' }" :aria-pressed="subscriptionPanel === 'site'" @click="setSubscriptionPanel('site')">站点订阅</button>
                         </div>
                         <span class="status-pill" :class="{ running: siteStatus.running }" x-text="siteStatus.message || '空闲'"></span>
                         <button class="secondary-button" @click="refreshSites()">刷新</button>
@@ -1466,9 +1493,9 @@
                             <div class="subscription-card-body" x-show="siteRulesExpanded" x-transition.opacity.duration.180ms x-cloak>
                                 <div class="subscription-policy-grid site-policy-grid">
                                     <div class="mode-switch">
-                                        <button class="chip-button" :class="{ active: siteRules.mode === 'blacklist' }" @click="siteRules.mode = 'blacklist'">仅黑名单</button>
-                                        <button class="chip-button" :class="{ active: siteRules.mode === 'whitelist' }" @click="siteRules.mode = 'whitelist'">仅白名单</button>
-                                        <button class="chip-button" :class="{ active: siteRules.mode === 'both' }" @click="siteRules.mode = 'both'">黑白同时</button>
+                                        <button class="chip-button" :class="{ active: siteRules.mode === 'blacklist' }" :aria-pressed="siteRules.mode === 'blacklist'" @click="siteRules.mode = 'blacklist'">仅黑名单</button>
+                                        <button class="chip-button" :class="{ active: siteRules.mode === 'whitelist' }" :aria-pressed="siteRules.mode === 'whitelist'" @click="siteRules.mode = 'whitelist'">仅白名单</button>
+                                        <button class="chip-button" :class="{ active: siteRules.mode === 'both' }" :aria-pressed="siteRules.mode === 'both'" @click="siteRules.mode = 'both'">黑白同时</button>
                                     </div>
                                     <label>白名单关键词<textarea x-model="siteRuleText.allow_keywords" placeholder="标题或 tag 命中任一行才允许"></textarea></label>
                                     <label>黑名单关键词<textarea x-model="siteRuleText.block_keywords" placeholder="标题或 tag 命中任一行会拦截"></textarea></label>
@@ -1547,7 +1574,7 @@
                             <input type="range" min="1" max="8" step="1" :value="detailColumnCount" @input="setDetailColumnCount($event.target.value)">
                             <strong x-text="resolveDetailColumns()"></strong>
                         </label>
-                        <button class="favorite-button detail-favorite-button" :class="{ active: detail.folder?.is_favorite }" @click.stop="toggleFavorite(detail.folder, $event)" aria-label="收藏">
+                        <button class="favorite-button detail-favorite-button" :class="{ active: detail.folder?.is_favorite }" :aria-pressed="detail.folder?.is_favorite" @click.stop="toggleFavorite(detail.folder, $event)" aria-label="收藏">
                             <span>❤</span>
                         </button>
                         <button class="secondary-button detail-source-button" @click="openReviewSource(detail.folder)">查看原始动态</button>
