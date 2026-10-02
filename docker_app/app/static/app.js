@@ -308,8 +308,18 @@ function galleryApp() {
     },
 
     async init() {
-      ["currentView", "subscriptionPanel"].forEach((key) => {
-        this.$watch(key, () => this.$nextTick(() => window.GalleryGlass?.refresh({ viewChanged: true })));
+      const glassNavigationKey = () => JSON.stringify([
+        this.currentView,
+        this.currentView === "gallery"
+          ? [this.category, this.sourceKind, [...this.selectedSubscriptionUids].sort()]
+          : this.currentView === "subscriptions" ? this.subscriptionPanel : null,
+      ]);
+      this.$nextTick(() => window.GalleryGlass?.refresh({ navigationKey: glassNavigationKey() }));
+      ["currentView", "category", "subscriptionPanel", "sourceKind", "selectedSubscriptionUids"].forEach((key) => {
+        this.$watch(key, () => this.$nextTick(() => window.GalleryGlass?.refresh({
+          viewChanged: true,
+          navigationKey: glassNavigationKey(),
+        })));
       });
       ["compactViewport", "sidebarCollapsed"].forEach((key) => {
         this.$watch(key, () => this.$nextTick(() => window.GalleryGlass?.refresh()));

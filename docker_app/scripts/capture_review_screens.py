@@ -50,7 +50,7 @@ def main() -> None:
         try:
             mobile.goto(args.base_url, wait_until="networkidle")
             expect(mobile.locator("[data-testid='section-gallery']")).to_be_visible()
-            mobile.locator(".topbar .icon-button").click(force=True)
+            mobile.locator(".mobile-nav-trigger").click()
             mobile.wait_for_timeout(350)
             if mobile.locator(".sidebar.open").count():
                 expect(mobile.locator(".sidebar.open")).to_be_visible()

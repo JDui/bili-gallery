@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    {% set ui_revision = app_version ~ '-glass-1' %}
+    {% set ui_revision = app_version ~ '-glass-2' %}
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ app_title }}</title>
@@ -27,22 +27,25 @@
             <symbol id="icon-tasks" viewBox="0 0 24 24"><path d="m3 6 1.5 1.5L7 5M10 6h11M3 12h4M10 12h11M3 18h4M10 18h11"/></symbol>
             <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
             <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="var(--surface-strong)"/><circle cx="16" cy="12" r="2" fill="var(--surface-strong)"/><circle cx="10" cy="18" r="2" fill="var(--surface-strong)"/></symbol>
-            <symbol id="icon-library" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM7 4h10M8 11h8M8 15h5"/></symbol>
         </defs>
     </svg>
     <div class="shell" x-ref="shell" :class="{ 'sidebar-collapsed': sidebarCollapsed && !compactViewport, 'compact-layout': compactViewport, 'sidebar-drawer-open': sidebarDrawerOpen }">
         <div class="sidebar-backdrop" x-show="compactViewport && sidebarDrawerOpen" x-transition.opacity @click="closeSidebarDrawer()" x-cloak></div>
-        <aside class="sidebar" x-ref="sidebar" aria-label="相簿导航" :class="{ collapsed: sidebarCollapsed && !compactViewport, open: sidebarDrawerOpen, compact: compactViewport }">
+        <button class="icon-button mobile-nav-trigger mobile-only" x-show="compactViewport && !sidebarDrawerOpen" @click="toggleSidebar()" aria-label="打开侧边导航" aria-controls="gallery-sidebar" :aria-expanded="sidebarDrawerOpen" x-cloak>
+            <span></span>
+            <span></span>
+        </button>
+        <aside id="gallery-sidebar" class="sidebar" x-ref="sidebar" aria-label="相簿导航" :class="{ collapsed: sidebarCollapsed && !compactViewport, open: sidebarDrawerOpen, compact: compactViewport }">
             <div class="sidebar-head">
                 <button class="icon-button mobile-only" @click="toggleSidebar()" aria-label="切换边栏">
                     <span></span>
                     <span></span>
                 </button>
-                <div class="brand-block" x-show="!sidebarCollapsed">
+                <div class="brand-block" x-show="!sidebarCollapsed || compactViewport">
                     <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
                     <div class="brand-identity">
                         <h1>{{ app_title | replace(' v' ~ app_version, '') }}</h1>
-                        <p class="brand-version">私人相簿 · v{{ app_version }}</p>
+                        <p class="brand-version">v{{ app_version }}</p>
                     </div>
                 </div>
                 <button class="icon-button desktop-only" @click="toggleSidebar()" aria-label="切换边栏">
@@ -53,7 +56,7 @@
 
             <div class="sidebar-scroll">
             <section class="nav-section">
-                <div class="section-label" x-show="!sidebarCollapsed">资料库</div>
+                <div class="section-label" x-show="!sidebarCollapsed || compactViewport">资料库</div>
                 <template x-for="item in navItems" :key="item.key">
                     <button
                         class="sidebar-link"
@@ -63,21 +66,21 @@
                         @click="openGallery(item.key)"
                     >
                         <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use :href="'#icon-' + item.key"></use></svg></span>
-                        <span class="link-text" x-show="!sidebarCollapsed" x-text="item.label"></span>
-                        <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount(item.key)"></span>
+                        <span class="link-text" x-show="!sidebarCollapsed || compactViewport" x-text="item.label"></span>
+                        <span class="link-count" x-show="!sidebarCollapsed || compactViewport" x-text="sidebarCount(item.key)"></span>
                     </button>
                 </template>
             </section>
 
             <section class="nav-section">
-                <button type="button" class="section-label section-label-button" x-show="!sidebarCollapsed" @click="toggleSubscriptionSection()" :aria-expanded="!subscriptionSectionCollapsed">
+                <button type="button" class="section-label section-label-button" x-show="!sidebarCollapsed || compactViewport" @click="toggleSubscriptionSection()" :aria-expanded="!subscriptionSectionCollapsed">
                     <span>订阅</span>
                     <span class="section-label-chevron" :class="{ open: !subscriptionSectionCollapsed }"></span>
                 </button>
                 <button class="sidebar-link subscription-manage-link" data-testid="nav-subscriptions-inline" :class="{ active: currentView === 'subscriptions' }" :aria-current="(currentView === 'subscriptions') ? 'page' : null" title="订阅管理" @click="openSubscriptions('overview')">
                     <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-subscriptions"></use></svg></span>
-                    <span class="link-text" x-show="!sidebarCollapsed">订阅管理</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('subscriptions')"></span>
+                    <span class="link-text" x-show="!sidebarCollapsed || compactViewport">订阅管理</span>
+                    <span class="link-count" x-show="!sidebarCollapsed || compactViewport" x-text="sidebarCount('subscriptions')"></span>
                 </button>
                 <div class="sidebar-subscription-list" x-show="!subscriptionSectionCollapsed" x-transition.opacity.duration.160ms x-cloak>
                     <template x-for="item in subscriptions" :key="item.uid">
@@ -90,65 +93,57 @@
                                     <span x-text="subscriptionBadgeText(item)"></span>
                                 </template>
                             </span>
-                            <span class="link-text" x-show="!sidebarCollapsed" x-text="item.uname || item.uid"></span>
-                            <span class="link-count" x-show="!sidebarCollapsed" x-text="item.folder_count || 0"></span>
+                            <span class="link-text" x-show="!sidebarCollapsed || compactViewport" x-text="item.uname || item.uid"></span>
+                            <span class="link-count" x-show="!sidebarCollapsed || compactViewport" x-text="item.folder_count || 0"></span>
                         </button>
                     </template>
                 </div>
             </section>
 
             <section class="nav-section">
-                <div class="section-label" x-show="!sidebarCollapsed">智能相簿</div>
+                <div class="section-label" x-show="!sidebarCollapsed || compactViewport">智能相簿</div>
                 <button class="sidebar-link" data-testid="nav-recent-updates" :class="{ active: currentView === 'recent-updates' }" :aria-current="(currentView === 'recent-updates') ? 'page' : null" title="最近更新" @click="openRecentUpdates()">
                     <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-recent-updates"></use></svg></span>
-                    <span class="link-text" x-show="!sidebarCollapsed">最近更新</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="recentUpdates.total_items || 0"></span>
+                    <span class="link-text" x-show="!sidebarCollapsed || compactViewport">最近更新</span>
+                    <span class="link-count" x-show="!sidebarCollapsed || compactViewport" x-text="recentUpdates.total_items || 0"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-duplicates" :class="{ active: currentView === 'duplicates' }" :aria-current="(currentView === 'duplicates') ? 'page' : null" title="重复内容" @click="openDuplicates()">
                     <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-duplicates"></use></svg></span>
-                    <span class="link-text" x-show="!sidebarCollapsed">重复内容</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('duplicates')"></span>
+                    <span class="link-text" x-show="!sidebarCollapsed || compactViewport">重复内容</span>
+                    <span class="link-count" x-show="!sidebarCollapsed || compactViewport" x-text="sidebarCount('duplicates')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-review" :class="{ active: currentView === 'review' }" :aria-current="(currentView === 'review') ? 'page' : null" title="待审核" @click="openReview()">
                     <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-review"></use></svg></span>
-                    <span class="link-text" x-show="!sidebarCollapsed">待审核</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('review')"></span>
+                    <span class="link-text" x-show="!sidebarCollapsed || compactViewport">待审核</span>
+                    <span class="link-count" x-show="!sidebarCollapsed || compactViewport" x-text="sidebarCount('review')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-logs" :class="{ active: currentView === 'logs' }" :aria-current="(currentView === 'logs') ? 'page' : null" title="过滤日志" @click="openLogs()">
                     <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-logs"></use></svg></span>
-                    <span class="link-text" x-show="!sidebarCollapsed">过滤日志</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('logs')"></span>
+                    <span class="link-text" x-show="!sidebarCollapsed || compactViewport">过滤日志</span>
+                    <span class="link-count" x-show="!sidebarCollapsed || compactViewport" x-text="sidebarCount('logs')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-tasks" :class="{ active: currentView === 'tasks' }" :aria-current="(currentView === 'tasks') ? 'page' : null" title="任务队列" @click="openTasks()">
                     <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-tasks"></use></svg></span>
-                    <span class="link-text" x-show="!sidebarCollapsed">任务队列</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('tasks')"></span>
+                    <span class="link-text" x-show="!sidebarCollapsed || compactViewport">任务队列</span>
+                    <span class="link-count" x-show="!sidebarCollapsed || compactViewport" x-text="sidebarCount('tasks')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-trash" :class="{ active: currentView === 'trash' }" :aria-current="(currentView === 'trash') ? 'page' : null" title="内容垃圾桶" @click="openTrash()">
                     <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-trash"></use></svg></span>
-                    <span class="link-text" x-show="!sidebarCollapsed">内容垃圾桶</span>
-                    <span class="link-count" x-show="!sidebarCollapsed" x-text="sidebarCount('trash')"></span>
+                    <span class="link-text" x-show="!sidebarCollapsed || compactViewport">内容垃圾桶</span>
+                    <span class="link-count" x-show="!sidebarCollapsed || compactViewport" x-text="sidebarCount('trash')"></span>
                 </button>
                 <button class="sidebar-link" data-testid="nav-settings" :class="{ active: currentView === 'settings' }" :aria-current="(currentView === 'settings') ? 'page' : null" title="拉取与设置" @click="openSettings()">
                     <span class="link-badge"><svg class="nav-icon" aria-hidden="true"><use href="#icon-settings"></use></svg></span>
-                    <span class="link-text" x-show="!sidebarCollapsed">拉取与设置</span>
-                    <span class="link-count" x-show="!sidebarCollapsed">控制</span>
+                    <span class="link-text" x-show="!sidebarCollapsed || compactViewport">拉取与设置</span>
+                    <span class="link-count" x-show="!sidebarCollapsed || compactViewport">控制</span>
                 </button>
             </section>
-            </div>
-            <div class="sidebar-footer" x-show="!sidebarCollapsed">
-                <span class="sidebar-footer-mark"><svg class="nav-icon" aria-hidden="true"><use href="#icon-library"></use></svg></span>
-                <div><strong>本地收藏空间</strong><span>让每一刻都有归处</span></div>
             </div>
         </aside>
 
         <main class="workspace" x-ref="workspace">
             <header class="topbar" x-ref="topbar" :class="{ compact: headerCompact }">
                 <div class="topbar-left">
-                    <button class="icon-button" @click="toggleSidebar()" aria-label="切换边栏">
-                        <span></span>
-                        <span></span>
-                    </button>
                     <div class="topbar-copy">
                         <p class="topbar-label" x-text="currentSectionLabel()"></p>
                         <div class="topbar-title-row">

@@ -32,6 +32,8 @@
   let frame = null;
   let frameDeadline = null;
   let activeSection = null;
+  let activeNavigationKey = null;
+  let pendingNavigationKey = null;
   let entranceRequested = false;
   let started = false;
   let destroyed = false;
@@ -92,9 +94,10 @@
 
   function animateEntrance(section) {
     cancelAnimations();
-    if (!section || !motionAllowed()) return;
-    animate(section, [{ opacity: 0.72 }, { opacity: 1 }], {
-      duration: 240,
+    if (!section || reducedMotion?.matches) return;
+    const lowPerformance = root.dataset.performanceMode === "low";
+    animate(section, [{ opacity: 0.45 }, { opacity: 1 }], {
+      duration: lowPerformance ? 180 : 280,
       easing: "cubic-bezier(.2,.75,.25,1)",
     });
     const heading = section.querySelector(".section-heading > div:first-child");
@@ -103,12 +106,13 @@
       document.querySelector(".topbar-title-row > h2"),
       heading?.textContent.trim() ? heading : null,
     ];
-    copy.forEach((element, index) => animate(element, [
+    const copyFrames = lowPerformance ? [{ opacity: 0.55 }, { opacity: 1 }] : [
       { opacity: 0.55, transform: "translateY(6px)" },
       { opacity: 1, transform: "translateY(0)" },
-    ], {
-      duration: 300,
-      delay: index * 18,
+    ];
+    copy.forEach((element, index) => animate(element, copyFrames, {
+      duration: lowPerformance ? 180 : 300,
+      delay: lowPerformance ? 0 : index * 12,
       easing: "cubic-bezier(.2,.75,.25,1)",
     }));
   }
@@ -130,9 +134,12 @@
     pendingPointers.clear();
     if (entranceRequested) {
       const nextSection = currentSection();
-      if (nextSection !== activeSection) animateEntrance(nextSection);
+      if (nextSection !== activeSection || pendingNavigationKey !== activeNavigationKey) {
+        animateEntrance(nextSection);
+      }
       activeSection = nextSection;
     }
+    activeNavigationKey = pendingNavigationKey;
     entranceRequested = false;
   }
 
@@ -152,6 +159,7 @@
   }
 
   function refresh(options = {}) {
+    if (typeof options?.navigationKey === "string") pendingNavigationKey = options.navigationKey;
     if (!started) return;
     switches.forEach((element) => pendingSwitches.add(element));
     entranceRequested = entranceRequested || Boolean(options?.viewChanged);
@@ -179,8 +187,8 @@
   }
 
   function updateMotionPreference() {
+    if (reducedMotion?.matches) cancelAnimations();
     if (!motionAllowed() || !finePointer?.matches) {
-      cancelAnimations();
       surfaces.forEach(resetPointer);
     }
   }
@@ -247,6 +255,7 @@
     const workspace = document.querySelector(".workspace");
     sections = workspace ? Array.from(workspace.children).filter((element) => element.tagName === "SECTION") : [];
     activeSection = currentSection();
+    activeNavigationKey = pendingNavigationKey;
     installSwitchObservers();
     switches.forEach((element) => listen(element, "scroll", () => {
       pendingSwitches.add(element);
@@ -301,6 +310,7 @@
     surfaces = [];
     sections = [];
     activeSection = null;
+    activeNavigationKey = null;
   }
 
   function pageHide() {
